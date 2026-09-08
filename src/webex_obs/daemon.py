@@ -44,8 +44,9 @@ class WebexOBSDaemon:
         )
         self.webex = WebexClient(
             token=self.config.webex_token,
-            my_agent_email=self.config.my_agent_email,
+            recipient_email=self.config.webex_recipient_email,
             room_id=self.config.room_id,
+            my_agent_email=self.config.my_agent_email,
         )
         self.hotkeys = HotkeyListener(
             on_video_switch=self.obs.switch_to_video_mode,
