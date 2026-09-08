@@ -31,7 +31,7 @@ class _Process:
         self.info = {"name": name, "exe": ""}
         self._port = port
 
-    def connections(self, kind):
+    def net_connections(self, kind):
         return [_Connection(self._port)]
 
 
@@ -39,22 +39,32 @@ class ProcessMonitorTests(unittest.TestCase):
     def test_idle_webex_socket_is_not_enough(self):
         monitor = ProcessMonitor()
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
-             patch.object(monitor, "_has_active_call_window", return_value=False):
+             patch.object(monitor, "_active_call_window_name", return_value=None):
             self.assertFalse(monitor.is_webex_running())
 
     def test_general_webex_socket_requires_call_window(self):
         monitor = ProcessMonitor()
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
-             patch.object(monitor, "_has_active_call_window", return_value=True):
+             patch.object(monitor, "_active_call_window_name", return_value="Mark Bahler"):
             self.assertTrue(monitor.is_webex_running())
-            self.assertIn("Webex window plus", monitor._last_detection_reason)
+            self.assertIn("call window 'Mark Bahler'", monitor._last_detection_reason)
 
     def test_call_specific_media_process_is_strong_evidence(self):
         monitor = ProcessMonitor()
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("CiscoCollabHost", 9000)]), \
-             patch.object(monitor, "_has_active_call_window", return_value=False):
+             patch.object(monitor, "_active_call_window_name", return_value=None):
             self.assertTrue(monitor.is_webex_running())
             self.assertIn("ciscocollabhost", monitor._last_detection_reason)
+
+    def test_main_and_lingering_floating_windows_are_not_call_windows(self):
+        monitor = ProcessMonitor()
+        result = types.SimpleNamespace(
+            returncode=0,
+            stdout="Webex\nWebex multitasking floating window\n",
+            stderr="",
+        )
+        with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
+            self.assertIsNone(monitor._active_call_window_name())
 
     def test_call_start_requires_two_consecutive_checks(self):
         monitor = ProcessMonitor(poll_interval=0)
