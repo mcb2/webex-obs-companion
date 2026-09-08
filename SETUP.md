@@ -46,11 +46,12 @@ Webex Bots provide **permanent access tokens** that never expire (unlike persona
 In `~/Projects/webex_obs_companion/.env`:
 ```ini
 WEBEX_ACCESS_TOKEN=your_bot_token_here
-WEBEX_BOT_EMAIL=mbahler@cisco.com
+WEBEX_RECIPIENT_EMAIL=your_webex_email@example.com
+MY_AGENT_EMAIL=your_agent@webex.bot
 WEBEX_ROOM_ID=
 ```
 - **How it Works**: When a meeting ends, your bot sends the full transcript directly to your personal 1:1 Webex chat.
-- **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with My Agent (`circuitpulse@webex.bot`) for instant executive summaries and action items.
+- **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` for instant executive summaries and action items.
 
 ---
 
