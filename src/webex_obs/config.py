@@ -29,10 +29,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WEBEX_ACCESS_TOKEN", "webex_access_token", "WEBEX_BOT_TOKEN", "webex_bot_token", "WEBEX_TOKEN", "webex_token"),
         description="Permanent Webex Bot Access Token from developer.webex.com"
     )
-    webex_bot_email: str = Field(
-        default="mbahler@cisco.com",
-        validation_alias=AliasChoices("WEBEX_BOT_EMAIL", "webex_bot_email", "MY_AGENT_EMAIL", "my_agent_email"),
-        description="Your Cisco email (mbahler@cisco.com) for direct 1:1 message delivery from your bot"
+    webex_recipient_email: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "WEBEX_RECIPIENT_EMAIL",
+            "webex_recipient_email",
+            "WEBEX_BOT_EMAIL",
+            "webex_bot_email",
+        ),
+        description="Recipient email for direct 1:1 message delivery from your bot"
+    )
+    my_agent_email: str = Field(
+        default="",
+        validation_alias=AliasChoices("MY_AGENT_EMAIL", "my_agent_email"),
+        description="Optional My Agent bot email shown in transcript delivery instructions"
     )
     webex_room_id: str = Field(
         default="",
@@ -125,8 +135,9 @@ class Settings(BaseSettings):
         return self.webex_access_token
 
     @property
-    def my_agent_email(self) -> str:
-        return self.webex_bot_email
+    def webex_bot_email(self) -> str:
+        """Backward-compatible attribute for the direct-delivery recipient."""
+        return self.webex_recipient_email
 
     @property
     def room_id(self) -> str:
