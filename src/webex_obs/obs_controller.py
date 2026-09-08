@@ -23,6 +23,7 @@ class OBSController:
         self.is_connected = False
         self.is_recording = False
         self.recorded_files: list[str] = []
+        self.current_scene = "Webex-Audio"
 
     def relaunch_obs(self) -> bool:
         """Gracefully quit any existing OBS instance and launch fresh to clear macOS CoreAudio stalls."""
@@ -147,7 +148,9 @@ class OBSController:
 
     def start_recording(self, scene_name: str = "Webex-Audio", relaunch: bool = False) -> bool:
         if relaunch or self.relaunch_per_call:
-            self.relaunch_obs()
+            if not self.relaunch_obs():
+                logger.error("Cannot start recording because OBS did not restart and reconnect.")
+                return False
         elif not self.check_connection():
             return False
 
@@ -156,28 +159,60 @@ class OBSController:
             if scene_name == "Webex-Video":
                 self.bind_webex_video_window()
             self.ws.call(requests.StartRecord())
-            self.is_recording = True
+            if not self._refresh_recording_status():
+                raise RuntimeError("OBS accepted StartRecord but did not report an active recording")
             logger.info(f"OBS recording started in scene '{scene_name}'.")
             return True
         except Exception as e:
             logger.error(f"Failed to start OBS recording: {e}")
+            # The command may have succeeded even if its response was interrupted.
+            if self._refresh_recording_status():
+                logger.info(f"OBS recording is active in scene '{scene_name}' after status verification.")
+                return True
             # Try one reconnect attempt
             if self.connect():
                 try:
                     self.switch_scene(scene_name)
                     self.ws.call(requests.StartRecord())
-                    self.is_recording = True
+                    if not self._refresh_recording_status():
+                        raise RuntimeError("OBS did not report an active recording after reconnect")
                     logger.info(f"OBS recording started in scene '{scene_name}' after reconnect.")
                     return True
                 except Exception as retry_err:
                     logger.error(f"Retry start recording failed: {retry_err}")
             return False
 
+    def _refresh_recording_status(self) -> bool:
+        """Query OBS instead of trusting the last command sent over WebSocket."""
+        if not self.check_connection():
+            self.is_recording = False
+            return False
+        try:
+            res = self.ws.call(requests.GetRecordStatus())
+            data = getattr(res, "datain", {})
+            self.is_recording = bool(data.get("outputActive", False))
+            output_path = data.get("outputPath", "")
+            if output_path and output_path not in self.recorded_files:
+                self.recorded_files.append(output_path)
+            return self.is_recording
+        except Exception as e:
+            logger.warning(f"Could not verify OBS recording status: {e}")
+            self.is_recording = False
+            return False
+
+    def ensure_recording(self, scene_name: str | None = None) -> bool:
+        """Keep a live call recording even if OBS exits or its output stops."""
+        if self._refresh_recording_status():
+            return True
+        logger.warning("OBS recording is no longer active. Restarting OBS and resuming in a new segment...")
+        return self.start_recording(scene_name=scene_name or self.current_scene, relaunch=True)
+
     def switch_scene(self, scene_name: str) -> bool:
         if not self.check_connection():
             return False
         try:
             self.ws.call(requests.SetCurrentProgramScene(sceneName=scene_name))
+            self.current_scene = scene_name
             logger.info(f"Switched OBS scene to '{scene_name}'.")
             return True
         except Exception as e:
@@ -197,7 +232,8 @@ class OBSController:
             self.is_recording = False
             output_path = getattr(res, "datain", {}).get("outputPath", "")
             if output_path and os.path.exists(output_path):
-                self.recorded_files.append(output_path)
+                if output_path not in self.recorded_files:
+                    self.recorded_files.append(output_path)
             logger.info("OBS recording stopped.")
         except Exception as e:
             logger.error(f"Error stopping OBS recording: {e}")

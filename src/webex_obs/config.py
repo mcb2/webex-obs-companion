@@ -124,9 +124,10 @@ class Settings(BaseSettings):
     @classmethod
     def expand_path(cls, v):
         if isinstance(v, (str, Path)):
-            p = Path(os.path.expanduser(str(v))).resolve()
-            p.mkdir(parents=True, exist_ok=True)
-            return p
+            # Do not touch the filesystem while loading configuration. Cloud-backed
+            # folders (notably OneDrive on macOS) can temporarily raise EDEADLK and
+            # used to crash the LaunchAgent before monitoring even started.
+            return Path(os.path.expanduser(str(v))).resolve()
         return v
 
     # Compatibility properties & aliases
