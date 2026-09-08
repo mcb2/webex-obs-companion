@@ -114,8 +114,17 @@ def test_webex():
         console.print("[bold red]Error:[/bold red] WEBEX_ACCESS_TOKEN is not configured in .env.")
         return
 
-    client = WebexClient(settings.webex_token, settings.my_agent_email, room_id=settings.room_id)
-    target_info = f"Space (roomId: {settings.room_id})" if settings.room_id else f"1:1 Direct Message to {settings.my_agent_email}"
+    client = WebexClient(
+        settings.webex_token,
+        settings.webex_recipient_email,
+        room_id=settings.room_id,
+        my_agent_email=settings.my_agent_email,
+    )
+    target_info = (
+        f"Space (roomId: {settings.room_id})"
+        if settings.room_id
+        else f"1:1 Direct Message to {settings.webex_recipient_email}"
+    )
     console.print(f"Target: [cyan]{target_info}[/cyan]\n")
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
@@ -147,12 +156,12 @@ def list_rooms():
         console.print("[bold red]Error:[/bold red] WEBEX_ACCESS_TOKEN is missing in .env.")
         return
 
-    client = WebexClient(settings.webex_token, settings.my_agent_email)
+    client = WebexClient(settings.webex_token)
     rooms = client.list_rooms()
 
     if not rooms:
         console.print("[yellow]No spaces found where this Bot is a member.[/yellow]")
-        console.print("To post to a shared space, invite your Bot (e.g. mbahler-bot@webex.bot) to the space in Webex.")
+        console.print("To post to a shared space, invite your Bot (e.g. your-bot@webex.bot) to the space in Webex.")
         return
 
     table = Table(title="Webex Spaces Joined by Bot")
@@ -228,7 +237,8 @@ def setup():
 
     # Default configuration values
     existing_token = ""
-    existing_email = "mbahler@cisco.com"
+    existing_recipient_email = ""
+    existing_my_agent_email = ""
     existing_room_id = ""
     existing_obs_port = "4455"
     existing_obs_password = ""
@@ -248,8 +258,10 @@ def setup():
             current = Settings()
             if current.webex_access_token:
                 existing_token = current.webex_access_token
-            if current.webex_bot_email:
-                existing_email = current.webex_bot_email
+            if current.webex_recipient_email:
+                existing_recipient_email = current.webex_recipient_email
+            if current.my_agent_email:
+                existing_my_agent_email = current.my_agent_email
             if current.webex_room_id:
                 existing_room_id = current.webex_room_id
             if current.obs_ws_port:
@@ -275,9 +287,13 @@ def setup():
     console.print("Create a permanent bot at: [cyan]https://developer.webex.com/my-apps[/cyan]\n")
 
     token = Prompt.ask("Enter your Webex Bot Access Token", default=existing_token if existing_token else None)
-    target_email = Prompt.ask(
-        "Enter your Cisco email for 1:1 direct delivery (Option 1)",
-        default=existing_email
+    recipient_email = Prompt.ask(
+        "Enter your Webex email for 1:1 direct delivery (Option 1)",
+        default=existing_recipient_email,
+    )
+    my_agent_email = Prompt.ask(
+        "Enter your My Agent bot email (optional)",
+        default=existing_my_agent_email,
     )
     room_id = Prompt.ask("Optional Webex Space/Room ID (leave blank for Option 1 direct 1:1 DM)", default=existing_room_id)
 
@@ -301,7 +317,8 @@ def setup():
     env_content = f"""# Webex OBS Companion Configuration
 # Permanent Webex Bot Access Token (developer.webex.com)
 WEBEX_ACCESS_TOKEN={token}
-WEBEX_BOT_EMAIL={target_email}
+WEBEX_RECIPIENT_EMAIL={recipient_email}
+MY_AGENT_EMAIL={my_agent_email}
 WEBEX_ROOM_ID={room_id}
 
 # OBS Studio WebSocket

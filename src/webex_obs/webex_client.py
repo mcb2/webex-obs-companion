@@ -6,10 +6,17 @@ logger = logging.getLogger(__name__)
 
 
 class WebexClient:
-    def __init__(self, token: str, my_agent_email: str = "mbahler@cisco.com", room_id: str = ""):
+    def __init__(
+        self,
+        token: str,
+        recipient_email: str = "",
+        room_id: str = "",
+        my_agent_email: str = "",
+    ):
         self.token = token
-        self.my_agent_email = my_agent_email
+        self.recipient_email = recipient_email
         self.room_id = room_id
+        self.my_agent_email = my_agent_email
         self.api_url = "https://webexapis.com/v1/messages"
 
     def send_transcript(self, transcript_path: Path, meeting_title: str = "Webex Meeting") -> bool:
@@ -37,12 +44,20 @@ class WebexClient:
                 "Here is the recorded and diarized meeting transcript:\n\n"
             )
         else:
-            payload["toPersonEmail"] = self.my_agent_email
-            target_desc = f"1:1 Direct Message to {self.my_agent_email}"
+            if not self.recipient_email:
+                logger.error(
+                    "WEBEX_RECIPIENT_EMAIL is missing in .env. "
+                    "Cannot deliver a direct 1:1 message."
+                )
+                return False
+            payload["toPersonEmail"] = self.recipient_email
+            target_desc = f"1:1 Direct Message to {self.recipient_email}"
+            agent_hint = f" ({self.my_agent_email})" if self.my_agent_email else ""
             prompt = (
                 f"📋 **New Meeting Transcript ({meeting_title})**\n\n"
                 "Here is your recorded and diarized meeting transcript. "
-                "You can forward this directly to My Agent for an executive summary, decisions, and action items:\n\n"
+                f"You can forward this directly to My Agent{agent_hint} for an executive "
+                "summary, decisions, and action items:\n\n"
             )
 
         try:
@@ -68,9 +83,9 @@ class WebexClient:
                         )
                     else:
                         logger.error(
-                            f"Recipient '{self.my_agent_email}' could not be reached via 1:1 Bot message. "
+                            f"Recipient '{self.recipient_email}' could not be reached via 1:1 Bot message. "
                             "Note: Webex bots cannot 1:1 message other bots. Ensure "
-                            "WEBEX_BOT_EMAIL in .env is set to your personal Cisco email (e.g. mbahler@cisco.com)."
+                            "WEBEX_RECIPIENT_EMAIL in .env is set to your personal Webex email."
                         )
                 return False
         except Exception as e:
