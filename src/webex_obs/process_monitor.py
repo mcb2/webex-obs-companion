@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 WEBEX_RTP_PORTS = {5004, 9000, 33434}
 WEBEX_CORE_PROCESSES = ["webex", "ciscospark", "ciscocollabhost", "meeting center", "washost"]
 WEBEX_MEDIA_PROCESSES = ["ciscocollabhost", "meeting center", "washost"]
+NON_CALL_WINDOW_NAMES = {"webex", "webex multitasking floating window"}
 
 
 class ProcessMonitor:
@@ -33,7 +34,7 @@ class ProcessMonitor:
                 if not any(target in pname or target in pexe for target in WEBEX_CORE_PROCESSES):
                     continue
 
-                conns = proc.connections(kind="inet")
+                conns = proc.net_connections(kind="inet")
                 for conn in conns:
                     # MUST be a UDP datagram socket (SOCK_DGRAM)
                     if conn.type != socket.SOCK_DGRAM:
@@ -53,11 +54,21 @@ class ProcessMonitor:
                 continue
         return streams
 
-    def _has_active_call_window(self) -> bool:
+    def _active_call_window_name(self) -> str | None:
         """
-        Check if Webex has an active multitasking floating call window open.
+        Return a distinct Webex call window, excluding ordinary and unreliable
+        idle/floating windows.
         """
-        apple_script = 'tell application "System Events" to tell process "Webex" to get name of windows'
+        apple_script = """
+        tell application "System Events" to tell process "Webex"
+            set windowNames to {}
+            repeat with webexWindow in windows
+                set end of windowNames to name of webexWindow
+            end repeat
+            set AppleScript's text item delimiters to linefeed
+            return windowNames as text
+        end tell
+        """
         try:
             res = subprocess.run(
                 ["osascript", "-e", apple_script],
@@ -66,19 +77,20 @@ class ProcessMonitor:
                 timeout=2.0,
             )
             if res.returncode == 0 and res.stdout:
-                windows = res.stdout.strip()
-                if "Webex multitasking floating window" in windows:
-                    return True
+                for window_name in res.stdout.splitlines():
+                    window_name = window_name.strip()
+                    if window_name and window_name.casefold() not in NON_CALL_WINDOW_NAMES:
+                        return window_name
         except Exception:
             pass
-        return False
+        return None
 
     def is_webex_running(self) -> bool:
         """
         Returns True only during an active voice/video call or meeting.
         """
         streams = self._active_rtp_media_streams()
-        call_window = self._has_active_call_window()
+        call_window = self._active_call_window_name()
 
         # A call-specific Webex media helper with RTP is strong evidence by itself.
         media_streams = [stream for stream in streams if stream[2]]
@@ -91,7 +103,9 @@ class ProcessMonitor:
         # floating window can linger. Require both weaker signals together.
         if streams and call_window:
             process, port, _ = streams[0]
-            self._last_detection_reason = f"Webex window plus process '{process}' using UDP port {port}"
+            self._last_detection_reason = (
+                f"call window '{call_window}' plus process '{process}' using UDP port {port}"
+            )
             return True
 
         self._last_detection_reason = ""
