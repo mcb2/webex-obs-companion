@@ -50,7 +50,6 @@ class Transcriber:
     ):
         self.model_name = model_name
         self.transcripts_dir = Path(os.path.expanduser(str(transcripts_dir))).resolve()
-        self.transcripts_dir.mkdir(parents=True, exist_ok=True)
 
         self.enable_diarization = enable_diarization
         self.hf_token = hf_token
@@ -79,7 +78,11 @@ class Transcriber:
             return None
 
         # Ensure transcripts directory exists
-        self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Transcript directory is temporarily unavailable: {e}")
+            return None
 
         all_text_segments = []
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
