@@ -31,6 +31,7 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 ### Automatic OBS Audio Reset & Auto-Reconnection
 - **Audio Capture Refresh**: macOS CoreAudio / ScreenCaptureKit can occasionally freeze audio buffers if OBS has been running continuously for days. The companion defaults to `RELAUNCH_OBS_PER_CALL=true` which cleanly restarts OBS when each call starts to guarantee fresh audio capture.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
+- **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
 
 ---
 

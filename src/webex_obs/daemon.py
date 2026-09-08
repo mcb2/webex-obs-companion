@@ -127,9 +127,13 @@ class WebexOBSDaemon:
 
                 started = self.obs.start_recording(scene_name="Webex-Audio")
                 if not started:
-                    logger.warning("Could not start OBS recording. Retrying in 5 seconds...")
-                    time.sleep(5)
-                    continue
+                    logger.warning("Could not start OBS recording. Will retry while the call remains active...")
+                    while self.monitor.is_webex_running() and not started:
+                        time.sleep(5)
+                        started = self.obs.start_recording(scene_name="Webex-Audio", relaunch=True)
+                    if not started:
+                        self.monitor.is_in_meeting = False
+                        continue
 
                 choice = UIBanner.show_startup_prompt()
                 if choice == "cancel":
@@ -161,6 +165,8 @@ class WebexOBSDaemon:
                     if not self.monitor.is_webex_running():
                         self.monitor.is_in_meeting = False
                         break
+                    if not self.obs.ensure_recording():
+                        logger.error("OBS recovery failed; another recovery attempt will be made on the next poll.")
 
                 if self._discard_requested:
                     logger.info("Meeting finished, recording was discarded by user request.")

@@ -6,9 +6,9 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 
 ## Key Features
 
-- **Automated Webex Meeting Detection**: Uses low-overhead RTP UDP socket polling and floating window state detection to trigger recording only during active meetings.
+- **Automated Webex Meeting Detection**: Confirms sustained, call-specific Webex media activity before recording, while using window state to validate weaker signals from the general Webex app.
 - **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. Optional per-call restart prevents macOS CoreAudio buffer stalls during prolonged uptime.
-- **Automatic WebSocket Reconnection**: Seamlessly reconnects whenever OBS is restarted manually or automatically.
+- **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and restarts/resumes in a new segment if OBS exits or capture stops.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
 - **Neural & Acoustic Speaker Diarization**: Identifies speaker turns and labels participants chronologically.
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
