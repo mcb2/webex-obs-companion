@@ -161,7 +161,7 @@ def list_rooms():
 
     if not rooms:
         console.print("[yellow]No spaces found where this Bot is a member.[/yellow]")
-        console.print("To post to a shared space, invite your Bot (e.g. mbahler-bot@webex.bot) to the space in Webex.")
+        console.print("To post to a shared space, invite your Bot (e.g. your-bot@webex.bot) to the space in Webex.")
         return
 
     table = Table(title="Webex Spaces Joined by Bot")
