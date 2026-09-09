@@ -5,6 +5,9 @@ class UIBanner:
     def show_startup_prompt() -> str:
         prompt_text = (
             "🔴 Webex Meeting Detected — Recording Started (Audio)\\n\\n"
+            "⚠️ Recording Consent Notice\\n"
+            "Recording laws vary by location. Obtain permission from all participants "
+            "when required by applicable law.\\n\\n"
             "• Direct Video: ⌘ + Shift + V\\n"
             "• Stop & Transcribe: ⌘ + Shift + S\\n"
             "• Reopen Menu: ⌘ + Shift + R\\n\\n"
