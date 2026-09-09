@@ -14,11 +14,13 @@ NON_CALL_WINDOW_NAMES = {"webex", "webex multitasking floating window"}
 
 
 class ProcessMonitor:
-    def __init__(self, poll_interval: float = 3.0):
+    def __init__(self, poll_interval: float = 3.0, call_end_grace_seconds: float = 15.0):
         self.poll_interval = poll_interval
+        self.call_end_grace_seconds = call_end_grace_seconds
         self.is_in_meeting = False
         self._idle_poll_count = 0
         self._active_poll_count = 0
+        self._inactive_since: float | None = None
         self._last_detection_reason = ""
 
     def _active_rtp_media_streams(self) -> list[tuple[str, int, bool]]:
@@ -111,6 +113,29 @@ class ProcessMonitor:
         self._last_detection_reason = ""
         return False
 
+    def has_call_ended(self) -> bool:
+        """Return True only after call evidence is absent for the full grace period."""
+        if self.is_webex_running():
+            self._inactive_since = None
+            return False
+
+        now = time.monotonic()
+        if self._inactive_since is None:
+            self._inactive_since = now
+            logger.warning(
+                "Webex call evidence temporarily missing; keeping recording active "
+                "for up to %.1f seconds.",
+                self.call_end_grace_seconds,
+            )
+            return self.call_end_grace_seconds == 0
+
+        if now - self._inactive_since < self.call_end_grace_seconds:
+            return False
+
+        self._inactive_since = None
+        logger.info("Webex call / meeting media stream has ended.")
+        return True
+
     def wait_for_state_change(self) -> bool:
         while True:
             running = self.is_webex_running()
@@ -120,6 +145,7 @@ class ProcessMonitor:
                     self.is_in_meeting = True
                     self._active_poll_count = 0
                     self._idle_poll_count = 0
+                    self._inactive_since = None
                     logger.info(f"Detected active Webex call / meeting session: {self._last_detection_reason}.")
                     return True
             elif not running and self.is_in_meeting:

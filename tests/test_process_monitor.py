@@ -74,6 +74,25 @@ class ProcessMonitorTests(unittest.TestCase):
             self.assertTrue(monitor.wait_for_state_change())
             self.assertTrue(monitor.is_in_meeting)
 
+    def test_transient_detection_loss_does_not_end_call(self):
+        monitor = ProcessMonitor(call_end_grace_seconds=15)
+        with patch.object(monitor, "is_webex_running", side_effect=[False, True]), \
+             patch("webex_obs.process_monitor.time.monotonic", return_value=100):
+            self.assertFalse(monitor.has_call_ended())
+            self.assertFalse(monitor.has_call_ended())
+            self.assertIsNone(monitor._inactive_since)
+
+    def test_sustained_detection_loss_ends_call_after_grace_period(self):
+        monitor = ProcessMonitor(call_end_grace_seconds=15)
+        with patch.object(monitor, "is_webex_running", return_value=False), \
+             patch(
+                 "webex_obs.process_monitor.time.monotonic",
+                 side_effect=[100, 114.9, 115],
+             ):
+            self.assertFalse(monitor.has_call_ended())
+            self.assertFalse(monitor.has_call_ended())
+            self.assertTrue(monitor.has_call_ended())
+
 
 if __name__ == "__main__":
     unittest.main()

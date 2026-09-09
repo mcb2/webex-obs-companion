@@ -35,7 +35,10 @@ class WebexOBSDaemon:
             password=self.config.obs_password,
             relaunch_per_call=self.config.relaunch_obs_per_call,
         )
-        self.monitor = ProcessMonitor(poll_interval=self.config.poll_interval)
+        self.monitor = ProcessMonitor(
+            poll_interval=self.config.poll_interval,
+            call_end_grace_seconds=self.config.call_end_grace_seconds,
+        )
         self.transcriber = Transcriber(
             model_name=self.config.whisper_model,
             transcripts_dir=self.config.transcripts_dir,
@@ -171,7 +174,7 @@ class WebexOBSDaemon:
                     if self._manual_stop_event.is_set():
                         break
                     time.sleep(self.config.poll_interval)
-                    if not self.monitor.is_webex_running():
+                    if self.monitor.has_call_ended():
                         self.monitor.is_in_meeting = False
                         break
                     if not self.obs.ensure_recording():

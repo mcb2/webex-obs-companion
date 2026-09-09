@@ -16,6 +16,17 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
+5. **Neural speaker diarization dependencies** (required when
+   `ENABLE_DIARIZATION=true`):
+   ```bash
+   uv sync --extra neural-diarization
+   ```
+   Also accept the Hugging Face conditions for
+   [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0)
+   and
+   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1),
+   then save a Hugging Face access token as `HF_TOKEN` during setup. A plain
+   `uv sync` does not install this optional dependency group.
 
 ---
 
@@ -32,6 +43,7 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 - **Audio Capture Refresh**: macOS CoreAudio / ScreenCaptureKit can occasionally freeze audio buffers if OBS has been running continuously for days. The companion defaults to `RELAUNCH_OBS_PER_CALL=true` which cleanly restarts OBS when each call starts to guarantee fresh audio capture.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
+- **Call-end grace period**: A transient loss of Webex window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of continuous inactivity.
 
 ---
 
