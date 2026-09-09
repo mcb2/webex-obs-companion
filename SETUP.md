@@ -64,6 +64,10 @@ The setup wizard reuses existing `.env` values as defaults, so you can press **E
 uv run webex-obs setup
 ```
 
+The wizard also configures the three global keyboard shortcuts. They use `pynput`
+syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
+them so the new shortcuts are registered.
+
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
 ```bash
