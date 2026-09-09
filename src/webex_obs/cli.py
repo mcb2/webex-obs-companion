@@ -313,9 +313,34 @@ def setup():
     console.print("\n[bold]3. Transcription & Speaker Diarization[/bold]")
     whisper_model = Prompt.ask("Enter Whisper model", default=existing_whisper_model)
     enable_diarize = Confirm.ask("Enable Neural Speaker Diarization (identifying speaker turns)?", default=existing_enable_diarize)
-    hf_token = ""
+    hf_token = existing_hf_token
     if enable_diarize:
-        hf_token = Prompt.ask("Optional Hugging Face token for pyannote models (leave blank for local acoustic engine)", default=existing_hf_token)
+        console.print(
+            "Neural diarization requires a Hugging Face read token and accepted "
+            "model conditions:"
+        )
+        console.print("  Token: [cyan]https://huggingface.co/settings/tokens[/cyan]")
+        console.print("  Segmentation: [cyan]https://huggingface.co/pyannote/segmentation-3.0[/cyan]")
+        console.print(
+            "  Speaker diarization: "
+            "[cyan]https://huggingface.co/pyannote/speaker-diarization-3.1[/cyan]\n"
+        )
+
+        if existing_hf_token and not Confirm.ask(
+            "Keep the existing Hugging Face token?", default=True
+        ):
+            hf_token = ""
+
+        while not hf_token:
+            hf_token = Prompt.ask(
+                "Enter your Hugging Face read token (required for neural diarization)",
+                password=True,
+            ).strip()
+            if not hf_token:
+                console.print(
+                    "[bold red]A Hugging Face token is required when neural "
+                    "diarization is enabled.[/bold red]"
+                )
 
     console.print("\n[bold]4. File & Storage Paths[/bold]")
     recordings_dir = Prompt.ask("Recordings Directory (where OBS saves)", default=existing_recordings_dir)
