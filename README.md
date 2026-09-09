@@ -25,9 +25,25 @@ git clone <repo_url> webex_obs_companion
 cd webex_obs_companion
 uv venv
 source .venv/bin/activate
-uv pip install -e .
+uv sync --extra neural-diarization
 brew install ffmpeg
 ```
+
+### Hugging Face access for neural diarization
+
+Neural speaker diarization requires a free Hugging Face account and read token:
+
+1. Accept the conditions for
+   [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
+2. Accept the conditions for
+   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1).
+3. Create a **Read** token at
+   [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
+4. Enter that token when `uv run webex-obs setup` prompts for it. The token is
+   stored only in the local `.env` file.
+
+A plain `uv sync` does not install the optional neural-diarization packages;
+use `uv sync --extra neural-diarization` after updates.
 
 ### 2. Configuration Wizard
 Run the interactive setup wizard (intelligently preserves existing `.env` values when re-run):
