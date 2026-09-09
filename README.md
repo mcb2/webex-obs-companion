@@ -13,6 +13,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Neural & Acoustic Speaker Diarization**: Identifies speaker turns and labels participants chronologically.
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
+- **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
 
 ---
 
