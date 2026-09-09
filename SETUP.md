@@ -21,12 +21,19 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
    ```bash
    uv sync --extra neural-diarization
    ```
-   Also accept the Hugging Face conditions for
-   [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0)
-   and
-   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1),
-   then save a Hugging Face access token as `HF_TOKEN` during setup. A plain
-   `uv sync` does not install this optional dependency group.
+   Neural diarization also requires a free Hugging Face account. Complete all
+   three access steps before running the setup wizard:
+
+   1. Accept the conditions for
+      [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
+   2. Accept the conditions for
+      [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1).
+   3. Create a **Read** token at
+      [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
+
+   The setup wizard prompts for this token and saves it as `HF_TOKEN` only in
+   your local `.env` file. A plain `uv sync` does not install the optional
+   neural-diarization dependency group.
 
 ---
 
@@ -75,6 +82,10 @@ The setup wizard reuses existing `.env` values as defaults, so you can press **E
 ```bash
 uv run webex-obs setup
 ```
+
+When neural diarization is enabled, the wizard requires a Hugging Face read
+token. It displays the token and model-access links above, masks newly entered
+tokens, and can retain an existing token without displaying it.
 
 The wizard also configures the three global keyboard shortcuts. They use `pynput`
 syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
