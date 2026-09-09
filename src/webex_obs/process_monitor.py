@@ -22,6 +22,7 @@ class ProcessMonitor:
         self._active_poll_count = 0
         self._inactive_since: float | None = None
         self._last_detection_reason = ""
+        self.current_call_title: str | None = None
 
     def _active_rtp_media_streams(self) -> list[tuple[str, int, bool]]:
         """
@@ -87,12 +88,19 @@ class ProcessMonitor:
             pass
         return None
 
+    def get_active_call_title(self) -> str | None:
+        """Return the current Webex call title, when macOS exposes one."""
+        title = self._active_call_window_name()
+        if title:
+            self.current_call_title = title
+        return title
+
     def is_webex_running(self) -> bool:
         """
         Returns True only during an active voice/video call or meeting.
         """
         streams = self._active_rtp_media_streams()
-        call_window = self._active_call_window_name()
+        call_window = self.get_active_call_title()
 
         # A call-specific Webex media helper with RTP is strong evidence by itself.
         media_streams = [stream for stream in streams if stream[2]]
@@ -137,6 +145,9 @@ class ProcessMonitor:
         return True
 
     def wait_for_state_change(self) -> bool:
+        if not self.is_in_meeting:
+            # Do not let a title from the previous call leak into a new session.
+            self.current_call_title = None
         while True:
             running = self.is_webex_running()
             if running and not self.is_in_meeting:

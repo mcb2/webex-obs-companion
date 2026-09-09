@@ -34,6 +34,7 @@ except Exception:
 
 import mlx_whisper
 from .diarizer import NeuralDiarizer
+from .session import unique_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,12 @@ class Transcriber:
         else:
             self.model_target = model_name
 
-    def transcribe_files(self, media_files: list[str]) -> Path | None:
+    def transcribe_files(
+        self,
+        media_files: list[str],
+        meeting_title: str = "Webex Session",
+        output_stem: str | None = None,
+    ) -> Path | None:
         if not media_files:
             logger.warning("No media files provided for transcription.")
             return None
@@ -86,7 +92,9 @@ class Transcriber:
 
         all_text_segments = []
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        out_file = self.transcripts_dir / f"meeting_{timestamp}.txt"
+        out_file = unique_path(
+            self.transcripts_dir / f"{output_stem or ('meeting_' + timestamp)}.txt"
+        )
 
         for idx, fpath in enumerate(media_files, start=1):
             if not os.path.exists(fpath):
@@ -120,8 +128,11 @@ class Transcriber:
                         if extracted:
                             diar_segments = self.diarizer.diarize_audio(tmp_wav_path)
                             aligned = self.diarizer.align_whisper_segments(whisper_segments, diar_segments)
+                            segment_title = meeting_title
+                            if len(media_files) > 1:
+                                segment_title = f"{meeting_title} — Part {idx}"
                             formatted_text = self.diarizer.format_transcript(
-                                aligned, title=f"Segment {idx} ({Path(fpath).stem})"
+                                aligned, title=segment_title
                             )
                             all_text_segments.append(formatted_text)
                             diarized_success = True
@@ -135,7 +146,12 @@ class Transcriber:
                                 pass
 
                 if not diarized_success:
-                    all_text_segments.append(f"--- Segment {idx} ---\n{segment_text}\n")
+                    segment_heading = meeting_title
+                    if len(media_files) > 1:
+                        segment_heading = f"{meeting_title} — Part {idx}"
+                    all_text_segments.append(
+                        f"# Meeting Transcript: {segment_heading}\n\n{segment_text}\n"
+                    )
 
             except Exception as e:
                 logger.error(f"Failed to transcribe {fpath}: {e}")
