@@ -7,6 +7,7 @@ from webex_obs.config import Settings
 def test_hotkeys_have_backward_compatible_defaults():
     settings = Settings(_env_file=None)
 
+    assert settings.call_end_grace_seconds == 15.0
     assert settings.hotkey_video == "<cmd>+<shift>+v"
     assert settings.hotkey_menu == "<cmd>+<shift>+r"
     assert settings.hotkey_stop_transcribe == "<cmd>+<shift>+s"

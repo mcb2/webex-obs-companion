@@ -111,7 +111,7 @@ class Transcriber:
                 # Neural Diarization Pipeline (with graceful fallback)
                 diarized_success = False
                 if self.enable_diarization and whisper_segments:
-                    logger.info("Running neural speaker diarization on audio...")
+                    logger.info("Running speaker diarization on audio...")
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
                         tmp_wav_path = tmp_wav.name
 

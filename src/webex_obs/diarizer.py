@@ -30,6 +30,7 @@ class NeuralDiarizer:
         self.hf_token = hf_token
         self.device = device
         self._pyannote_pipeline = None
+        self._pyannote_init_attempted = False
 
     def _get_device(self) -> str:
         if self.device != "auto":
@@ -48,6 +49,10 @@ class NeuralDiarizer:
         """Initialize pyannote.audio pipeline if available."""
         if self._pyannote_pipeline is not None:
             return True
+        if self._pyannote_init_attempted:
+            return False
+
+        self._pyannote_init_attempted = True
 
         try:
             import torch
@@ -65,10 +70,21 @@ class NeuralDiarizer:
             self._pyannote_pipeline = pipeline
             logger.info(f"pyannote.audio loaded on device: {device}")
             return True
+        except ModuleNotFoundError as e:
+            logger.warning(
+                "Neural diarization dependency '%s' is not installed. "
+                "Run 'uv sync --extra neural-diarization' from the repository, "
+                "then restart the service. Using acoustic speaker-label fallback.",
+                e.name,
+            )
+            return False
         except Exception as e:
             logger.warning(
-                f"pyannote.audio could not be loaded ({e}). "
-                "Will use acoustic segmentation & clustering for speaker labeling."
+                "pyannote.audio could not be initialized (%s). Verify HF_TOKEN and "
+                "that the Hugging Face conditions for pyannote/segmentation-3.0 and "
+                "pyannote/speaker-diarization-3.1 were accepted. Using acoustic "
+                "speaker-label fallback.",
+                e,
             )
             return False
 
