@@ -16,7 +16,7 @@ os.environ["PATH"] = current_path
 
 from .cleaner import MediaCleaner
 from .config import Config, Settings, settings
-from .hotkey_listener import HotkeyListener
+from .hotkey_listener import HotkeyListener, display_hotkey
 from .obs_controller import OBSController
 from .process_monitor import ProcessMonitor
 from .transcriber import Transcriber
@@ -52,6 +52,9 @@ class WebexOBSDaemon:
             on_video_switch=self.obs.switch_to_video_mode,
             on_show_dialog=self._handle_dialog_request,
             on_stop_transcribe=self._handle_stop_transcribe_request,
+            video_hotkey=self.config.hotkey_video,
+            menu_hotkey=self.config.hotkey_menu,
+            stop_transcribe_hotkey=self.config.hotkey_stop_transcribe,
         )
         self._manual_stop_event = threading.Event()
         self._discard_requested = False
@@ -62,7 +65,10 @@ class WebexOBSDaemon:
             UIBanner.show_notification("Webex OBS Companion", "No active meeting recording currently running.")
             return
 
-        logger.info("Manual Stop & Transcribe requested via hotkey (Cmd+Shift+S).")
+        logger.info(
+            "Manual Stop & Transcribe requested via hotkey (%s).",
+            display_hotkey(self.config.hotkey_stop_transcribe),
+        )
         UIBanner.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
         self._manual_stop_event.set()
 
@@ -154,7 +160,10 @@ class WebexOBSDaemon:
 
                 UIBanner.show_notification(
                     "Webex OBS Companion",
-                    "Recording active (Audio). ⌘+Shift+V Video, ⌘+Shift+S Transcribe, ⌘+Shift+R Menu."
+                    "Recording active (Audio). "
+                    f"{display_hotkey(self.config.hotkey_video)} Video, "
+                    f"{display_hotkey(self.config.hotkey_stop_transcribe)} Transcribe, "
+                    f"{display_hotkey(self.config.hotkey_menu)} Menu."
                 )
 
                 # Wait for meeting process termination OR manual stop hotkey
