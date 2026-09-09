@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
 from typing import Optional
-from pydantic import Field, AliasChoices, field_validator
+
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -119,6 +120,42 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("POLL_INTERVAL", "poll_interval"),
         description="Process polling interval in seconds"
     )
+
+    # Global hotkeys (pynput GlobalHotKeys syntax)
+    hotkey_video: str = Field(
+        default="<cmd>+<shift>+v",
+        validation_alias=AliasChoices("HOTKEY_VIDEO", "hotkey_video"),
+        description="Switch an active recording to video mode",
+    )
+    hotkey_menu: str = Field(
+        default="<cmd>+<shift>+r",
+        validation_alias=AliasChoices("HOTKEY_MENU", "hotkey_menu"),
+        description="Show the recording control menu",
+    )
+    hotkey_stop_transcribe: str = Field(
+        default="<cmd>+<shift>+s",
+        validation_alias=AliasChoices(
+            "HOTKEY_STOP_TRANSCRIBE", "hotkey_stop_transcribe"
+        ),
+        description="Stop recording and begin transcription",
+    )
+
+    @field_validator("hotkey_video", "hotkey_menu", "hotkey_stop_transcribe")
+    @classmethod
+    def normalize_hotkey(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not value:
+            raise ValueError("hotkey cannot be empty")
+        return value
+
+    @model_validator(mode="after")
+    def require_distinct_hotkeys(self):
+        hotkeys = (self.hotkey_video, self.hotkey_menu, self.hotkey_stop_transcribe)
+        if len(set(hotkeys)) != len(hotkeys):
+            raise ValueError(
+                "HOTKEY_VIDEO, HOTKEY_MENU, and HOTKEY_STOP_TRANSCRIBE must be different"
+            )
+        return self
 
     @field_validator("recordings_dir", "transcripts_dir", "log_dir", mode="before")
     @classmethod
