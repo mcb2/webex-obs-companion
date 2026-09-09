@@ -249,6 +249,7 @@ def setup():
     existing_recordings_dir = str(Path.home() / "Movies" / "WebexRecordings")
     existing_transcripts_dir = str(Path.home() / "Documents" / "WebexTranscripts")
     existing_retention_days = "14"
+    existing_call_end_grace_seconds = "15.0"
     existing_hotkey_video = "<cmd>+<shift>+v"
     existing_hotkey_menu = "<cmd>+<shift>+r"
     existing_hotkey_stop = "<cmd>+<shift>+s"
@@ -283,6 +284,7 @@ def setup():
                 existing_transcripts_dir = str(current.transcripts_dir)
             if current.retention_days:
                 existing_retention_days = str(current.retention_days)
+            existing_call_end_grace_seconds = str(current.call_end_grace_seconds)
             existing_hotkey_video = current.hotkey_video
             existing_hotkey_menu = current.hotkey_menu
             existing_hotkey_stop = current.hotkey_stop_transcribe
@@ -319,6 +321,10 @@ def setup():
     recordings_dir = Prompt.ask("Recordings Directory (where OBS saves)", default=existing_recordings_dir)
     transcripts_dir = Prompt.ask("Transcripts Directory (where meeting text is stored)", default=existing_transcripts_dir)
     retention_days = Prompt.ask("Retention Days (for auto-pruning raw recordings)", default=existing_retention_days)
+    call_end_grace_seconds = Prompt.ask(
+        "Seconds call evidence must be absent before recording stops",
+        default=existing_call_end_grace_seconds,
+    )
 
     console.print("\n[bold]5. Global Keyboard Shortcuts[/bold]")
     console.print("[dim]Use pynput format, for example <cmd>+<shift>+v or <ctrl>+<alt>+v.[/dim]")
@@ -358,6 +364,7 @@ RECORDINGS_DIR={recordings_dir}
 TRANSCRIPTS_DIR={transcripts_dir}
 RETENTION_DAYS={retention_days}
 POLL_INTERVAL=3.0
+CALL_END_GRACE_SECONDS={call_end_grace_seconds}
 
 # Global Keyboard Shortcuts (pynput syntax)
 HOTKEY_VIDEO={hotkey_video}
