@@ -85,7 +85,19 @@ class WebexOBSDaemon:
 
     def _handle_dialog_request(self):
         """Handle Cmd+Shift+R hotkey to bring up recording controls anytime."""
-        choice = UIBanner.show_control_prompt(is_recording=self.obs.is_recording)
+        if self._active_session:
+            self._active_session.use_title_if_missing(
+                self.monitor.get_active_call_title()
+            )
+        meeting_title = (
+            self._active_session.display_title
+            if self._active_session
+            else self.monitor.current_call_title or "Webex Session"
+        )
+        choice = UIBanner.show_control_prompt(
+            is_recording=self.obs.is_recording,
+            meeting_title=meeting_title,
+        )
 
         if choice == "stop_transcribe":
             self._handle_stop_transcribe_request()
@@ -161,7 +173,16 @@ class WebexOBSDaemon:
                         self._active_session = None
                         continue
 
-                choice = UIBanner.show_startup_prompt()
+                session = self._active_session
+                if session:
+                    session.use_title_if_missing(
+                        self.monitor.get_active_call_title()
+                    )
+                choice = UIBanner.show_startup_prompt(
+                    meeting_title=(
+                        session.display_title if session else "Webex Session"
+                    )
+                )
                 if choice == "cancel":
                     logger.info("User cancelled recording. Discarding...")
                     discarded = self.obs.stop_recording()

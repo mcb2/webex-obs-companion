@@ -1,13 +1,29 @@
 import subprocess
 
+
+def _escape_applescript_string(value: str) -> str:
+    """Escape dynamic text before embedding it in an AppleScript string."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
 class UIBanner:
     @staticmethod
-    def show_startup_prompt() -> str:
+    def show_startup_prompt(meeting_title: str = "Webex Session") -> str:
+        meeting_title = _escape_applescript_string(meeting_title)
         prompt_text = (
-            "🔴 Webex Meeting Detected — Recording Started (Audio)\\n\\n"
-            "⚠️ Recording Consent Notice\\n"
+            "🔴 RECORDING STARTED — AUDIO\\n\\n"
+            f"MEETING\\n{meeting_title}\\n\\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\\n\\n"
+            "⚠️ RECORDING CONSENT\\n"
             "Recording laws vary by location. Obtain permission from all participants "
             "when required by applicable law.\\n\\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\\n\\n"
+            "KEYBOARD SHORTCUTS\\n"
             "• Direct Video: ⌘ + Shift + V\\n"
             "• Stop & Transcribe: ⌘ + Shift + S\\n"
             "• Reopen Menu: ⌘ + Shift + R\\n\\n"
@@ -16,13 +32,18 @@ class UIBanner:
         apple_script = f"""
         display dialog "{prompt_text}" ¬
             with title "Webex OBS Companion" ¬
+            with icon caution ¬
             buttons {{"Cancel & Discard", "Switch to Video", "Keep Audio"}} ¬
             default button "Keep Audio" ¬
             cancel button "Cancel & Discard" ¬
             giving up after 15
         """
         try:
-            result = subprocess.run(["osascript", "-e", apple_script], capture_output=True, text=True)
+            result = subprocess.run(
+                ["osascript", "-e", apple_script],
+                capture_output=True,
+                text=True,
+            )
             output = result.stdout.strip()
             if "Switch to Video" in output or "button returned:Switch to Video" in output:
                 return "switch_video"
@@ -34,10 +55,17 @@ class UIBanner:
             return "keep_audio"
 
     @staticmethod
-    def show_control_prompt(is_recording: bool = True) -> str:
+    def show_control_prompt(
+        is_recording: bool = True,
+        meeting_title: str = "Webex Session",
+    ) -> str:
         if is_recording:
+            meeting_title = _escape_applescript_string(meeting_title)
             prompt_text = (
-                "🎛️ Webex Recording Controls (Active Recording)\\n\\n"
+                "🎛️ RECORDING CONTROLS — ACTIVE\\n\\n"
+                f"MEETING\\n{meeting_title}\\n\\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\\n\\n"
+                "KEYBOARD SHORTCUTS\\n"
                 "• Direct Video: ⌘ + Shift + V\\n"
                 "• Stop & Transcribe: ⌘ + Shift + S\\n"
                 "• Reopen Menu: ⌘ + Shift + R\\n\\n"
@@ -47,7 +75,8 @@ class UIBanner:
             default_btn = "Stop & Transcribe"
         else:
             prompt_text = (
-                "🎛️ Webex Recording Controls (Idle)\\n\\n"
+                "🎛️ RECORDING CONTROLS — IDLE\\n\\n"
+                "RECORDING OPTIONS\\n"
                 "• Start Recording (Audio): Click below\\n"
                 "• Start Recording (Video): Click below\\n\\n"
                 "Choose an action:"
@@ -58,19 +87,29 @@ class UIBanner:
         apple_script = f"""
         display dialog "{prompt_text}" ¬
             with title "Webex OBS Companion" ¬
+            with icon note ¬
             buttons {buttons_str} ¬
             default button "{default_btn}" ¬
             cancel button "Cancel" ¬
             giving up after 25
         """
-        # Replace cancel button gracefully
         if not is_recording:
-            apple_script = apple_script.replace('cancel button "Cancel"', 'cancel button "Close Menu"')
+            apple_script = apple_script.replace(
+                'cancel button "Cancel"',
+                'cancel button "Close Menu"',
+            )
         else:
-            apple_script = apple_script.replace('cancel button "Cancel"', 'cancel button "Cancel & Discard"')
+            apple_script = apple_script.replace(
+                'cancel button "Cancel"',
+                'cancel button "Cancel & Discard"',
+            )
 
         try:
-            result = subprocess.run(["osascript", "-e", apple_script], capture_output=True, text=True)
+            result = subprocess.run(
+                ["osascript", "-e", apple_script],
+                capture_output=True,
+                text=True,
+            )
             output = result.stdout.strip()
             if "Stop & Transcribe" in output or "button returned:Stop & Transcribe" in output:
                 return "stop_transcribe"
