@@ -48,6 +48,7 @@ class ProcessMonitorTests(unittest.TestCase):
              patch.object(monitor, "_active_call_window_name", return_value="Mark Bahler"):
             self.assertTrue(monitor.is_webex_running())
             self.assertIn("call window 'Mark Bahler'", monitor._last_detection_reason)
+            self.assertEqual(monitor.current_call_title, "Mark Bahler")
 
     def test_call_specific_media_process_is_strong_evidence(self):
         monitor = ProcessMonitor()

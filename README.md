@@ -14,6 +14,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
+- **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the Webex call-window title.
 
 ---
 
@@ -96,3 +97,10 @@ uv run webex-obs logs
 - **OBS Media Recordings**: `~/Movies/` or `~/Movies/WebexRecordings/`
 - **Service Logs**: `~/Library/Logs/WebexOBS/stdout.log`
 - **Model Weights**: `~/.cache/webex_obs/models/whisper-large-v3-turbo/`
+
+Completed files use names such as
+`2026-09-09_12-03-26 - Cloud and AI Weekly Sync.txt`. If OBS produces
+multiple recording segments, the media files receive `part-01`, `part-02`,
+and subsequent suffixes. Characters that do not work reliably in filenames
+are replaced, while the original Webex title is retained inside the transcript
+and Webex delivery message.
