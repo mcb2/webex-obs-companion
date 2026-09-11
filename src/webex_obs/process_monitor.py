@@ -23,6 +23,8 @@ class ProcessMonitor:
         self._inactive_since: float | None = None
         self._last_detection_reason = ""
         self.current_call_title: str | None = None
+        self._suppressed_call_title: str | None = None
+        self._suppress_untitled_call = False
 
     def _active_rtp_media_streams(self) -> list[tuple[str, int, bool]]:
         """
@@ -94,6 +96,29 @@ class ProcessMonitor:
         if title:
             self.current_call_title = title
         return title
+
+    def suppress_current_call_prompt(self, title: str | None = None) -> None:
+        """Suppress future automatic prompts for the currently declined call."""
+        call_title = title or self.current_call_title or self.get_active_call_title()
+        self._suppressed_call_title = call_title
+        self._suppress_untitled_call = call_title is None
+
+    def should_suppress_automatic_prompt(self) -> bool:
+        """Return True when a re-detected call matches one the user already declined."""
+        if self._suppressed_call_title is None and not self._suppress_untitled_call:
+            return False
+
+        title = self.current_call_title or self.get_active_call_title()
+        if self._suppressed_call_title is not None:
+            if title is None or title == self._suppressed_call_title:
+                return True
+            self._suppressed_call_title = None
+            return False
+
+        if title is None:
+            return True
+        self._suppress_untitled_call = False
+        return False
 
     def is_webex_running(self) -> bool:
         """
