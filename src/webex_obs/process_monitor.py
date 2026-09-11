@@ -27,7 +27,10 @@ class ProcessMonitor:
         self._suppress_untitled_call = False
 
     def _active_rtp_media_streams(self) -> list[tuple[str, int, bool]]:
-        """Check Webex processes for active UDP media streams."""
+        """
+        Check if Webex process has active UDP datagram sockets connected
+        to remote RTP media port 5004 (strictly UDP, ignoring TCP 443 chat connections).
+        """
         streams = []
         for proc in psutil.process_iter(["name", "exe"]):
             try:
@@ -35,12 +38,17 @@ class ProcessMonitor:
                 pexe = (proc.info.get("exe") or "").lower()
                 if not any(target in pname or target in pexe for target in WEBEX_CORE_PROCESSES):
                     continue
-                for conn in proc.net_connections(kind="inet"):
+
+                conns = proc.net_connections(kind="inet")
+                for conn in conns:
+                    # MUST be a UDP datagram socket (SOCK_DGRAM)
                     if conn.type != socket.SOCK_DGRAM:
                         continue
+
                     raddr = getattr(conn, "raddr", None)
                     if not raddr:
                         continue
+
                     rport = getattr(raddr, "port", 0)
                     if rport in WEBEX_RTP_PORTS:
                         is_media_process = any(target in pname or target in pexe for target in WEBEX_MEDIA_PROCESSES)
@@ -52,7 +60,10 @@ class ProcessMonitor:
         return streams
 
     def _active_call_window_name(self) -> str | None:
-        """Return a distinct Webex call window, excluding idle/floating windows."""
+        """
+        Return a distinct Webex call window, excluding ordinary and unreliable
+        idle/floating windows.
+        """
         apple_script = """
         tell application "System Events" to tell process "Webex"
             set windowNames to {}
@@ -64,7 +75,12 @@ class ProcessMonitor:
         end tell
         """
         try:
-            res = subprocess.run(["osascript", "-e", apple_script], capture_output=True, text=True, timeout=2.0)
+            res = subprocess.run(
+                ["osascript", "-e", apple_script],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
             if res.returncode == 0 and res.stdout:
                 for window_name in res.stdout.splitlines():
                     window_name = window_name.strip()
@@ -105,18 +121,28 @@ class ProcessMonitor:
         return False
 
     def is_webex_running(self) -> bool:
-        """Returns True only during an active voice/video call or meeting."""
+        """
+        Returns True only during an active voice/video call or meeting.
+        """
         streams = self._active_rtp_media_streams()
         call_window = self.get_active_call_title()
+
+        # A call-specific Webex media helper with RTP is strong evidence by itself.
         media_streams = [stream for stream in streams if stream[2]]
         if media_streams:
             process, port, _ = media_streams[0]
             self._last_detection_reason = f"media process '{process}' using UDP port {port}"
             return True
+
+        # The general Webex app can keep media-port sockets open while idle, and the
+        # floating window can linger. Require both weaker signals together.
         if streams and call_window:
             process, port, _ = streams[0]
-            self._last_detection_reason = f"call window '{call_window}' plus process '{process}' using UDP port {port}"
+            self._last_detection_reason = (
+                f"call window '{call_window}' plus process '{process}' using UDP port {port}"
+            )
             return True
+
         self._last_detection_reason = ""
         return False
 
@@ -125,22 +151,27 @@ class ProcessMonitor:
         if self.is_webex_running():
             self._inactive_since = None
             return False
+
         now = time.monotonic()
         if self._inactive_since is None:
             self._inactive_since = now
             logger.warning(
-                "Webex call evidence temporarily missing; keeping recording active for up to %.1f seconds.",
+                "Webex call evidence temporarily missing; keeping recording active "
+                "for up to %.1f seconds.",
                 self.call_end_grace_seconds,
             )
             return self.call_end_grace_seconds == 0
+
         if now - self._inactive_since < self.call_end_grace_seconds:
             return False
+
         self._inactive_since = None
         logger.info("Webex call / meeting media stream has ended.")
         return True
 
     def wait_for_state_change(self) -> bool:
         if not self.is_in_meeting:
+            # Do not let a title from the previous call leak into a new session.
             self.current_call_title = None
         while True:
             running = self.is_webex_running()
@@ -156,7 +187,7 @@ class ProcessMonitor:
             elif not running and self.is_in_meeting:
                 self._active_poll_count = 0
                 self._idle_poll_count += 1
-                if self._idle_poll_count >= 2:
+                if self._idle_poll_count >= 2:  # 6 seconds debounce
                     self.is_in_meeting = False
                     self._idle_poll_count = 0
                     logger.info("Webex call / meeting media stream has ended.")
@@ -165,4 +196,5 @@ class ProcessMonitor:
                 self._idle_poll_count = 0
                 if not running:
                     self._active_poll_count = 0
+
             time.sleep(self.poll_interval)
