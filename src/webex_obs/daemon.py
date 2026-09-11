@@ -136,16 +136,18 @@ class WebexOBSDaemon:
     def start(self):
         logger.info("Starting Webex OBS Companion Daemon...")
 
+        # Pre-flight check for ffmpeg
         if not shutil.which("ffmpeg"):
             logger.error("ffmpeg not found in PATH! Please install ffmpeg with: brew install ffmpeg")
 
         self.hotkeys.start()
 
+        # Startup OBS WebSocket connection test & log
         if self.obs.connect():
             logger.info(f"Connected to OBS Studio WebSocket ({self.config.obs_address}:{self.config.obs_port}).")
         else:
             logger.info(
-                "OBS Studio is not currently running. It will be launched automatically when a Webex call starts."
+                f"OBS Studio is not currently running. It will be launched automatically when a Webex call starts."
             )
 
         MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
@@ -157,7 +159,9 @@ class WebexOBSDaemon:
                     continue
 
                 if self.monitor.should_suppress_automatic_prompt():
-                    logger.info("Skipping automatic recording prompt for a Webex call already declined by the user.")
+                    logger.info(
+                        "Skipping automatic recording prompt for a Webex call already declined by the user."
+                    )
                     self.monitor.is_in_meeting = False
                     continue
 
@@ -178,14 +182,22 @@ class WebexOBSDaemon:
 
                 session = self._active_session
                 if session:
-                    session.use_title_if_missing(self.monitor.get_active_call_title())
+                    session.use_title_if_missing(
+                        self.monitor.get_active_call_title()
+                    )
                 choice = UIBanner.show_startup_prompt(
-                    meeting_title=(session.display_title if session else "Webex Session")
+                    meeting_title=(
+                        session.display_title if session else "Webex Session"
+                    )
                 )
                 if choice == "cancel":
-                    logger.info("User cancelled recording. Discarding and suppressing further automatic prompts for this call...")
+                    logger.info(
+                        "User cancelled recording. Discarding and suppressing further automatic prompts for this call..."
+                    )
                     self.monitor.suppress_current_call_prompt(
-                        session.display_title if session and session.display_title != "Webex Session" else None
+                        session.display_title
+                        if session and session.display_title != "Webex Session"
+                        else None
                     )
                     discarded = self.obs.stop_recording()
                     for f in discarded:
@@ -208,6 +220,7 @@ class WebexOBSDaemon:
                     f"{display_hotkey(self.config.hotkey_menu)} Menu."
                 )
 
+                # Wait for meeting process termination OR manual stop hotkey
                 while self.monitor.is_in_meeting:
                     if self._manual_stop_event.is_set():
                         break
