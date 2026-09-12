@@ -94,6 +94,31 @@ class ProcessMonitorTests(unittest.TestCase):
             self.assertFalse(monitor.has_call_ended())
             self.assertTrue(monitor.has_call_ended())
 
+    def test_declined_call_is_suppressed_when_same_title_returns(self):
+        monitor = ProcessMonitor()
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+        monitor.current_call_title = None
+        with patch.object(monitor, "_active_call_window_name", return_value="Weekly Sync"):
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+
+    def test_different_call_title_clears_declined_call_suppression(self):
+        monitor = ProcessMonitor()
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+        monitor.current_call_title = None
+        with patch.object(monitor, "_active_call_window_name", return_value="Customer Call"):
+            self.assertFalse(monitor.should_suppress_automatic_prompt())
+            self.assertIsNone(monitor._suppressed_call_title)
+
+    def test_untitled_declined_call_remains_suppressed_until_title_changes(self):
+        monitor = ProcessMonitor()
+        with patch.object(monitor, "_active_call_window_name", return_value=None):
+            monitor.suppress_current_call_prompt()
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+        with patch.object(monitor, "_active_call_window_name", return_value="New Meeting"):
+            self.assertFalse(monitor.should_suppress_automatic_prompt())
+
 
 if __name__ == "__main__":
     unittest.main()
