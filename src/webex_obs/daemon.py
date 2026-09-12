@@ -158,6 +158,13 @@ class WebexOBSDaemon:
                 if not meeting_active:
                     continue
 
+                if self.monitor.should_suppress_automatic_prompt():
+                    logger.info(
+                        "Skipping automatic recording prompt for a Webex call already declined by the user."
+                    )
+                    self.monitor.is_in_meeting = False
+                    continue
+
                 self._discard_requested = False
                 self._manual_stop_event.clear()
                 self._active_session = self._new_recording_session()
@@ -184,7 +191,14 @@ class WebexOBSDaemon:
                     )
                 )
                 if choice == "cancel":
-                    logger.info("User cancelled recording. Discarding...")
+                    logger.info(
+                        "User cancelled recording. Discarding and suppressing further automatic prompts for this call..."
+                    )
+                    self.monitor.suppress_current_call_prompt(
+                        session.display_title
+                        if session and session.display_title != "Webex Session"
+                        else None
+                    )
                     discarded = self.obs.stop_recording()
                     for f in discarded:
                         if os.path.exists(f):
@@ -192,8 +206,6 @@ class WebexOBSDaemon:
                                 os.remove(f)
                             except Exception:
                                 pass
-                    while self.monitor.is_webex_running():
-                        time.sleep(self.config.poll_interval)
                     self.monitor.is_in_meeting = False
                     self._active_session = None
                     continue
