@@ -16,7 +16,7 @@ fake_psutil.ZombieProcess = _PsutilError
 fake_psutil.process_iter = lambda attrs: []
 sys.modules.setdefault("psutil", fake_psutil)
 
-from webex_obs.process_monitor import ProcessMonitor
+from webex_obs.process_monitor import TEAMS, WEBEX, ZOOM, ProcessMonitor
 
 
 class _Connection:
@@ -70,14 +70,14 @@ class ProcessMonitorTests(unittest.TestCase):
     def test_call_start_requires_two_consecutive_checks(self):
         monitor = ProcessMonitor(poll_interval=0)
         states = iter([True, True])
-        with patch.object(monitor, "is_webex_running", side_effect=lambda: next(states)), \
+        with patch.object(monitor, "is_call_active", side_effect=lambda: next(states)), \
              patch("webex_obs.process_monitor.time.sleep"):
             self.assertTrue(monitor.wait_for_state_change())
             self.assertTrue(monitor.is_in_meeting)
 
     def test_transient_detection_loss_does_not_end_call(self):
         monitor = ProcessMonitor(call_end_grace_seconds=15)
-        with patch.object(monitor, "is_webex_running", side_effect=[False, True]), \
+        with patch.object(monitor, "is_call_active", side_effect=[False, True]), \
              patch("webex_obs.process_monitor.time.monotonic", return_value=100):
             self.assertFalse(monitor.has_call_ended())
             self.assertFalse(monitor.has_call_ended())
@@ -85,7 +85,7 @@ class ProcessMonitorTests(unittest.TestCase):
 
     def test_sustained_detection_loss_ends_call_after_grace_period(self):
         monitor = ProcessMonitor(call_end_grace_seconds=15)
-        with patch.object(monitor, "is_webex_running", return_value=False), \
+        with patch.object(monitor, "is_call_active", return_value=False), \
              patch(
                  "webex_obs.process_monitor.time.monotonic",
                  side_effect=[100, 114.9, 115],
@@ -118,6 +118,69 @@ class ProcessMonitorTests(unittest.TestCase):
             self.assertTrue(monitor.should_suppress_automatic_prompt())
         with patch.object(monitor, "_active_call_window_name", return_value="New Meeting"):
             self.assertFalse(monitor.should_suppress_automatic_prompt())
+
+    def test_zoom_call_requires_media_socket_and_call_window(self):
+        monitor = ProcessMonitor()
+
+        def window_for(platform):
+            return "Quarterly Planning" if platform is ZOOM else None
+
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("zoom.us", 8801)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertTrue(monitor.is_call_active())
+            self.assertIs(monitor.current_platform, ZOOM)
+            self.assertEqual(monitor.current_call_title, "Quarterly Planning")
+            self.assertIn("Zoom call window", monitor._last_detection_reason)
+
+    def test_teams_call_requires_media_socket_and_call_window(self):
+        monitor = ProcessMonitor()
+
+        def window_for(platform):
+            return "Customer Review | Microsoft Teams" if platform is TEAMS else None
+
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("MSTeams", 3480)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertTrue(monitor.is_call_active())
+            self.assertIs(monitor.current_platform, TEAMS)
+            self.assertEqual(monitor.default_call_title, "Microsoft Teams Session")
+
+    def test_zoom_window_without_zoom_media_port_is_not_a_call(self):
+        monitor = ProcessMonitor()
+
+        def window_for(platform):
+            return "Open Zoom Chat" if platform is ZOOM else None
+
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("zoom.us", 443)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertFalse(monitor.is_call_active())
+
+    def test_declined_zoom_call_does_not_suppress_teams_call(self):
+        monitor = ProcessMonitor()
+        monitor.current_platform = ZOOM
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+
+        monitor.current_platform = TEAMS
+        monitor.current_call_title = "Weekly Sync"
+        self.assertFalse(monitor.should_suppress_automatic_prompt())
+        self.assertIsNone(monitor._suppressed_call_title)
+
+    def test_webex_default_title_remains_backward_compatible(self):
+        monitor = ProcessMonitor()
+        monitor.current_platform = WEBEX
+        self.assertEqual(monitor.default_call_title, "Webex Session")
 
 
 if __name__ == "__main__":

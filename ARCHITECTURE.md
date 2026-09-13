@@ -5,8 +5,8 @@
 |                     macOS User Session                      |
 |                                                             |
 |  +---------------------+      +--------------------------+  |
-|  | Webex Desktop App   |      |        OBS Studio        |  |
-|  | (CiscoCollabHost)   |      |  - WebSocket Server 4455 |  |
+|  | Meeting Clients     |      |        OBS Studio        |  |
+|  | Webex/Zoom/Teams    |      |  - WebSocket Server 4455 |  |
 |  +----------+----------+      |  - Scene: Webex-Audio    |  |
 |             |                 |  - Scene: Webex-Video    |  |
 |             v                 +-------------+------------+  |
@@ -16,7 +16,7 @@
 |  +-------------------------------------------------------+  |
 |  |            webex_obs Background Daemon                |  |
 |  |                                                       |  |
-|  |  - ProcessMonitor: Tracks meeting lifecycles          |  |
+|  |  - ProcessMonitor: Tracks Webex/Zoom/Teams lifecycles |  |
 |  |  - OBSController: Starts/stops audio & video captures |  |
 |  |  - WindowBinder: Quartz dynamic Webex window binding  |  |
 |  |  - HotkeyListener: Cmd+Shift+V for instant video swap |  |
