@@ -16,6 +16,7 @@ fake_psutil.ZombieProcess = _PsutilError
 fake_psutil.process_iter = lambda attrs: []
 sys.modules.setdefault("psutil", fake_psutil)
 
+from webex_obs.core_audio_monitor import AudioActivity
 from webex_obs.process_monitor import TEAMS, WEBEX, ZOOM, ProcessMonitor
 
 
@@ -27,12 +28,25 @@ class _Connection:
 
 
 class _Process:
-    def __init__(self, name, port):
-        self.info = {"name": name, "exe": ""}
+    def __init__(self, name, port, pid=123):
+        self.pid = pid
+        self.info = {"pid": pid, "name": name, "exe": ""}
         self._port = port
 
     def net_connections(self, kind):
         return [_Connection(self._port)]
+
+
+class _AudioMonitor:
+    available = True
+
+    def __init__(self, activity):
+        self.activity = activity
+        self.requested_pids = []
+
+    def activity_for_pids(self, pids):
+        self.requested_pids.append(pids)
+        return self.activity
 
 
 class ProcessMonitorTests(unittest.TestCase):
@@ -163,6 +177,52 @@ class ProcessMonitorTests(unittest.TestCase):
             return_value=[_Process("zoom.us", 443)],
         ), patch.object(
             monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertFalse(monitor.is_call_active())
+
+    def test_core_audio_detects_tcp_only_zoom_call(self):
+        audio = _AudioMonitor(AudioActivity(available=True, input_pids=(321,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+
+        def window_for(platform):
+            return "TCP Customer Call" if platform is ZOOM else None
+
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("zoom.us", 443, pid=321)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertTrue(monitor.is_call_active())
+            self.assertIs(monitor.current_platform, ZOOM)
+            self.assertIn("Core Audio input", monitor._last_detection_reason)
+            self.assertIn([321], audio.requested_pids)
+
+    def test_core_audio_detects_teams_call_on_dynamic_udp_port(self):
+        audio = _AudioMonitor(AudioActivity(available=True, output_pids=(654,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+
+        def window_for(platform):
+            return "Direct Call | Microsoft Teams" if platform is TEAMS else None
+
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("MSTeams", 55000, pid=654)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", side_effect=window_for
+        ):
+            self.assertTrue(monitor.is_call_active())
+            self.assertIs(monitor.current_platform, TEAMS)
+            self.assertIn("Core Audio output", monitor._last_detection_reason)
+
+    def test_core_audio_without_call_window_does_not_trigger(self):
+        audio = _AudioMonitor(AudioActivity(available=True, input_pids=(321,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("zoom.us", 443, pid=321)],
+        ), patch.object(
+            monitor, "_active_call_window_for_platform", return_value=None
         ):
             self.assertFalse(monitor.is_call_active())
 

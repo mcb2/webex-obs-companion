@@ -17,9 +17,11 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
 Automatic detection currently targets the native macOS desktop clients. It
-requires a matching application window and UDP media connection for Zoom and
-Teams, so a call forced to use TCP-only media may need to be started from the
-global recording menu. Dynamic OBS video-window binding remains Webex-specific.
+combines a matching call window with per-process Core Audio input/output state.
+This works independently of whether the call uses UDP, dynamic peer-to-peer
+ports, or TCP-only media. Known UDP media sockets provide an additional signal
+and a fallback on macOS versions without per-process audio state. Dynamic OBS
+video-window binding remains Webex-specific.
 
 ---
 
@@ -88,6 +90,7 @@ uv run webex-obs logs
 | `uv run webex-obs test-webex` | Send an instant test message to verify Webex Bot delivery |
 | `uv run webex-obs list-rooms` | List all Webex spaces your Bot belongs to along with their `Room ID` |
 | `uv run webex-obs prefetch-model` | Stream download and cache Whisper model weights to `~/.cache/webex_obs/` |
+| `uv run webex-obs diagnose-calls` | Show process, window, Core Audio, and UDP evidence for each supported meeting app |
 | `uv run webex-obs install-service` | Install and start background LaunchAgent (`com.cisco.webex-obs.plist`) |
 | `uv run webex-obs status` | Check whether the background LaunchAgent service is active |
 | `uv run webex-obs logs` | Live stream `stdout.log` and `stderr.log` from `~/Library/Logs/WebexOBS/` |

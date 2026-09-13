@@ -51,6 +51,7 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
+- **Transport-independent detection**: Zoom and Teams calls can be detected through per-process Core Audio state even when media uses TCP or dynamic peer-to-peer ports. Run `uv run webex-obs diagnose-calls` during a call to inspect the process, window, audio, and UDP signals visible on your Mac.
 - **Call-end grace period**: A transient loss of meeting window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of continuous inactivity.
 
 ---

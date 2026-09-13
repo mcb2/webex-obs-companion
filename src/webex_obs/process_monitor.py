@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 import psutil
 
+from .core_audio_monitor import AudioActivity, CoreAudioProcessMonitor
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,7 +69,12 @@ NON_CALL_WINDOW_NAMES = set(WEBEX.non_call_window_names)
 
 
 class ProcessMonitor:
-    def __init__(self, poll_interval: float = 3.0, call_end_grace_seconds: float = 15.0):
+    def __init__(
+        self,
+        poll_interval: float = 3.0,
+        call_end_grace_seconds: float = 15.0,
+        audio_monitor: CoreAudioProcessMonitor | None = None,
+    ):
         self.poll_interval = poll_interval
         self.call_end_grace_seconds = call_end_grace_seconds
         self.is_in_meeting = False
@@ -80,6 +87,7 @@ class ProcessMonitor:
         self._suppressed_call_title: str | None = None
         self._suppressed_platform_key: str | None = None
         self._suppress_untitled_call = False
+        self.audio_monitor = audio_monitor or CoreAudioProcessMonitor()
 
     @property
     def current_platform_name(self) -> str | None:
@@ -100,19 +108,32 @@ class ProcessMonitor:
             return int(port)
         return int(raddr[1]) if len(raddr) > 1 else 0
 
-    def _active_media_streams(self, platform: CallPlatform) -> list[tuple[str, int, bool]]:
-        """Return supported UDP media sockets owned by one meeting platform."""
-        streams = []
-        for proc in psutil.process_iter(["name", "exe"]):
+    def _matching_processes(self, platform: CallPlatform) -> list:
+        processes = []
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
             try:
                 pname = (proc.info.get("name") or "").lower()
                 pexe = (proc.info.get("exe") or "").lower()
-                if not any(
+                if any(
                     target in pname or target in pexe
                     for target in platform.process_names
                 ):
-                    continue
+                    processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+        return processes
 
+    def _active_media_streams(
+        self, platform: CallPlatform
+    ) -> list[tuple[str, int, bool]]:
+        """Return supported UDP media sockets owned by one meeting platform."""
+        streams = []
+        for proc in self._matching_processes(platform):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                pexe = (proc.info.get("exe") or "").lower()
                 for connection in proc.net_connections(kind="inet"):
                     if connection.type != socket.SOCK_DGRAM:
                         continue
@@ -129,6 +150,14 @@ class ProcessMonitor:
             except Exception:
                 continue
         return streams
+
+    def _audio_activity(self, platform: CallPlatform) -> AudioActivity:
+        pids = []
+        for proc in self._matching_processes(platform):
+            pid = proc.info.get("pid", getattr(proc, "pid", None))
+            if isinstance(pid, int) and pid > 0:
+                pids.append(pid)
+        return self.audio_monitor.activity_for_pids(pids)
 
     def _active_rtp_media_streams(self) -> list[tuple[str, int, bool]]:
         """Backward-compatible Webex media-stream query."""
@@ -256,20 +285,68 @@ class ProcessMonitor:
                 )
                 return True
 
-            # General app processes may retain idle sockets or windows. Requiring
-            # both signals avoids treating an open client as an active call.
-            if streams and call_window:
-                process, port, _ = streams[0]
+            # Core Audio is independent of whether media uses UDP, peer-to-peer
+            # dynamic ports, or TCP fallback. A meeting window is still required
+            # because clients can briefly open audio for notifications while idle.
+            audio_activity = (
+                self._audio_activity(platform)
+                if call_window
+                else AudioActivity(available=self.audio_monitor.available)
+            )
+            if call_window and (streams or audio_activity.active):
                 self.current_platform = platform
                 self.current_call_title = call_window
-                self._last_detection_reason = (
-                    f"{platform.display_name} call window '{call_window}' plus "
-                    f"process '{process}' using UDP port {port}"
-                )
+                if audio_activity.active:
+                    directions = []
+                    if audio_activity.input_pids:
+                        directions.append("input")
+                    if audio_activity.output_pids:
+                        directions.append("output")
+                    self._last_detection_reason = (
+                        f"{platform.display_name} call window '{call_window}' plus "
+                        f"active Core Audio {'/'.join(directions)}"
+                    )
+                else:
+                    process, port, _ = streams[0]
+                    self._last_detection_reason = (
+                        f"{platform.display_name} call window '{call_window}' plus "
+                        f"process '{process}' using UDP port {port}"
+                    )
                 return True
 
         self._last_detection_reason = ""
         return False
+
+    def diagnostic_snapshot(self) -> list[dict[str, object]]:
+        """Return call-detection evidence for troubleshooting on the host Mac."""
+        snapshot = []
+        for platform in SUPPORTED_PLATFORMS:
+            processes = self._matching_processes(platform)
+            process_rows = []
+            pids = []
+            for proc in processes:
+                pid = proc.info.get("pid", getattr(proc, "pid", None))
+                name = proc.info.get("name") or ""
+                process_rows.append(f"{name} ({pid or '?'})")
+                if isinstance(pid, int) and pid > 0:
+                    pids.append(pid)
+
+            streams = self._active_media_streams(platform)
+            activity = self.audio_monitor.activity_for_pids(pids)
+            snapshot.append(
+                {
+                    "platform": platform.display_name,
+                    "processes": process_rows,
+                    "window": self._active_call_window_for_platform(platform),
+                    "udp_streams": [
+                        f"{process}:{port}" for process, port, _ in streams
+                    ],
+                    "audio_available": activity.available,
+                    "audio_input_pids": list(activity.input_pids),
+                    "audio_output_pids": list(activity.output_pids),
+                }
+            )
+        return snapshot
 
     def is_webex_running(self) -> bool:
         """Backward-compatible alias for the multi-platform active-call check."""
