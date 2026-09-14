@@ -65,11 +65,23 @@ class ProcessMonitorTests(unittest.TestCase):
             self.assertEqual(monitor.current_call_title, "Mark Bahler")
 
     def test_call_specific_media_process_is_strong_evidence(self):
-        monitor = ProcessMonitor()
+        audio = _AudioMonitor(AudioActivity(available=False))
+        monitor = ProcessMonitor(audio_monitor=audio)
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("CiscoCollabHost", 9000)]), \
              patch.object(monitor, "_active_call_window_name", return_value=None):
             self.assertTrue(monitor.is_webex_running())
             self.assertIn("ciscocollabhost", monitor._last_detection_reason)
+
+    def test_webex_chat_attachment_does_not_trigger_call(self):
+        audio = _AudioMonitor(AudioActivity(available=True))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("CiscoCollabHost", 9000)],
+        ), patch.object(
+            monitor, "_active_call_window_name", return_value="quarterly-results.pdf"
+        ):
+            self.assertFalse(monitor.is_webex_running())
 
     def test_main_and_lingering_floating_windows_are_not_call_windows(self):
         monitor = ProcessMonitor()
