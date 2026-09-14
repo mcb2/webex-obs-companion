@@ -6,7 +6,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 
 ## Key Features
 
-- **Automated Webex Meeting Detection**: Confirms sustained, call-specific Webex media activity before recording, while using window state to validate weaker signals from the general Webex app.
+- **Automated Meeting Detection**: Detects Webex, Zoom, and Microsoft Teams calls from sustained, app-specific media activity and macOS window state before recording.
 - **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. Optional per-call restart prevents macOS CoreAudio buffer stalls during prolonged uptime.
 - **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and restarts/resumes in a new segment if OBS exits or capture stops.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
@@ -14,7 +14,14 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
-- **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the Webex call-window title.
+- **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
+
+Automatic detection currently targets the native macOS desktop clients. It
+combines a matching call window with per-process Core Audio input/output state.
+This works independently of whether the call uses UDP, dynamic peer-to-peer
+ports, or TCP-only media. Known UDP media sockets provide an additional signal
+and a fallback on macOS versions without per-process audio state. Dynamic OBS
+video-window binding remains Webex-specific.
 
 ---
 
@@ -83,6 +90,7 @@ uv run webex-obs logs
 | `uv run webex-obs test-webex` | Send an instant test message to verify Webex Bot delivery |
 | `uv run webex-obs list-rooms` | List all Webex spaces your Bot belongs to along with their `Room ID` |
 | `uv run webex-obs prefetch-model` | Stream download and cache Whisper model weights to `~/.cache/webex_obs/` |
+| `uv run webex-obs diagnose-calls` | Show process, window, Core Audio, and UDP evidence for each supported meeting app |
 | `uv run webex-obs install-service` | Install and start background LaunchAgent (`com.cisco.webex-obs.plist`) |
 | `uv run webex-obs status` | Check whether the background LaunchAgent service is active |
 | `uv run webex-obs logs` | Live stream `stdout.log` and `stderr.log` from `~/Library/Logs/WebexOBS/` |
@@ -102,5 +110,5 @@ Completed files use names such as
 `2026-09-09_12-03-26 - Cloud and AI Weekly Sync.txt`. If OBS produces
 multiple recording segments, the media files receive `part-01`, `part-02`,
 and subsequent suffixes. Characters that do not work reliably in filenames
-are replaced, while the original Webex title is retained inside the transcript
+are replaced, while the original meeting title is retained inside the transcript
 and Webex delivery message.

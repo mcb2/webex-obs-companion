@@ -15,7 +15,7 @@ for p in extra_paths:
 os.environ["PATH"] = current_path
 
 from .cleaner import MediaCleaner
-from .config import Config, Settings, settings
+from .config import Config, settings
 from .hotkey_listener import HotkeyListener, display_hotkey
 from .obs_controller import OBSController
 from .process_monitor import ProcessMonitor
@@ -66,6 +66,7 @@ class WebexOBSDaemon:
 
     def _new_recording_session(self) -> RecordingSession:
         title = self.monitor.current_call_title or self.monitor.get_active_call_title()
+        title = title or self.monitor.default_call_title
         session = RecordingSession.create(title)
         logger.info("Recording session title: '%s'.", session.display_title)
         return session
@@ -92,7 +93,7 @@ class WebexOBSDaemon:
         meeting_title = (
             self._active_session.display_title
             if self._active_session
-            else self.monitor.current_call_title or "Webex Session"
+            else self.monitor.current_call_title or self.monitor.default_call_title
         )
         choice = UIBanner.show_control_prompt(
             is_recording=self.obs.is_recording,
@@ -147,7 +148,8 @@ class WebexOBSDaemon:
             logger.info(f"Connected to OBS Studio WebSocket ({self.config.obs_address}:{self.config.obs_port}).")
         else:
             logger.info(
-                f"OBS Studio is not currently running. It will be launched automatically when a Webex call starts."
+                "OBS Studio is not currently running. It will be launched automatically "
+                "when a supported call starts."
             )
 
         MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
@@ -160,7 +162,7 @@ class WebexOBSDaemon:
 
                 if self.monitor.should_suppress_automatic_prompt():
                     logger.info(
-                        "Skipping automatic recording prompt for a Webex call already declined by the user."
+                        "Skipping automatic recording prompt for a call already declined by the user."
                     )
                     self.monitor.is_in_meeting = False
                     continue
@@ -172,7 +174,7 @@ class WebexOBSDaemon:
                 started = self.obs.start_recording(scene_name="Webex-Audio")
                 if not started:
                     logger.warning("Could not start OBS recording. Will retry while the call remains active...")
-                    while self.monitor.is_webex_running() and not started:
+                    while self.monitor.is_call_active() and not started:
                         time.sleep(5)
                         started = self.obs.start_recording(scene_name="Webex-Audio", relaunch=True)
                     if not started:
@@ -187,7 +189,7 @@ class WebexOBSDaemon:
                     )
                 choice = UIBanner.show_startup_prompt(
                     meeting_title=(
-                        session.display_title if session else "Webex Session"
+                        session.display_title if session else self.monitor.default_call_title
                     )
                 )
                 if choice == "cancel":
@@ -196,7 +198,7 @@ class WebexOBSDaemon:
                     )
                     self.monitor.suppress_current_call_prompt(
                         session.display_title
-                        if session and session.display_title != "Webex Session"
+                        if session and session.display_title != self.monitor.default_call_title
                         else None
                     )
                     discarded = self.obs.stop_recording()

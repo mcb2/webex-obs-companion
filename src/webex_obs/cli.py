@@ -404,6 +404,45 @@ HOTKEY_STOP_TRANSCRIBE={hotkey_stop}
 
 
 @app.command()
+def diagnose_calls():
+    """Show the evidence used to detect Webex, Zoom, and Teams calls."""
+    from webex_obs.process_monitor import ProcessMonitor
+
+    monitor = ProcessMonitor()
+    table = Table(title="Meeting Call Detection")
+    table.add_column("Platform")
+    table.add_column("Processes")
+    table.add_column("Call window")
+    table.add_column("Core Audio")
+    table.add_column("Known UDP media")
+
+    for row in monitor.diagnostic_snapshot():
+        if not row["audio_available"]:
+            audio = "Unavailable (UDP fallback)"
+        else:
+            audio_parts = []
+            if row["audio_input_pids"]:
+                audio_parts.append(
+                    "Input: " + ", ".join(map(str, row["audio_input_pids"]))
+                )
+            if row["audio_output_pids"]:
+                audio_parts.append(
+                    "Output: " + ", ".join(map(str, row["audio_output_pids"]))
+                )
+            audio = "\n".join(audio_parts) or "Idle"
+
+        table.add_row(
+            str(row["platform"]),
+            "\n".join(row["processes"]) or "Not running",
+            str(row["window"] or "None"),
+            audio,
+            "\n".join(row["udp_streams"]) or "None",
+        )
+
+    console.print(table)
+
+
+@app.command()
 def run():
     """Run the companion daemon in the foreground (interactive / debug mode)."""
     _check_ffmpeg()
