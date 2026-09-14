@@ -272,8 +272,38 @@ class ProcessMonitor:
         for platform in SUPPORTED_PLATFORMS:
             streams = self._active_media_streams(platform)
             call_window = self._active_call_window_for_platform(platform)
+            audio_activity = (
+                self._audio_activity(platform)
+                if streams or call_window
+                else AudioActivity(available=self.audio_monitor.available)
+            )
 
-            # Webex exposes call-specific media helpers, which are strong evidence.
+            # When Core Audio inspection is available, use it as the final
+            # arbiter. Webex can start its media helper and open a known UDP
+            # socket while previewing a chat attachment, and that preview is
+            # also exposed as a non-main window. Neither is sufficient evidence
+            # of a call unless the client is actively using audio.
+            if audio_activity.available:
+                if audio_activity.active and (streams or call_window):
+                    self.current_platform = platform
+                    if call_window:
+                        self.current_call_title = call_window
+                    directions = []
+                    if audio_activity.input_pids:
+                        directions.append("input")
+                    if audio_activity.output_pids:
+                        directions.append("output")
+                    self._last_detection_reason = (
+                        f"{platform.display_name} active Core Audio "
+                        f"{'/'.join(directions)}"
+                    )
+                    if call_window:
+                        self._last_detection_reason += f" with call window '{call_window}'"
+                    return True
+                continue
+
+            # Preserve socket/window detection as a compatibility fallback on
+            # systems where Core Audio process inspection is unavailable.
             media_streams = [stream for stream in streams if stream[2]]
             if media_streams:
                 process, port, _ = media_streams[0]
@@ -285,33 +315,14 @@ class ProcessMonitor:
                 )
                 return True
 
-            # Core Audio is independent of whether media uses UDP, peer-to-peer
-            # dynamic ports, or TCP fallback. A meeting window is still required
-            # because clients can briefly open audio for notifications while idle.
-            audio_activity = (
-                self._audio_activity(platform)
-                if call_window
-                else AudioActivity(available=self.audio_monitor.available)
-            )
-            if call_window and (streams or audio_activity.active):
+            if call_window and streams:
                 self.current_platform = platform
                 self.current_call_title = call_window
-                if audio_activity.active:
-                    directions = []
-                    if audio_activity.input_pids:
-                        directions.append("input")
-                    if audio_activity.output_pids:
-                        directions.append("output")
-                    self._last_detection_reason = (
-                        f"{platform.display_name} call window '{call_window}' plus "
-                        f"active Core Audio {'/'.join(directions)}"
-                    )
-                else:
-                    process, port, _ = streams[0]
-                    self._last_detection_reason = (
-                        f"{platform.display_name} call window '{call_window}' plus "
-                        f"process '{process}' using UDP port {port}"
-                    )
+                process, port, _ = streams[0]
+                self._last_detection_reason = (
+                    f"{platform.display_name} call window '{call_window}' plus "
+                    f"process '{process}' using UDP port {port}"
+                )
                 return True
 
         self._last_detection_reason = ""
