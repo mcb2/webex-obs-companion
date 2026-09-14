@@ -124,7 +124,7 @@ class Settings(BaseSettings):
         default=15.0,
         ge=0.0,
         validation_alias=AliasChoices("CALL_END_GRACE_SECONDS", "call_end_grace_seconds"),
-        description="Continuous loss of Webex call evidence required before ending a recording",
+        description="Continuous loss of supported call evidence required before ending a recording",
     )
 
     # Global hotkeys (pynput GlobalHotKeys syntax)
