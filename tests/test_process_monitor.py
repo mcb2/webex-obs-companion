@@ -64,34 +64,55 @@ class ProcessMonitorTests(unittest.TestCase):
             self.assertIn("call window 'Mark Bahler'", monitor._last_detection_reason)
             self.assertEqual(monitor.current_call_title, "Mark Bahler")
 
-    def test_call_specific_media_process_is_strong_evidence(self):
+    def test_webex_media_process_without_call_controls_is_not_enough(self):
         audio = _AudioMonitor(AudioActivity(available=False))
         monitor = ProcessMonitor(audio_monitor=audio)
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("CiscoCollabHost", 9000)]), \
              patch.object(monitor, "_active_call_window_name", return_value=None):
-            self.assertTrue(monitor.is_webex_running())
-            self.assertIn("ciscocollabhost", monitor._last_detection_reason)
+            self.assertFalse(monitor.is_webex_running())
 
     def test_webex_chat_attachment_does_not_trigger_call(self):
-        audio = _AudioMonitor(AudioActivity(available=True))
+        audio = _AudioMonitor(AudioActivity(available=True, output_pids=(123,)))
         monitor = ProcessMonitor(audio_monitor=audio)
         with patch(
             "webex_obs.process_monitor.psutil.process_iter",
             return_value=[_Process("CiscoCollabHost", 9000)],
         ), patch.object(
-            monitor, "_active_call_window_name", return_value="quarterly-results.pdf"
+            monitor, "_active_call_window_name", return_value=None
         ):
             self.assertFalse(monitor.is_webex_running())
 
-    def test_main_and_lingering_floating_windows_are_not_call_windows(self):
+    def test_webex_listen_only_call_is_detected(self):
+        audio = _AudioMonitor(AudioActivity(available=True, output_pids=(123,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("CiscoCollabHost", 9000)],
+        ), patch.object(
+            monitor, "_active_call_window_name", return_value="Weekly Sync"
+        ):
+            self.assertTrue(monitor.is_webex_running())
+            self.assertIn("active call controls", monitor._last_detection_reason)
+
+    def test_webex_window_probe_ignores_windows_without_call_controls(self):
         monitor = ProcessMonitor()
         result = types.SimpleNamespace(
             returncode=0,
-            stdout="Webex\nWebex multitasking floating window\n",
+            stdout="",
             stderr="",
         )
         with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
             self.assertIsNone(monitor._active_call_window_name())
+
+    def test_webex_call_control_probe_returns_meeting_title(self):
+        monitor = ProcessMonitor()
+        result = types.SimpleNamespace(
+            returncode=0,
+            stdout="Weekly Sync\n",
+            stderr="",
+        )
+        with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
+            self.assertEqual(monitor._active_call_window_name(), "Weekly Sync")
 
     def test_call_start_requires_two_consecutive_checks(self):
         monitor = ProcessMonitor(poll_interval=0)
