@@ -206,8 +206,66 @@ class ProcessMonitor:
         return None
 
     def _active_call_window_name(self) -> str | None:
-        """Backward-compatible Webex call-window query."""
-        return self._active_window_name(WEBEX)
+        """Return a Webex window only when it exposes an active-call control."""
+        apple_script = r'''
+        set callControlLabels to {"leave", "leave meeting", "leave call", ¬
+            "end meeting", "end call", "end meeting for all", "end call for all"}
+        tell application "System Events"
+            if not (exists process "Webex") then return ""
+            tell process "Webex"
+                repeat with candidateWindow in windows
+                    set candidateName to ""
+                    try
+                        set candidateName to name of candidateWindow as text
+                    end try
+                    if candidateName is not "" then
+                        try
+                            repeat with candidateElement in entire contents of candidateWindow
+                                set elementRole to ""
+                                try
+                                    set elementRole to role of candidateElement as text
+                                end try
+                                if elementRole is "AXButton" then
+                                    set elementLabels to {}
+                                    try
+                                        set end of elementLabels to name of candidateElement as text
+                                    end try
+                                    try
+                                        set end of elementLabels to description of candidateElement as text
+                                    end try
+                                    try
+                                        set end of elementLabels to help of candidateElement as text
+                                    end try
+                                    repeat with elementLabel in elementLabels
+                                        ignoring case
+                                            if (elementLabel as text) is in callControlLabels then
+                                                return candidateName
+                                            end if
+                                        end ignoring
+                                    end repeat
+                                end if
+                            end repeat
+                        end try
+                    end if
+                end repeat
+            end tell
+        end tell
+        return ""
+        '''
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", apple_script],
+                capture_output=True,
+                text=True,
+                timeout=4.0,
+                check=False,
+            )
+            if result.returncode == 0:
+                title = result.stdout.strip()
+                return title or None
+        except Exception:
+            pass
+        return None
 
     def _active_call_window_for_platform(self, platform: CallPlatform) -> str | None:
         # Keep the Webex wrapper patchable for existing diagnostics and tests.
@@ -278,11 +336,22 @@ class ProcessMonitor:
                 else AudioActivity(available=self.audio_monitor.available)
             )
 
-            # When Core Audio inspection is available, use it as the final
-            # arbiter. Webex can start its media helper and open a known UDP
-            # socket while previewing a chat attachment, and that preview is
-            # also exposed as a non-main window. Neither is sufficient evidence
-            # of a call unless the client is actively using audio.
+            # Webex attachment viewers can expose a window, media-helper socket,
+            # and output audio at the same time. Require a window containing a
+            # Leave/End call control, plus either network or audio evidence.
+            # This also permits output-only/listen-only calls.
+            if platform is WEBEX:
+                if call_window and (streams or audio_activity.active):
+                    self.current_platform = platform
+                    self.current_call_title = call_window
+                    self._last_detection_reason = (
+                        f"Webex call window '{call_window}' with active call controls"
+                    )
+                    return True
+                continue
+
+            # For Zoom and Teams, Core Audio remains the transport-independent
+            # signal for TCP and dynamic-port calls.
             if audio_activity.available:
                 if audio_activity.active and (streams or call_window):
                     self.current_platform = platform
