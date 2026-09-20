@@ -205,67 +205,45 @@ class ProcessMonitor:
                 continue
         return None
 
+    @staticmethod
+    def _looks_like_attachment_window(window_name: str | None) -> bool:
+        """Return True for Webex windows that are probably attachment previews."""
+        if not window_name:
+            return False
+
+        normalized = window_name.casefold().strip()
+        attachment_suffixes = (
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".heic",
+            ".tif",
+            ".tiff",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            ".txt",
+            ".rtf",
+        )
+        attachment_markers = (
+            "attachment preview",
+            "document preview",
+            "file preview",
+            "image preview",
+        )
+        return normalized.endswith(attachment_suffixes) or any(
+            marker in normalized for marker in attachment_markers
+        )
+
     def _active_call_window_name(self) -> str | None:
-        """Return a Webex window only when it exposes an active-call control."""
-        apple_script = r'''
-        set callControlLabels to {"leave", "leave meeting", "leave call", ¬
-            "end meeting", "end call", "end meeting for all", "end call for all"}
-        tell application "System Events"
-            if not (exists process "Webex") then return ""
-            tell process "Webex"
-                repeat with candidateWindow in windows
-                    set candidateName to ""
-                    try
-                        set candidateName to name of candidateWindow as text
-                    end try
-                    if candidateName is not "" then
-                        try
-                            repeat with candidateElement in entire contents of candidateWindow
-                                set elementRole to ""
-                                try
-                                    set elementRole to role of candidateElement as text
-                                end try
-                                if elementRole is "AXButton" then
-                                    set elementLabels to {}
-                                    try
-                                        set end of elementLabels to name of candidateElement as text
-                                    end try
-                                    try
-                                        set end of elementLabels to description of candidateElement as text
-                                    end try
-                                    try
-                                        set end of elementLabels to help of candidateElement as text
-                                    end try
-                                    repeat with elementLabel in elementLabels
-                                        ignoring case
-                                            if (elementLabel as text) is in callControlLabels then
-                                                return candidateName
-                                            end if
-                                        end ignoring
-                                    end repeat
-                                end if
-                            end repeat
-                        end try
-                    end if
-                end repeat
-            end tell
-        end tell
-        return ""
-        '''
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", apple_script],
-                capture_output=True,
-                text=True,
-                timeout=4.0,
-                check=False,
-            )
-            if result.returncode == 0:
-                title = result.stdout.strip()
-                return title or None
-        except Exception:
-            pass
-        return None
+        """Return a lightweight non-idle Webex window title."""
+        return self._active_window_name(WEBEX)
 
     def _active_call_window_for_platform(self, platform: CallPlatform) -> str | None:
         # Keep the Webex wrapper patchable for existing diagnostics and tests.
@@ -336,16 +314,61 @@ class ProcessMonitor:
                 else AudioActivity(available=self.audio_monitor.available)
             )
 
-            # Webex attachment viewers can expose a window, media-helper socket,
-            # and output audio at the same time. Require a window containing a
-            # Leave/End call control, plus either network or audio evidence.
-            # This also permits output-only/listen-only calls.
+            # Avoid walking Webex's full accessibility tree here. Modern Webex
+            # controls are icon-based, and enumerating the tree can block long
+            # enough to make every call probe time out. Combine independent,
+            # inexpensive evidence instead.
             if platform is WEBEX:
-                if call_window and (streams or audio_activity.active):
+                attachment_window = self._looks_like_attachment_window(call_window)
+
+                # Normal and muted calls generally keep a Core Audio input stream
+                # open even when no microphone sound is present. Known Webex UDP
+                # media plus that stream is strong call evidence and does not
+                # require a window or visible control.
+                if streams and audio_activity.input_pids and not attachment_window:
+                    self.current_platform = platform
+                    if call_window:
+                        self.current_call_title = call_window
+                    self._last_detection_reason = (
+                        "Webex active Core Audio input with known UDP media"
+                    )
+                    if call_window:
+                        self._last_detection_reason += (
+                            f" and call window '{call_window}'"
+                        )
+                    return True
+
+                # Preserve output-only/listen-only calls, but require a non-idle,
+                # non-attachment Webex window so an attachment helper holding an
+                # output stream and UDP socket cannot trigger by itself.
+                if (
+                    streams
+                    and audio_activity.output_pids
+                    and call_window
+                    and not attachment_window
+                ):
                     self.current_platform = platform
                     self.current_call_title = call_window
                     self._last_detection_reason = (
-                        f"Webex call window '{call_window}' with active call controls"
+                        f"Webex output-only Core Audio with known UDP media "
+                        f"and call window '{call_window}'"
+                    )
+                    return True
+
+                # Compatibility fallback for macOS versions where per-process
+                # Core Audio inspection is unavailable.
+                if (
+                    not audio_activity.available
+                    and streams
+                    and call_window
+                    and not attachment_window
+                ):
+                    self.current_platform = platform
+                    self.current_call_title = call_window
+                    process, port, _ = streams[0]
+                    self._last_detection_reason = (
+                        f"Webex call window '{call_window}' plus process "
+                        f"'{process}' using UDP port {port}"
                     )
                     return True
                 continue
