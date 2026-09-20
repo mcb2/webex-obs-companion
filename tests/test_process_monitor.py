@@ -82,6 +82,32 @@ class ProcessMonitorTests(unittest.TestCase):
         ):
             self.assertFalse(monitor.is_webex_running())
 
+    def test_webex_input_audio_and_udp_detect_call_without_window(self):
+        audio = _AudioMonitor(AudioActivity(available=True, input_pids=(123,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("CiscoCollabHost", 9000, pid=123)],
+        ), patch.object(
+            monitor, "_active_call_window_name", return_value=None
+        ):
+            self.assertTrue(monitor.is_webex_running())
+            self.assertIs(monitor.current_platform, WEBEX)
+            self.assertIn("Core Audio input", monitor._last_detection_reason)
+
+    def test_webex_attachment_window_is_rejected_with_output_audio(self):
+        audio = _AudioMonitor(AudioActivity(available=True, output_pids=(123,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        with patch(
+            "webex_obs.process_monitor.psutil.process_iter",
+            return_value=[_Process("WebexHelper", 5004, pid=123)],
+        ), patch.object(
+            monitor,
+            "_active_call_window_name",
+            return_value="quarterly-results.pdf",
+        ):
+            self.assertFalse(monitor.is_webex_running())
+
     def test_webex_listen_only_call_is_detected(self):
         audio = _AudioMonitor(AudioActivity(available=True, output_pids=(123,)))
         monitor = ProcessMonitor(audio_monitor=audio)
@@ -92,9 +118,9 @@ class ProcessMonitorTests(unittest.TestCase):
             monitor, "_active_call_window_name", return_value="Weekly Sync"
         ):
             self.assertTrue(monitor.is_webex_running())
-            self.assertIn("active call controls", monitor._last_detection_reason)
+            self.assertIn("output-only Core Audio", monitor._last_detection_reason)
 
-    def test_webex_window_probe_ignores_windows_without_call_controls(self):
+    def test_webex_window_probe_returns_none_without_non_idle_window(self):
         monitor = ProcessMonitor()
         result = types.SimpleNamespace(
             returncode=0,
@@ -104,7 +130,7 @@ class ProcessMonitorTests(unittest.TestCase):
         with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
             self.assertIsNone(monitor._active_call_window_name())
 
-    def test_webex_call_control_probe_returns_meeting_title(self):
+    def test_lightweight_webex_window_probe_returns_meeting_title(self):
         monitor = ProcessMonitor()
         result = types.SimpleNamespace(
             returncode=0,
