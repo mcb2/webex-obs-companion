@@ -175,22 +175,72 @@ class ProcessMonitorTests(unittest.TestCase):
         with patch.object(monitor, "_active_call_window_name", return_value="Weekly Sync"):
             self.assertTrue(monitor.should_suppress_automatic_prompt())
 
-    def test_different_call_title_clears_declined_call_suppression(self):
+    def test_window_title_change_does_not_clear_declined_call_suppression(self):
         monitor = ProcessMonitor()
+        monitor.current_platform = WEBEX
         monitor.current_call_title = "Weekly Sync"
         monitor.suppress_current_call_prompt()
-        monitor.current_call_title = None
-        with patch.object(monitor, "_active_call_window_name", return_value="Customer Call"):
-            self.assertFalse(monitor.should_suppress_automatic_prompt())
-            self.assertIsNone(monitor._suppressed_call_title)
+        monitor.current_call_title = "Shared screen - Weekly Sync"
+        self.assertTrue(monitor.should_suppress_automatic_prompt())
+        self.assertEqual(monitor._suppressed_call_title, "Weekly Sync")
 
-    def test_untitled_declined_call_remains_suppressed_until_title_changes(self):
+    def test_untitled_declined_call_remains_suppressed_when_title_appears(self):
         monitor = ProcessMonitor()
         with patch.object(monitor, "_active_call_window_name", return_value=None):
             monitor.suppress_current_call_prompt()
             self.assertTrue(monitor.should_suppress_automatic_prompt())
         with patch.object(monitor, "_active_call_window_name", return_value="New Meeting"):
-            self.assertFalse(monitor.should_suppress_automatic_prompt())
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+
+    def test_declined_call_suppression_clears_after_end_grace_period(self):
+        monitor = ProcessMonitor(call_end_grace_seconds=15)
+        monitor.current_platform = WEBEX
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+
+        with patch(
+            "webex_obs.process_monitor.time.monotonic",
+            side_effect=[100, 114.9, 115],
+        ):
+            monitor._track_prompt_suppression(False)
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+            monitor._track_prompt_suppression(False)
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+            monitor._track_prompt_suppression(False)
+
+        self.assertFalse(monitor.should_suppress_automatic_prompt())
+        self.assertIsNone(monitor._suppressed_call_title)
+
+    def test_active_call_resets_decline_end_grace_timer(self):
+        monitor = ProcessMonitor(call_end_grace_seconds=15)
+        monitor.current_platform = WEBEX
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+
+        with patch("webex_obs.process_monitor.time.monotonic", return_value=100):
+            monitor._track_prompt_suppression(False)
+        monitor._track_prompt_suppression(True)
+
+        self.assertIsNone(monitor._suppression_inactive_since)
+        self.assertTrue(monitor.should_suppress_automatic_prompt())
+
+    def test_wait_for_state_change_rearms_prompt_after_declined_call_ends(self):
+        monitor = ProcessMonitor(poll_interval=0, call_end_grace_seconds=15)
+        monitor.current_platform = WEBEX
+        monitor.current_call_title = "Weekly Sync"
+        monitor.suppress_current_call_prompt()
+        states = iter([False, False, True, True])
+
+        with patch.object(
+            monitor, "is_call_active", side_effect=lambda: next(states)
+        ), patch(
+            "webex_obs.process_monitor.time.monotonic", side_effect=[100, 115]
+        ), patch(
+            "webex_obs.process_monitor.time.sleep"
+        ):
+            self.assertTrue(monitor.wait_for_state_change())
+
+        self.assertFalse(monitor.should_suppress_automatic_prompt())
 
     def test_zoom_call_requires_media_socket_and_call_window(self):
         monitor = ProcessMonitor()

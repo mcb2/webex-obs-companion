@@ -87,6 +87,7 @@ class ProcessMonitor:
         self._suppressed_call_title: str | None = None
         self._suppressed_platform_key: str | None = None
         self._suppress_untitled_call = False
+        self._suppression_inactive_since: float | None = None
         self.audio_monitor = audio_monitor or CoreAudioProcessMonitor()
 
     @property
@@ -272,11 +273,34 @@ class ProcessMonitor:
             self.current_platform.key if self.current_platform else None
         )
         self._suppress_untitled_call = call_title is None
+        self._suppression_inactive_since = None
 
     def _clear_prompt_suppression(self) -> None:
         self._suppressed_call_title = None
         self._suppressed_platform_key = None
         self._suppress_untitled_call = False
+        self._suppression_inactive_since = None
+
+    def _track_prompt_suppression(self, call_active: bool) -> None:
+        """Keep a decline active until call evidence has genuinely ended."""
+        if self._suppressed_call_title is None and not self._suppress_untitled_call:
+            return
+
+        if call_active:
+            self._suppression_inactive_since = None
+            return
+
+        now = time.monotonic()
+        if self._suppression_inactive_since is None:
+            self._suppression_inactive_since = now
+            if self.call_end_grace_seconds > 0:
+                return
+
+        if now - self._suppression_inactive_since >= self.call_end_grace_seconds:
+            logger.info(
+                "Declined call has ended; automatic recording prompts are enabled again."
+            )
+            self._clear_prompt_suppression()
 
     def should_suppress_automatic_prompt(self) -> bool:
         """Return True when a re-detected call matches one the user already declined."""
@@ -291,17 +315,12 @@ class ProcessMonitor:
             self._clear_prompt_suppression()
             return False
 
-        title = self.current_call_title or self.get_active_call_title()
-        if self._suppressed_call_title is not None:
-            if title is None or title == self._suppressed_call_title:
-                return True
-            self._clear_prompt_suppression()
-            return False
-
-        if title is None:
-            return True
-        self._clear_prompt_suppression()
-        return False
+        # Webex can expose different titles for the same call as shared content
+        # moves between its main and floating windows. A title change alone is
+        # therefore not evidence of a new call. Suppression is cleared only
+        # after call evidence is absent for the configured end-of-call grace
+        # period, or when another supported platform becomes active.
+        return True
 
     def is_call_active(self) -> bool:
         """Return True only during a supported active voice/video call."""
@@ -487,6 +506,7 @@ class ProcessMonitor:
             self.current_platform = None
         while True:
             running = self.is_call_active()
+            self._track_prompt_suppression(running)
             if running and not self.is_in_meeting:
                 self._active_poll_count += 1
                 if self._active_poll_count >= 2:
