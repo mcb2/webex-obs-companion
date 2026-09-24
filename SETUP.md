@@ -93,6 +93,12 @@ The wizard also configures the three global keyboard shortcuts. They use `pynput
 syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
 them so the new shortcuts are registered.
 
+The macOS menu-bar icon shows recording status and offers controls and a
+**Settings…** dialog for common non-secret configuration. Save Settings and
+restart the service with `uv run webex-obs start` to apply changes. Passwords
+and tokens are still configured with `uv run webex-obs setup`. Keep the OBS
+recording output path aligned with the configured recordings folder.
+
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
 ```bash
