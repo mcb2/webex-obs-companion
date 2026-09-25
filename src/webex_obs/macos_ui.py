@@ -14,6 +14,7 @@ import objc
 
 from .config import DEFAULT_ENV_FILE
 from .settings_store import save_settings
+from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
 
 class _MenuTarget(Foundation.NSObject):
@@ -40,7 +41,13 @@ class _MenuTarget(Foundation.NSObject):
         AppKit.NSApp.stopModalWithCode_(0)
 
     def quit_(self, sender):
-        if not self.ui.daemon.recorder.is_recording:
+        if self.ui.daemon.recorder.is_recording:
+            return
+        try:
+            stop_launch_agent()
+        except Exception as exc:
+            self.ui._alert("Webex OBS Companion", "Could not quit", str(exc), ["OK"])
+        else:
             AppKit.NSApp.terminate_(None)
 
     def tick_(self, timer):
@@ -96,7 +103,7 @@ class MacOSUI:
         self.stop_item = self._add(menu, "Stop & transcribe", "stop:")
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
         self._add(menu, "Settings…", "settings:")
-        self.quit_item = self._add(menu, "Quit", "quit:")
+        self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
         self.item.setMenu_(menu)
         self.timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.15, self.target, "tick:", None, True

@@ -137,6 +137,10 @@ uv run webex-obs stop
 uv run webex-obs start
 ```
 
+The menu bar's **Quit (stop service)** action is equivalent to stopping the
+LaunchAgent for the current login session. Use `uv run webex-obs start` to
+resume it; the installed service starts again on the next login.
+
 ---
 
 ## 6. Directory Structure & Files

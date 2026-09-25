@@ -68,6 +68,9 @@ capture: update its recording output path in OBS too if you change the
 recordings folder here. Tokens and passwords are masked in Settings.
 Turn off **Deliver transcripts to Webex** to retain transcripts locally without
 sending them to the bot; recording and transcription continue as usual.
+**Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays
+closed for the current login session. Start it again with `uv run webex-obs start`;
+the installed LaunchAgent also starts at the next login.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash
