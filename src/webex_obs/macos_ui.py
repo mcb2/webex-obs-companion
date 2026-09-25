@@ -13,6 +13,7 @@ import Foundation
 import objc
 
 from .config import DEFAULT_ENV_FILE
+from .control_dialog import control_dialog
 from .settings_store import save_settings
 from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
@@ -25,9 +26,6 @@ class _MenuTarget(Foundation.NSObject):
     def controls_(self, sender):
         threading.Thread(target=self.ui.daemon._handle_dialog_request, daemon=True).start()
 
-    def video_(self, sender):
-        threading.Thread(target=self.ui.daemon.recorder.switch_to_video_mode, daemon=True).start()
-
     def stop_(self, sender):
         self.ui.daemon._handle_stop_transcribe_request()
 
@@ -39,6 +37,9 @@ class _MenuTarget(Foundation.NSObject):
 
     def cancelSettings_(self, sender):
         AppKit.NSApp.stopModalWithCode_(0)
+
+    def controlChoice_(self, sender):
+        AppKit.NSApp.stopModalWithCode_(sender.tag())
 
     def quit_(self, sender):
         if self.ui.daemon.recorder.is_recording:
@@ -95,15 +96,11 @@ class MacOSUI:
         else:
             self.item.button().setTitle_("●")
         menu = AppKit.NSMenu.alloc().init()
-        self.status_item = self._add(menu, "Ready for calls", None)
-        self.status_item.setEnabled_(False)
-        menu.addItem_(AppKit.NSMenuItem.separatorItem())
         self.controls_item = self._add(menu, "Recording controls…", "controls:")
-        self.video_item = self._add(menu, "Switch to video", "video:")
-        self.stop_item = self._add(menu, "Stop & transcribe", "stop:")
-        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        self.stop_item = self._add(menu, "Stop & Transcribe", "stop:")
         self._add(menu, "Settings…", "settings:")
         self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
+        self.stop_item.setHidden_(True)
         self.item.setMenu_(menu)
         self.timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.15, self.target, "tick:", None, True
@@ -131,10 +128,8 @@ class MacOSUI:
         except queue.Empty:
             pass
         recording, title = self.daemon.status()
-        self.status_item.setTitle_(("Recording: " if recording else "Idle: ") + title)
-        self.video_item.setEnabled_(recording)
-        self.stop_item.setEnabled_(recording)
-        self.quit_item.setEnabled_(not recording)
+        self.stop_item.setHidden_(not recording)
+        self.quit_item.setHidden_(recording)
         if self.item.button():
             self.item.button().setToolTip_("Recording • " + title if recording else "Ready for calls")
 
@@ -180,15 +175,48 @@ class MacOSUI:
         return {0: "keep_audio", 1: "switch_video", 2: "cancel"}.get(index, "keep_audio")
 
     def show_control_prompt(self, is_recording=True, meeting_title="Webex Session"):
-        buttons = (["Stop & Transcribe", "Switch to Video", "Cancel & Discard"]
-                   if is_recording else ["Start Audio Rec", "Start Video Rec", "Close Menu"])
-        index = self._on_main(lambda: self._alert(
-            "Webex OBS Companion", "Recording controls" if is_recording else "Start recording",
-            meeting_title, buttons, timeout=25,
-        ))
-        choices = (["stop_transcribe", "switch_video", "cancel"] if is_recording
-                   else ["start_audio", "start_video", "close"])
-        return choices[index] if 0 <= index < 3 else "close"
+        spec = control_dialog(is_recording, meeting_title)
+        return self._on_main(lambda: self._control_window(spec))
+
+    def _control_window(self, spec):
+        window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (570, 270)), AppKit.NSWindowStyleMaskTitled,
+            AppKit.NSBackingStoreBuffered, False,
+        )
+        window.setTitle_("Webex OBS Companion")
+        window.setOpaque_(True)
+        window.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
+        window.center()
+        content = window.contentView()
+        heading = AppKit.NSTextField.labelWithString_(spec.heading)
+        heading.setFont_(AppKit.NSFont.boldSystemFontOfSize_(19))
+        heading.setFrame_(((24, 217), (520, 30)))
+        content.addSubview_(heading)
+        detail = AppKit.NSTextField.labelWithString_(spec.detail)
+        detail.setFrame_(((24, 91), (520, 115)))
+        detail.setUsesSingleLineMode_(False)
+        detail.cell().setWraps_(True)
+        detail.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+        content.addSubview_(detail)
+        for index, (label, choice) in enumerate(spec.choices):
+            button = AppKit.NSButton.alloc().initWithFrame_(
+                ((24 + index * 180, 27), (166, 34))
+            )
+            button.setTitle_(label)
+            button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+            button.setTag_(index + 1)
+            button.setTarget_(self.target)
+            button.setAction_("controlChoice:")
+            if choice == "close":
+                button.setKeyEquivalent_("\x1b")
+            content.addSubview_(button)
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
+        try:
+            selected = AppKit.NSApp.runModalForWindow_(window) - 1
+        finally:
+            window.orderOut_(None)
+        return spec.choices[selected][1] if 0 <= selected < len(spec.choices) else "close"
 
     def show_notification(self, title, message):
         UIBanner.show_notification(title, message)

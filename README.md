@@ -14,7 +14,8 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
-- **macOS Status Menu**: Shows the active meeting and provides recording controls, video switching, stop and transcribe, and Settings. The native recording confirmation retains the 15-second audio default and consent notice.
+- **macOS Status Menu**: Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
+- When idle, the menu shows Recording controls, Settings, and Quit. Recording controls opens an icon-free dialog with audio/video start choices and a recording-consent reminder. During a recording, Stop & Transcribe appears in the menu and controls offer video switching or stop and transcribe.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
 Automatic detection currently targets the native macOS desktop clients. It

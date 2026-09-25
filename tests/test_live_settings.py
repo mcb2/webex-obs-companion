@@ -1,4 +1,5 @@
 import sys
+import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,3 +56,46 @@ def test_disabled_delivery_keeps_transcript_local():
     daemon.webex.send_transcript.return_value = True
     daemon.deliver_transcript(Path("transcript.txt"), "Team call")
     daemon.webex.send_transcript.assert_called_once_with(Path("transcript.txt"), meeting_title="Team call")
+
+
+def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thread():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=False)
+    daemon._manual_start_event = threading.Event()
+    daemon._manual_start_mode = "audio"
+    daemon._request_manual_start("video")
+    assert daemon._manual_start_event.is_set()
+    assert daemon._manual_start_mode == "video"
+    daemon.recorder.start_recording.assert_not_called()
+
+
+def test_manual_video_start_enters_worker_lifecycle_without_second_prompt():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, enable_diarization=False)
+    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder.connect.return_value = True
+    daemon.recorder.stop_recording.return_value = []
+    daemon.monitor = Mock(is_in_meeting=False, current_call_title=None,
+                          default_call_title="Webex Session")
+    daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
+    daemon.monitor.is_call_active.return_value = False
+    daemon.hotkeys = Mock()
+    daemon.ui = Mock()
+    daemon._manual_start_event = threading.Event()
+    daemon._manual_start_event.set()
+    daemon._manual_start_mode = "video"
+    daemon._manual_stop_event = threading.Event()
+    daemon._discard_requested = False
+    daemon._active_session = None
+    session = Mock(display_title="Manual recording")
+    daemon.recorder.start_recording.side_effect = lambda **kwargs: daemon._manual_stop_event.set() or True
+
+    with patch.object(daemon, "_new_recording_session", return_value=session), \
+         patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
+        daemon.start()
+
+    daemon.recorder.start_recording.assert_called_once_with(mode="video")
+    daemon.ui.show_startup_prompt.assert_not_called()
+    daemon.recorder.stop_recording.assert_called_once()
+    assert daemon.monitor.is_in_meeting is False

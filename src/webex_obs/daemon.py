@@ -58,6 +58,8 @@ class WebexOBSDaemon:
             stop_transcribe_hotkey=self.config.hotkey_stop_transcribe,
         )
         self._manual_stop_event = threading.Event()
+        self._manual_start_event = threading.Event()
+        self._manual_start_mode = "audio"
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
 
@@ -160,21 +162,9 @@ class WebexOBSDaemon:
             self.recorder.switch_to_video_mode()
             self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
         elif choice == "start_audio":
-            logger.info("Manual Start Audio recording triggered from menu.")
-            self._active_session = self._new_recording_session()
-            if self.recorder.start_recording(mode="audio"):
-                self.monitor.is_in_meeting = True
-                self.ui.show_notification("Webex OBS Companion", "Manual Audio recording started.")
-            else:
-                self._active_session = None
+            self._request_manual_start("audio")
         elif choice == "start_video":
-            logger.info("Manual Start Video recording triggered from menu.")
-            self._active_session = self._new_recording_session()
-            if self.recorder.start_recording(mode="video"):
-                self.monitor.is_in_meeting = True
-                self.ui.show_notification("Webex OBS Companion", "Manual Video recording started.")
-            else:
-                self._active_session = None
+            self._request_manual_start("video")
         elif choice == "cancel":
             logger.info("User requested Cancel & Discard via dialog.")
             self._discard_requested = True
@@ -187,6 +177,13 @@ class WebexOBSDaemon:
                         pass
             self.ui.show_notification("Webex OBS Companion", "Recording discarded.")
             self._active_session = None
+
+    def _request_manual_start(self, mode: str) -> None:
+        if self.recorder.is_recording or self._manual_start_event.is_set():
+            return
+        self._manual_start_mode = mode
+        self._manual_start_event.set()
+        logger.info("Manual %s recording requested from controls.", mode)
 
     def start(self):
         logger.info("Starting Webex OBS Companion Daemon...")
@@ -210,11 +207,14 @@ class WebexOBSDaemon:
 
         try:
             while True:
-                meeting_active = self.monitor.wait_for_state_change()
+                meeting_active = self.monitor.wait_for_state_change(self._manual_start_event)
                 if not meeting_active:
                     continue
+                manual = self._manual_start_event.is_set()
+                mode = self._manual_start_mode if manual else "audio"
+                self._manual_start_event.clear()
 
-                if self.monitor.should_suppress_automatic_prompt():
+                if not manual and self.monitor.should_suppress_automatic_prompt():
                     logger.info(
                         "Skipping automatic recording prompt for a call already declined by the user."
                     )
@@ -224,13 +224,16 @@ class WebexOBSDaemon:
                 self._discard_requested = False
                 self._manual_stop_event.clear()
                 self._active_session = self._new_recording_session()
+                if manual:
+                    self.monitor.is_in_meeting = True
 
-                started = self.recorder.start_recording(mode="audio")
+                started = self.recorder.start_recording(mode=mode)
                 if not started:
-                    logger.warning("Could not start OBS recording. Will retry while the call remains active...")
-                    while self.monitor.is_call_active() and not started:
+                    logger.warning("Could not start OBS recording.%s",
+                                   " Will retry while the call remains active..." if not manual else "")
+                    while not manual and self.monitor.is_call_active() and not started:
                         time.sleep(5)
-                        started = self.recorder.start_recording(mode="audio", relaunch=True)
+                        started = self.recorder.start_recording(mode=mode, relaunch=True)
                     if not started:
                         self.monitor.is_in_meeting = False
                         self._active_session = None
@@ -241,7 +244,7 @@ class WebexOBSDaemon:
                     session.use_title_if_missing(
                         self.monitor.get_active_call_title()
                     )
-                choice = self.ui.show_startup_prompt(
+                choice = "keep_audio" if manual else self.ui.show_startup_prompt(
                     meeting_title=(
                         session.display_title if session else self.monitor.default_call_title
                     )
@@ -270,7 +273,7 @@ class WebexOBSDaemon:
 
                 self.ui.show_notification(
                     "Webex OBS Companion",
-                    "Recording active (Audio). "
+                    f"Recording active ({'Video' if mode == 'video' or choice == 'switch_video' else 'Audio'}). "
                     f"{display_hotkey(self.config.hotkey_video)} Video, "
                     f"{display_hotkey(self.config.hotkey_stop_transcribe)} Transcribe, "
                     f"{display_hotkey(self.config.hotkey_menu)} Menu."
@@ -281,7 +284,9 @@ class WebexOBSDaemon:
                     if self._manual_stop_event.is_set():
                         break
                     time.sleep(self.config.poll_interval)
-                    if self.monitor.has_call_ended():
+                    if self._manual_stop_event.is_set():
+                        break
+                    if not manual and self.monitor.has_call_ended():
                         self.monitor.is_in_meeting = False
                         break
                     if not self.recorder.ensure_recording():
@@ -292,8 +297,14 @@ class WebexOBSDaemon:
                     self._discard_requested = False
                     self._manual_stop_event.clear()
                     self._active_session = None
+                    if manual:
+                        self.monitor.is_in_meeting = False
                     continue
 
+                if (not manual and self._manual_stop_event.is_set()) or (manual and self.monitor.is_call_active()):
+                    self.monitor.suppress_current_call_prompt()
+                if manual or self._manual_stop_event.is_set():
+                    self.monitor.is_in_meeting = False
                 recorded_files = self.recorder.stop_recording()
                 logger.info(f"Recording session stopped. Captured segments: {recorded_files}")
 

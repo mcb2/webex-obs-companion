@@ -2,6 +2,7 @@ import socket
 import sys
 import types
 import unittest
+import threading
 from unittest.mock import patch
 
 
@@ -50,6 +51,14 @@ class _AudioMonitor:
 
 
 class ProcessMonitorTests(unittest.TestCase):
+    def test_manual_start_wakes_detection_without_call_evidence(self):
+        monitor = ProcessMonitor()
+        requested = threading.Event()
+        requested.set()
+        with patch.object(monitor, "is_call_active") as detect:
+            self.assertTrue(monitor.wait_for_state_change(requested))
+        detect.assert_not_called()
+
     def test_idle_webex_socket_is_not_enough(self):
         monitor = ProcessMonitor()
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
