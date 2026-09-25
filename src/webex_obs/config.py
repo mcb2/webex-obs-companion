@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     # Polling settings
     poll_interval: float = Field(
         default=3.0,
+        gt=0.0,
         validation_alias=AliasChoices("POLL_INTERVAL", "poll_interval"),
         description="Process polling interval in seconds"
     )

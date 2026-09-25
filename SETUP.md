@@ -94,10 +94,12 @@ syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
 them so the new shortcuts are registered.
 
 The macOS menu-bar icon shows recording status and offers controls and a
-**Settings…** dialog for common non-secret configuration. Save Settings and
-restart the service with `uv run webex-obs start` to apply changes. Passwords
-and tokens are still configured with `uv run webex-obs setup`. Keep the OBS
-recording output path aligned with the configured recordings folder.
+**Settings…** dialog for the configuration offered by setup, including masked
+passwords and tokens, plus OBS host and polling interval. Clicking **OK**
+saves and applies changes without a service restart. OBS connection changes
+take effect after the current recording finishes. Keep the OBS recording
+output path aligned with the recordings folder you select here. LaunchAgent
+stdout/stderr log paths are fixed by the installed service definition.
 
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:

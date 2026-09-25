@@ -163,55 +163,96 @@ class MacOSUI:
         UIBanner.show_notification(title, message)
 
     def show_settings(self):
-        from .config import Config
-        config = Config(_env_file=DEFAULT_ENV_FILE)
-        fields = [
-            ("OBS host", "obs_ws_host"), ("OBS port", "obs_ws_port"),
-            ("Recordings folder", "recordings_dir"), ("Transcripts folder", "transcripts_dir"),
-            ("Retention (days)", "retention_days"),
-            ("Call-end grace (seconds)", "call_end_grace_seconds"),
-            ("Video shortcut", "hotkey_video"), ("Controls shortcut", "hotkey_menu"),
-            ("Stop shortcut", "hotkey_stop_transcribe"),
+        config = self.daemon.config
+        sections = [
+            ("Webex delivery", [
+                ("Bot access token", "webex_access_token", "secret"),
+                ("Recipient email", "webex_recipient_email", "text"),
+                ("My Agent email", "my_agent_email", "text"),
+                ("Space / room ID", "webex_room_id", "text"),
+            ]),
+            ("OBS recording", [
+                ("WebSocket host", "obs_ws_host", "text"),
+                ("WebSocket port", "obs_ws_port", "text"),
+                ("WebSocket password", "obs_ws_password", "secret"),
+                ("Restart OBS for each call", "relaunch_obs_per_call", "bool"),
+            ]),
+            ("Transcription", [
+                ("Whisper model", "whisper_model", "text"),
+                ("Enable diarization", "enable_diarization", "bool"),
+                ("Hugging Face token", "hf_token", "secret"),
+            ]),
+            ("Files and detection", [
+                ("Recordings folder", "recordings_dir", "text"),
+                ("Transcripts folder", "transcripts_dir", "text"),
+                ("Retention (days)", "retention_days", "text"),
+                ("Poll interval (seconds)", "poll_interval", "text"),
+                ("Call-end grace (seconds)", "call_end_grace_seconds", "text"),
+            ]),
+            ("Keyboard shortcuts", [
+                ("Video shortcut", "hotkey_video", "text"),
+                ("Controls shortcut", "hotkey_menu", "text"),
+                ("Stop shortcut", "hotkey_stop_transcribe", "text"),
+            ]),
         ]
-        view = AppKit.NSView.alloc().initWithFrame_(((0, 0), (500, 355)))
+        rows = sum(len(entries) + 1 for _, entries in sections)
+        height = rows * 32 + 20
+        view = AppKit.NSView.alloc().initWithFrame_(((0, 0), (570, height)))
         inputs = {}
-        for index, (label, key) in enumerate(fields):
-            y = 327 - index * 32
-            caption = AppKit.NSTextField.labelWithString_(label)
-            caption.setFrame_(((0, y), (178, 24)))
-            view.addSubview_(caption)
-            field = AppKit.NSTextField.alloc().initWithFrame_(((180, y), (318, 24)))
-            field.setStringValue_(str(getattr(config, key)))
-            view.addSubview_(field)
-            inputs[key] = field
-        checks = {}
-        for index, (label, key) in enumerate([
-            ("Restart OBS for each call", "relaunch_obs_per_call"),
-            ("Enable diarization", "enable_diarization"),
-        ]):
-            checkbox = AppKit.NSButton.alloc().initWithFrame_(((180, 37 - index * 29), (310, 24)))
-            checkbox.setButtonType_(AppKit.NSButtonTypeSwitch)
-            checkbox.setTitle_(label)
-            checkbox.setState_(bool(getattr(config, key)))
-            view.addSubview_(checkbox)
-            checks[key] = checkbox
+        index = 0
+        for heading, entries in sections:
+            y = height - 30 - index * 32
+            section_label = AppKit.NSTextField.labelWithString_(heading)
+            section_label.setFrame_(((5, y), (550, 24)))
+            view.addSubview_(section_label)
+            index += 1
+            for label, key, kind in entries:
+                y = height - 30 - index * 32
+                caption = AppKit.NSTextField.labelWithString_(label)
+                caption.setFrame_(((10, y), (190, 24)))
+                view.addSubview_(caption)
+                if kind == "bool":
+                    field = AppKit.NSButton.alloc().initWithFrame_(((205, y), (24, 24)))
+                    field.setButtonType_(AppKit.NSButtonTypeSwitch)
+                    field.setState_(bool(getattr(config, key)))
+                else:
+                    cls = AppKit.NSSecureTextField if kind == "secret" else AppKit.NSTextField
+                    field = cls.alloc().initWithFrame_(((205, y), (350, 24)))
+                    field.setStringValue_(str(getattr(config, key) or ""))
+                view.addSubview_(field)
+                inputs[key] = (field, kind)
+                index += 1
+        scroll = AppKit.NSScrollView.alloc().initWithFrame_(((0, 0), (590, 430)))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setDocumentView_(view)
+        scroll.contentView().scrollToPoint_((0, height - 430))
+        scroll.reflectScrolledClipView_(scroll.contentView())
         alert = AppKit.NSAlert.alloc().init()
         alert.setMessageText_("Settings")
-        alert.setInformativeText_("Changes take effect after restarting the service. OBS password and delivery credentials remain in the setup wizard.")
-        alert.setAccessoryView_(view)
-        alert.addButtonWithTitle_("Save")
+        alert.setInformativeText_("Changes apply on OK. OBS connection changes wait for a recording to finish. Set the recording output folder in OBS as well.")
+        alert.setAccessoryView_(scroll)
+        alert.addButtonWithTitle_("OK")
         alert.addButtonWithTitle_("Cancel")
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
             return
-        values = {key: field.stringValue() for key, field in inputs.items()}
-        values.update({key: bool(field.state()) for key, field in checks.items()})
+        values = {}
+        for key, (field, kind) in inputs.items():
+            value = bool(field.state()) if kind == "bool" else str(field.stringValue())
+            original = getattr(config, key)
+            if value != (bool(original) if kind == "bool" else str(original or "")):
+                values[key] = value
+        if not values:
+            return
         try:
-            save_settings(values, Path(DEFAULT_ENV_FILE))
+            updated = save_settings(values, Path(DEFAULT_ENV_FILE), current=config)
+            try:
+                self.daemon.apply_settings(updated)
+            except Exception:
+                save_settings({key: getattr(config, key) for key in values}, Path(DEFAULT_ENV_FILE), current=updated)
+                raise
         except Exception as exc:
             self._alert("Settings", "Could not save settings", str(exc), ["OK"])
-        else:
-            self._alert("Settings", "Settings saved", "Restart the background service with uv run webex-obs start to apply them.", ["OK"])
 
 
 _TIMEOUT_TARGET = _MenuTarget.alloc().init()

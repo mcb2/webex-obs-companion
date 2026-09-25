@@ -25,10 +25,26 @@ class SettingsStoreTests(unittest.TestCase):
             original = path.read_bytes()
             for values in ({"obs_ws_port": "99999"},
                            {"hotkey_video": "<cmd>+<shift>+r"},
-                           {"obs_ws_password": "changed"}):
+                           {"poll_interval": "0"},
+                           {"webex_access_token": "changed", "obs_ws_port": "99999"}):
                 with self.assertRaises(ValueError):
                     save_settings(values, path)
                 self.assertEqual(path.read_bytes(), original)
+
+    def test_every_config_field_is_editable_and_secrets_round_trip(self):
+        from webex_obs.settings_store import EDITABLE
+        # LOG_DIR is a legacy field; LaunchAgent owns its log file paths.
+        self.assertEqual(set(EDITABLE), set(Config.model_fields) - {"log_dir"})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / ".env"
+            path.write_text("# preserve\nOBS_WS_PORT=4455\n")
+            updated = save_settings({"webex_access_token": "a token with spaces",
+                                     "hf_token": "hf_example", "enable_diarization": True,
+                                     "whisper_model": "another-model", "poll_interval": "1.5"}, path)
+            self.assertEqual(updated.webex_access_token, "a token with spaces")
+            self.assertEqual(Config(_env_file=path).hf_token, "hf_example")
+            self.assertEqual(Config(_env_file=path).poll_interval, 1.5)
+            self.assertIn("# preserve", path.read_text())
 
 
 if __name__ == "__main__":

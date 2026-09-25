@@ -18,9 +18,11 @@ recovery and output files. The adapter maps audio/video modes to OBS scene names
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
 
-Settings updates validate values and atomically change selected keys in the
-existing `.env`. They become active on service restart; bot credentials and
-Hugging Face tokens remain in the CLI setup flow.
+Settings updates validate values, atomically change the existing `.env`, and
+replace the running detector, transcription, delivery, and hotkey configuration.
+The OBS adapter defers connection changes until an active recording stops.
+LaunchAgent stdout/stderr paths and OBS's recording output path are managed by
+their respective applications.
 
 ```
 +-------------------------------------------------------------+

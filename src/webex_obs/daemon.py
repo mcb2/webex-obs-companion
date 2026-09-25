@@ -61,6 +61,48 @@ class WebexOBSDaemon:
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
 
+    def apply_settings(self, config: Config) -> None:
+        """Install validated settings without interrupting a recording."""
+        old = self.config
+        # Construct workers before stopping the old hotkey listener.
+        transcriber = Transcriber(
+            model_name=config.whisper_model,
+            transcripts_dir=config.transcripts_dir,
+            enable_diarization=config.enable_diarization,
+            hf_token=config.hf_token,
+        )
+        webex = WebexClient(
+            token=config.webex_access_token,
+            recipient_email=config.webex_recipient_email,
+            room_id=config.webex_room_id,
+            my_agent_email=config.my_agent_email,
+        )
+        if any(getattr(old, key) != getattr(config, key) for key in (
+            "hotkey_video", "hotkey_menu", "hotkey_stop_transcribe"
+        )):
+            replacement = HotkeyListener(
+                on_video_switch=self.recorder.switch_to_video_mode,
+                on_show_dialog=self._handle_dialog_request,
+                on_stop_transcribe=self._handle_stop_transcribe_request,
+                video_hotkey=config.hotkey_video,
+                menu_hotkey=config.hotkey_menu,
+                stop_transcribe_hotkey=config.hotkey_stop_transcribe,
+            )
+            self.hotkeys.stop()
+            try:
+                replacement.start()
+            except Exception:
+                self.hotkeys.start()
+                raise
+            self.hotkeys = replacement
+        self.recorder.configure(config)
+        self.monitor.poll_interval = config.poll_interval
+        self.monitor.call_end_grace_seconds = config.call_end_grace_seconds
+        self.transcriber = transcriber
+        self.webex = webex
+        self.config = config
+        logger.info("Settings applied to running service.")
+
     def status(self) -> tuple[bool, str]:
         title = self._active_session.display_title if self._active_session else "Ready for calls"
         return self.recorder.is_recording, title

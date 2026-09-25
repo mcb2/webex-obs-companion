@@ -11,36 +11,51 @@ from .config import Config, DEFAULT_ENV_FILE
 from .hotkey_listener import validate_hotkeys
 
 
-# Keep credentials in the setup wizard for now; avoid ever displaying them in UI.
 EDITABLE = {
+    "webex_access_token": "WEBEX_ACCESS_TOKEN",
+    "webex_recipient_email": "WEBEX_RECIPIENT_EMAIL",
+    "my_agent_email": "MY_AGENT_EMAIL",
+    "webex_room_id": "WEBEX_ROOM_ID",
     "obs_ws_host": "OBS_WS_HOST",
     "obs_ws_port": "OBS_WS_PORT",
+    "obs_ws_password": "OBS_WS_PASSWORD",
     "relaunch_obs_per_call": "RELAUNCH_OBS_PER_CALL",
     "recordings_dir": "RECORDINGS_DIR",
     "transcripts_dir": "TRANSCRIPTS_DIR",
     "retention_days": "RETENTION_DAYS",
     "call_end_grace_seconds": "CALL_END_GRACE_SECONDS",
     "enable_diarization": "ENABLE_DIARIZATION",
+    "whisper_model": "WHISPER_MODEL",
+    "hf_token": "HF_TOKEN",
+    "poll_interval": "POLL_INTERVAL",
     "hotkey_video": "HOTKEY_VIDEO",
     "hotkey_menu": "HOTKEY_MENU",
     "hotkey_stop_transcribe": "HOTKEY_STOP_TRANSCRIBE",
 }
 
 
-def save_settings(values: dict[str, str | bool], path: Path | None = None) -> None:
-    """Validate the complete effective configuration before replacing the file."""
-    path = Path(path or DEFAULT_ENV_FILE).expanduser().resolve()
+def validate_settings(values: dict[str, str | bool], current: Config) -> Config:
+    """Validate edited fields against the currently running configuration."""
     unknown = set(values) - EDITABLE.keys()
     if unknown:
         raise ValueError(f"Unsupported settings: {', '.join(sorted(unknown))}")
-    current = Config(_env_file=path)
     proposed = current.model_dump()
     proposed.update(values)
-    # Explicit field-name population prevents aliases from excluding proposed values.
     validated = Config.model_validate(proposed)
     validate_hotkeys(
         validated.hotkey_video, validated.hotkey_menu, validated.hotkey_stop_transcribe
     )
+    if validated.enable_diarization and not validated.hf_token and (
+        not current.enable_diarization or ("hf_token" in values and not values["hf_token"])
+    ):
+        raise ValueError("Hugging Face token is required when diarization is enabled")
+    return validated
+
+
+def save_settings(values: dict[str, str | bool | Path | None], path: Path | None = None, current: Config | None = None) -> Config:
+    """Validate the complete effective configuration before replacing the file."""
+    path = Path(path or DEFAULT_ENV_FILE).expanduser().resolve()
+    validated = validate_settings(values, current or Config(_env_file=path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=".webex-obs-", dir=path.parent)
     os.close(fd)
@@ -48,11 +63,13 @@ def save_settings(values: dict[str, str | bool], path: Path | None = None) -> No
     try:
         if path.exists():
             shutil.copyfile(path, temp)
-            os.chmod(temp, path.stat().st_mode & 0o777)
+            os.chmod(temp, path.stat().st_mode & 0o700)
         else:
             os.chmod(temp, 0o600)
         for field, value in values.items():
-            set_key(str(temp), EDITABLE[field], str(value).lower() if isinstance(value, bool) else str(value), quote_mode="always")
+            formatted = "" if value is None else (str(value).lower() if isinstance(value, bool) else str(value))
+            set_key(str(temp), EDITABLE[field], formatted, quote_mode="always")
         os.replace(temp, path)
+        return validated
     finally:
         temp.unlink(missing_ok=True)

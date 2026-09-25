@@ -60,11 +60,12 @@ Run the interactive setup wizard (intelligently preserves existing `.env` values
 uv run webex-obs setup
 ```
 
-After installation, open **Settings…** from the menu-bar recording icon to edit
-OBS host/port, folders, retention, call-end grace period, diarization, and
-global shortcuts. Restart the service (`uv run webex-obs start`) after saving.
-Use the setup wizard for passwords and tokens. OBS still performs all capture;
-the status menu does not change OBS's configured output path.
+Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
+connection, transcription, detection, and shortcuts. Changes are saved and
+applied when you click **OK**, without restarting the service. An active
+recording retains its OBS connection until it stops. OBS still performs all
+capture: update its recording output path in OBS too if you change the
+recordings folder here. Tokens and passwords are masked in Settings.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash
