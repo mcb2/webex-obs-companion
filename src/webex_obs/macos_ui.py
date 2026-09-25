@@ -33,9 +33,6 @@ class _MenuTarget(Foundation.NSObject):
     def settings_(self, sender):
         self.ui.show_settings()
 
-    def category_(self, sender):
-        self.ui._select_settings_category(sender.tag())
-
     def saveSettings_(self, sender):
         AppKit.NSApp.stopModalWithCode_(1)
 
@@ -51,6 +48,24 @@ class _MenuTarget(Foundation.NSObject):
 
     def timeout_(self, timer):
         AppKit.NSApp.stopModalWithCode_(AppKit.NSAlertFirstButtonReturn)
+
+
+class _SettingsSidebar(Foundation.NSObject):
+    @objc.python_method
+    def configure(self, ui, titles):
+        self.ui = ui
+        self.titles = titles
+
+    def numberOfRowsInTableView_(self, table):
+        return len(self.titles)
+
+    def tableView_objectValueForTableColumn_row_(self, table, column, row):
+        return self.titles[row]
+
+    def tableViewSelectionDidChange_(self, notification):
+        row = notification.object().selectedRow()
+        if row >= 0:
+            self.ui._select_settings_category(row)
 
 
 class MacOSUI:
@@ -174,7 +189,6 @@ class MacOSUI:
     def _select_settings_category(self, index):
         for position, pane in enumerate(self._settings_panes):
             pane.setHidden_(position != index)
-            self._settings_categories[position].setState_(position == index)
 
     def show_settings(self):
         config = self.daemon.config
@@ -220,27 +234,32 @@ class MacOSUI:
         window.center()
         content = window.contentView()
 
-        sidebar = AppKit.NSView.alloc().initWithFrame_(((0, 67), (205, 423)))
+        sidebar = AppKit.NSScrollView.alloc().initWithFrame_(((0, 67), (205, 423)))
+        sidebar.setHasVerticalScroller_(False)
+        sidebar.setDrawsBackground_(True)
+        sidebar.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
+        table = AppKit.NSTableView.alloc().initWithFrame_(((0, 0), (205, 423)))
+        column = AppKit.NSTableColumn.alloc().initWithIdentifier_("settings-category")
+        column.setWidth_(200)
+        table.addTableColumn_(column)
+        table.setHeaderView_(None)
+        table.setRowHeight_(42)
+        table.setAllowsEmptySelection_(False)
+        table.setSelectionHighlightStyle_(AppKit.NSTableViewSelectionHighlightStyleRegular)
+        table.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
+        self._sidebar_source = _SettingsSidebar.alloc().init()
+        self._sidebar_source.configure(self, [heading for heading, _ in sections])
+        table.setDataSource_(self._sidebar_source)
+        table.setDelegate_(self._sidebar_source)
+        sidebar.setDocumentView_(table)
         content.addSubview_(sidebar)
         divider = AppKit.NSBox.alloc().initWithFrame_(((205, 67), (1, 423)))
         divider.setBoxType_(AppKit.NSBoxSeparator)
         content.addSubview_(divider)
 
         self._settings_panes = []
-        self._settings_categories = []
         inputs = {}
-        for section_index, (heading, entries) in enumerate(sections):
-            category = AppKit.NSButton.alloc().initWithFrame_(
-                ((15, 365 - section_index * 45), (180, 32))
-            )
-            category.setTitle_(heading)
-            category.setButtonType_(AppKit.NSButtonTypeRadio)
-            category.setTag_(section_index)
-            category.setTarget_(self.target)
-            category.setAction_("category:")
-            sidebar.addSubview_(category)
-            self._settings_categories.append(category)
-
+        for heading, entries in sections:
             pane = AppKit.NSView.alloc().initWithFrame_(((220, 67), (565, 423)))
             content.addSubview_(pane)
             self._settings_panes.append(pane)
@@ -250,20 +269,23 @@ class MacOSUI:
             pane.addSubview_(title)
             for row, (label, key, kind) in enumerate(entries):
                 y = 316 - row * 55
-                caption = AppKit.NSTextField.labelWithString_(label)
-                caption.setFrame_(((15, y), (190, 24)))
-                pane.addSubview_(caption)
                 if kind == "bool":
-                    field = AppKit.NSButton.alloc().initWithFrame_(((215, y), (24, 24)))
+                    field = AppKit.NSButton.alloc().initWithFrame_(((15, y), (530, 28)))
                     field.setButtonType_(AppKit.NSButtonTypeSwitch)
+                    field.setTitle_(label)
                     field.setState_(bool(getattr(config, key)))
                 else:
+                    caption = AppKit.NSTextField.labelWithString_(label)
+                    caption.setFrame_(((15, y), (190, 24)))
+                    pane.addSubview_(caption)
                     cls = AppKit.NSSecureTextField if kind == "secret" else AppKit.NSTextField
                     field = cls.alloc().initWithFrame_(((215, y), (330, 24)))
                     field.setStringValue_(str(getattr(config, key) or ""))
                 pane.addSubview_(field)
                 inputs[key] = (field, kind)
 
+        table.reloadData()
+        table.selectRowIndexes_byExtendingSelection_(Foundation.NSIndexSet.indexSetWithIndex_(0), False)
         self._select_settings_category(0)
         footer = AppKit.NSTextField.labelWithString_(
             "Changes apply on OK. OBS connection changes wait for a recording to finish."
@@ -284,7 +306,7 @@ class MacOSUI:
         finally:
             window.orderOut_(None)
             self._settings_panes = []
-            self._settings_categories = []
+            self._sidebar_source = None
         if not accepted:
             return
         values = {}
