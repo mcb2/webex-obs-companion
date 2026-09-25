@@ -33,6 +33,15 @@ class _MenuTarget(Foundation.NSObject):
     def settings_(self, sender):
         self.ui.show_settings()
 
+    def category_(self, sender):
+        self.ui._select_settings_category(sender.tag())
+
+    def saveSettings_(self, sender):
+        AppKit.NSApp.stopModalWithCode_(1)
+
+    def cancelSettings_(self, sender):
+        AppKit.NSApp.stopModalWithCode_(0)
+
     def quit_(self, sender):
         if not self.ui.daemon.recorder.is_recording:
             AppKit.NSApp.terminate_(None)
@@ -162,6 +171,11 @@ class MacOSUI:
     def show_notification(self, title, message):
         UIBanner.show_notification(title, message)
 
+    def _select_settings_category(self, index):
+        for position, pane in enumerate(self._settings_panes):
+            pane.setHidden_(position != index)
+            self._settings_categories[position].setState_(position == index)
+
     def show_settings(self):
         config = self.daemon.config
         sections = [
@@ -195,46 +209,83 @@ class MacOSUI:
                 ("Stop shortcut", "hotkey_stop_transcribe", "text"),
             ]),
         ]
-        rows = sum(len(entries) + 1 for _, entries in sections)
-        height = rows * 32 + 20
-        view = AppKit.NSView.alloc().initWithFrame_(((0, 0), (570, height)))
+        window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (800, 490)), AppKit.NSWindowStyleMaskTitled,
+            AppKit.NSBackingStoreBuffered, False,
+        )
+        window.setTitle_("Webex OBS Companion Settings")
+        window.setOpaque_(True)
+        window.setAlphaValue_(1.0)
+        window.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
+        window.center()
+        content = window.contentView()
+
+        sidebar = AppKit.NSView.alloc().initWithFrame_(((0, 67), (205, 423)))
+        content.addSubview_(sidebar)
+        divider = AppKit.NSBox.alloc().initWithFrame_(((205, 67), (1, 423)))
+        divider.setBoxType_(AppKit.NSBoxSeparator)
+        content.addSubview_(divider)
+
+        self._settings_panes = []
+        self._settings_categories = []
         inputs = {}
-        index = 0
-        for heading, entries in sections:
-            y = height - 30 - index * 32
-            section_label = AppKit.NSTextField.labelWithString_(heading)
-            section_label.setFrame_(((5, y), (550, 24)))
-            view.addSubview_(section_label)
-            index += 1
-            for label, key, kind in entries:
-                y = height - 30 - index * 32
+        for section_index, (heading, entries) in enumerate(sections):
+            category = AppKit.NSButton.alloc().initWithFrame_(
+                ((15, 365 - section_index * 45), (180, 32))
+            )
+            category.setTitle_(heading)
+            category.setButtonType_(AppKit.NSButtonTypeRadio)
+            category.setTag_(section_index)
+            category.setTarget_(self.target)
+            category.setAction_("category:")
+            sidebar.addSubview_(category)
+            self._settings_categories.append(category)
+
+            pane = AppKit.NSView.alloc().initWithFrame_(((220, 67), (565, 423)))
+            content.addSubview_(pane)
+            self._settings_panes.append(pane)
+            title = AppKit.NSTextField.labelWithString_(heading)
+            title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(17))
+            title.setFrame_(((15, 365), (530, 30)))
+            pane.addSubview_(title)
+            for row, (label, key, kind) in enumerate(entries):
+                y = 316 - row * 55
                 caption = AppKit.NSTextField.labelWithString_(label)
-                caption.setFrame_(((10, y), (190, 24)))
-                view.addSubview_(caption)
+                caption.setFrame_(((15, y), (190, 24)))
+                pane.addSubview_(caption)
                 if kind == "bool":
-                    field = AppKit.NSButton.alloc().initWithFrame_(((205, y), (24, 24)))
+                    field = AppKit.NSButton.alloc().initWithFrame_(((215, y), (24, 24)))
                     field.setButtonType_(AppKit.NSButtonTypeSwitch)
                     field.setState_(bool(getattr(config, key)))
                 else:
                     cls = AppKit.NSSecureTextField if kind == "secret" else AppKit.NSTextField
-                    field = cls.alloc().initWithFrame_(((205, y), (350, 24)))
+                    field = cls.alloc().initWithFrame_(((215, y), (330, 24)))
                     field.setStringValue_(str(getattr(config, key) or ""))
-                view.addSubview_(field)
+                pane.addSubview_(field)
                 inputs[key] = (field, kind)
-                index += 1
-        scroll = AppKit.NSScrollView.alloc().initWithFrame_(((0, 0), (590, 430)))
-        scroll.setHasVerticalScroller_(True)
-        scroll.setDocumentView_(view)
-        scroll.contentView().scrollToPoint_((0, height - 430))
-        scroll.reflectScrolledClipView_(scroll.contentView())
-        alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_("Settings")
-        alert.setInformativeText_("Changes apply on OK. OBS connection changes wait for a recording to finish. Set the recording output folder in OBS as well.")
-        alert.setAccessoryView_(scroll)
-        alert.addButtonWithTitle_("OK")
-        alert.addButtonWithTitle_("Cancel")
+
+        self._select_settings_category(0)
+        footer = AppKit.NSTextField.labelWithString_(
+            "Changes apply on OK. OBS connection changes wait for a recording to finish."
+        )
+        footer.setFrame_(((20, 39), (550, 20)))
+        content.addSubview_(footer)
+        for title, action, x in (("Cancel", "cancelSettings:", 613), ("OK", "saveSettings:", 705)):
+            button = AppKit.NSButton.alloc().initWithFrame_(((x, 20), (78, 32)))
+            button.setTitle_(title)
+            button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+            button.setTarget_(self.target)
+            button.setAction_(action)
+            content.addSubview_(button)
         AppKit.NSApp.activateIgnoringOtherApps_(True)
-        if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+        window.makeKeyAndOrderFront_(None)
+        try:
+            accepted = AppKit.NSApp.runModalForWindow_(window) == 1
+        finally:
+            window.orderOut_(None)
+            self._settings_panes = []
+            self._settings_categories = []
+        if not accepted:
             return
         values = {}
         for key, (field, kind) in inputs.items():
