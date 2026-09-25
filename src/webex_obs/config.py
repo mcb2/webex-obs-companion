@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     )
 
     # Webex settings (Permanent Bot Token)
+    webex_delivery_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEBEX_DELIVERY_ENABLED", "webex_delivery_enabled"),
+        description="Automatically deliver completed transcripts through the Webex bot",
+    )
     webex_access_token: str = Field(
         default="",
         validation_alias=AliasChoices("WEBEX_ACCESS_TOKEN", "webex_access_token", "WEBEX_BOT_TOKEN", "webex_bot_token", "WEBEX_TOKEN", "webex_token"),

@@ -194,6 +194,7 @@ class MacOSUI:
         config = self.daemon.config
         sections = [
             ("Webex delivery", [
+                ("Deliver transcripts to Webex", "webex_delivery_enabled", "bool"),
                 ("Bot access token", "webex_access_token", "secret"),
                 ("Recipient email", "webex_recipient_email", "text"),
                 ("My Agent email", "my_agent_email", "text"),

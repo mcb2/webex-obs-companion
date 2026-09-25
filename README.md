@@ -66,6 +66,8 @@ applied when you click **OK**, without restarting the service. An active
 recording retains its OBS connection until it stops. OBS still performs all
 capture: update its recording output path in OBS too if you change the
 recordings folder here. Tokens and passwords are masked in Settings.
+Turn off **Deliver transcripts to Webex** to retain transcripts locally without
+sending them to the bot; recording and transcription continue as usual.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash

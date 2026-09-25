@@ -39,10 +39,12 @@ class SettingsStoreTests(unittest.TestCase):
             path = Path(folder) / ".env"
             path.write_text("# preserve\nOBS_WS_PORT=4455\n")
             updated = save_settings({"webex_access_token": "a token with spaces",
+                                     "webex_delivery_enabled": False,
                                      "hf_token": "hf_example", "enable_diarization": True,
                                      "whisper_model": "another-model", "poll_interval": "1.5"}, path)
             self.assertEqual(updated.webex_access_token, "a token with spaces")
             self.assertEqual(Config(_env_file=path).hf_token, "hf_example")
+            self.assertFalse(Config(_env_file=path).webex_delivery_enabled)
             self.assertEqual(Config(_env_file=path).poll_interval, 1.5)
             self.assertIn("# preserve", path.read_text())
 

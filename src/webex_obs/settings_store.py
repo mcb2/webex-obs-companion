@@ -12,6 +12,7 @@ from .hotkey_listener import validate_hotkeys
 
 
 EDITABLE = {
+    "webex_delivery_enabled": "WEBEX_DELIVERY_ENABLED",
     "webex_access_token": "WEBEX_ACCESS_TOKEN",
     "webex_recipient_email": "WEBEX_RECIPIENT_EMAIL",
     "my_agent_email": "MY_AGENT_EMAIL",

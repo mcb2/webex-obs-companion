@@ -107,6 +107,17 @@ class WebexOBSDaemon:
         title = self._active_session.display_title if self._active_session else "Ready for calls"
         return self.recorder.is_recording, title
 
+    def deliver_transcript(self, transcript_file: Path, meeting_title: str) -> None:
+        if not self.config.webex_delivery_enabled:
+            logger.info("Webex delivery disabled; transcript saved locally: %s", transcript_file)
+            return
+        self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
+        sent = self.webex.send_transcript(transcript_file, meeting_title=meeting_title)
+        if sent:
+            self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
+        else:
+            self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+
     def _new_recording_session(self) -> RecordingSession:
         title = self.monitor.current_call_title or self.monitor.get_active_call_title()
         title = title or self.monitor.default_call_title
@@ -303,15 +314,7 @@ class WebexOBSDaemon:
                 )
 
                 if transcript_file:
-                    self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
-                    sent = self.webex.send_transcript(
-                        transcript_file,
-                        meeting_title=session.display_title,
-                    )
-                    if sent:
-                        self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
-                    else:
-                        self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+                    self.deliver_transcript(transcript_file, session.display_title)
 
                 self._manual_stop_event.clear()
                 self._active_session = None

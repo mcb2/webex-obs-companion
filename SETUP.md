@@ -67,11 +67,14 @@ Webex Bots provide **permanent access tokens** that never expire (unlike persona
 ### Direct 1:1 Delivery Configuration
 In `~/Projects/webex_obs_companion/.env`:
 ```ini
+WEBEX_DELIVERY_ENABLED=true
 WEBEX_ACCESS_TOKEN=your_bot_token_here
 WEBEX_RECIPIENT_EMAIL=your_webex_email@example.com
 MY_AGENT_EMAIL=your_agent@webex.bot
 WEBEX_ROOM_ID=
 ```
+- Set `WEBEX_DELIVERY_ENABLED=false`, or turn off **Deliver transcripts to Webex**
+  in Settings, to save transcripts locally without automatically sending them.
 - **How it Works**: When a meeting ends, your bot sends the full transcript directly to your personal 1:1 Webex chat.
 - **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` for instant executive summaries and action items.
 
