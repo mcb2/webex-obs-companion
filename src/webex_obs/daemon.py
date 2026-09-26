@@ -232,12 +232,20 @@ class WebexOBSDaemon:
 
                 started = self.recorder.start_recording(mode=mode)
                 if not started:
-                    logger.warning("Could not start OBS recording.%s",
-                                   " Will retry while the call remains active..." if not manual else "")
+                    logger.warning("OBS did not start recording; retrying without restarting OBS again.")
+                    for _ in range(2):
+                        time.sleep(1.0)
+                        started = self.recorder.retry_start_recording(mode=mode)
+                        if started:
+                            break
                     while not manual and self.monitor.is_call_active() and not started:
                         time.sleep(5)
                         started = self.recorder.start_recording(mode=mode, relaunch=True)
                     if not started:
+                        if manual:
+                            self.ui.show_notification(
+                                "Webex OBS Companion", "Recording could not start. Check OBS and the service log."
+                            )
                         self.monitor.is_in_meeting = False
                         self._active_session = None
                         continue

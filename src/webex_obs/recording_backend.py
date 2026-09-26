@@ -20,6 +20,7 @@ class RecordingBackend(Protocol):
     def connect(self) -> bool: ...
     def disconnect(self) -> None: ...
     def start_recording(self, mode: RecordingMode = "audio", relaunch: bool = False) -> bool: ...
+    def retry_start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def ensure_recording(self) -> bool: ...
     def switch_to_video_mode(self) -> None: ...
     def stop_recording(self) -> list[str]: ...
@@ -68,6 +69,15 @@ class OBSRecordingBackend:
         return self.controller.start_recording(
             scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
             relaunch=relaunch,
+        )
+
+    def retry_start_recording(self, mode: RecordingMode = "audio") -> bool:
+        """Retry an initial start without repeating the per-call OBS restart."""
+        if mode not in ("audio", "video"):
+            raise ValueError(f"Unknown recording mode: {mode}")
+        return self.controller.start_recording(
+            scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
+            skip_relaunch=True,
         )
 
     def ensure_recording(self) -> bool:

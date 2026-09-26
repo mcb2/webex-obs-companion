@@ -88,14 +88,17 @@ def test_manual_video_start_enters_worker_lifecycle_without_second_prompt():
     daemon._discard_requested = False
     daemon._active_session = None
     session = Mock(display_title="Manual recording")
-    daemon.recorder.start_recording.side_effect = lambda **kwargs: daemon._manual_stop_event.set() or True
+    daemon.recorder.start_recording.return_value = False
+    daemon.recorder.retry_start_recording.side_effect = lambda **kwargs: daemon._manual_stop_event.set() or True
 
     with patch.object(daemon, "_new_recording_session", return_value=session), \
          patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+         patch("webex_obs.daemon.time.sleep"), \
          patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
         daemon.start()
 
     daemon.recorder.start_recording.assert_called_once_with(mode="video")
+    daemon.recorder.retry_start_recording.assert_called_once_with(mode="video")
     daemon.ui.show_startup_prompt.assert_not_called()
     daemon.recorder.stop_recording.assert_called_once()
     assert daemon.monitor.is_in_meeting is False

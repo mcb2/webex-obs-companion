@@ -22,10 +22,13 @@ class BackendTests(unittest.TestCase):
         backend = OBSRecordingBackend(controller)
         backend.start_recording("audio")
         backend.start_recording("video", relaunch=True)
+        backend.retry_start_recording("video")
         self.assertEqual(controller.start_recording.call_args_list[0].kwargs,
                          {"scene_name": "Webex-Audio", "relaunch": False})
         self.assertEqual(controller.start_recording.call_args_list[1].kwargs,
                          {"scene_name": "Webex-Video", "relaunch": True})
+        self.assertEqual(controller.start_recording.call_args_list[2].kwargs,
+                         {"scene_name": "Webex-Video", "skip_relaunch": True})
 
     def test_connection_change_waits_until_active_recording_stops(self):
         from unittest.mock import Mock

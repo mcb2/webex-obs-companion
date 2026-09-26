@@ -4,10 +4,10 @@
 
 On macOS the main thread owns AppKit (`macos_ui.MacOSUI`): a status item,
 recording confirmation and control alerts, and Settings. The call lifecycle
-in `daemon.WebexOBSDaemon` runs on a worker thread. Dialog requests cross a
-queue to the main run loop; the confirmation retains the 15-second default to
-audio. The legacy `UIBanner` remains available to headless tests and handles
-notifications.
+in `daemon.WebexOBSDaemon` runs on a worker thread. Menu actions present dialogs
+on the main thread; hotkey requests cross a queue to the main run loop. The
+confirmation retains the 15-second default to audio. The legacy `UIBanner`
+remains available to headless tests and handles notifications.
 
 The lifecycle depends on `recording_backend.RecordingBackend`, which defines
 connect, start, verify/recover, switch to video, stop (returning all completed
@@ -15,6 +15,8 @@ segment paths), and disconnect. `create_recording_backend` currently creates
 an `OBSRecordingBackend` adapter around `OBSController`. A native recorder can
 implement the same contract and handle its own permissions, audio/video devices,
 recovery and output files. The adapter maps audio/video modes to OBS scene names.
+OBS start verifies output status and retries transient startup failures against
+the same OBS instance before attempting another per-call restart.
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
 
