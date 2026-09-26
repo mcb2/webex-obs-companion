@@ -236,7 +236,7 @@ class MacOSUI:
                 ("WebSocket host", "obs_ws_host", "text"),
                 ("WebSocket port", "obs_ws_port", "text"),
                 ("WebSocket password", "obs_ws_password", "secret"),
-                ("Restart OBS for each call", "relaunch_obs_per_call", "bool"),
+                ("Exit OBS on recording stop", "exit_obs_on_recording_stop", "bool"),
             ]),
             ("Transcription", [
                 ("Whisper model", "whisper_model", "text"),

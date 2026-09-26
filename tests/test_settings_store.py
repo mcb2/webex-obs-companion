@@ -31,6 +31,14 @@ class SettingsStoreTests(unittest.TestCase):
                     save_settings(values, path)
                 self.assertEqual(path.read_bytes(), original)
 
+    def test_new_obs_setting_overrides_legacy_env_value(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / ".env"
+            path.write_text("RELAUNCH_OBS_PER_CALL=false\n")
+            self.assertFalse(Config(_env_file=path).exit_obs_on_recording_stop)
+            save_settings({"exit_obs_on_recording_stop": True}, path)
+            self.assertTrue(Config(_env_file=path).exit_obs_on_recording_stop)
+
     def test_every_config_field_is_editable_and_secrets_round_trip(self):
         from webex_obs.settings_store import EDITABLE
         # LOG_DIR is a legacy field; LaunchAgent owns its log file paths.

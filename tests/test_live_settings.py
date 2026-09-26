@@ -73,7 +73,7 @@ def test_manual_video_start_enters_worker_lifecycle_without_second_prompt():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock(is_recording=False)
-    daemon.recorder.connect.return_value = True
+    daemon.recorder.initialize.return_value = True
     daemon.recorder.stop_recording.return_value = []
     daemon.monitor = Mock(is_in_meeting=False, current_call_title=None,
                           default_call_title="Webex Session")

@@ -25,13 +25,48 @@ class _Response:
 
 
 class OBSControllerTests(unittest.TestCase):
-    def test_start_aborts_when_required_relaunch_fails(self):
-        controller = OBSController(relaunch_per_call=True)
-        with patch.object(controller, "relaunch_obs", return_value=False):
-            self.assertFalse(controller.start_recording())
+    def test_startup_closes_new_obs_only_after_confirming_idle(self):
+        controller = OBSController()
+        with patch.object(controller, "obs_is_running", return_value=False), \
+             patch.object(controller, "connect", return_value=True), \
+             patch.object(controller, "_recording_is_confirmed_stopped", return_value=True), \
+             patch.object(controller, "quit_obs") as quit_obs:
+            self.assertTrue(controller.initialize())
+        quit_obs.assert_called_once()
+
+    def test_startup_keeps_existing_obs_or_unverified_recording(self):
+        for running, idle in ((True, True), (False, False)):
+            controller = OBSController()
+            with patch.object(controller, "obs_is_running", return_value=running), \
+                 patch.object(controller, "connect", return_value=True), \
+                 patch.object(controller, "_recording_is_confirmed_stopped", return_value=idle), \
+                 patch.object(controller, "quit_obs") as quit_obs:
+                self.assertTrue(controller.initialize())
+            quit_obs.assert_not_called()
+
+    def test_connect_launches_only_when_obs_is_absent(self):
+        for running in (False, True):
+            controller = OBSController()
+            with patch.object(controller, "obs_is_running", return_value=running), \
+                 patch("webex_obs.obs_controller.subprocess.run") as run, \
+                 patch("webex_obs.obs_controller.obsws") as websocket:
+                self.assertTrue(controller.connect())
+            self.assertEqual(run.call_count, int(not running))
+            websocket.return_value.connect.assert_called_once()
+
+    def test_stop_status_query_prevents_quit_while_recording_active(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.ws.call.side_effect = [_Response(), _Response(outputActive=True)]
+        with patch.object(controller, "check_connection", return_value=True), \
+             patch.object(controller, "quit_obs") as quit_obs, \
+             patch("webex_obs.obs_controller.time.sleep"):
+            controller.stop_recording()
+        quit_obs.assert_not_called()
+        self.assertTrue(controller.is_recording)
 
     def test_recording_status_is_verified_and_path_is_remembered(self):
-        controller = OBSController(relaunch_per_call=False)
+        controller = OBSController(exit_on_stop=False)
         controller.ws = Mock()
         controller.is_connected = True
         controller.ws.call.return_value = _Response(
@@ -44,36 +79,45 @@ class OBSControllerTests(unittest.TestCase):
         self.assertEqual(controller.recorded_files, ["/tmp/segment.mkv"])
 
     def test_recovery_resumes_the_current_scene(self):
-        controller = OBSController(relaunch_per_call=True)
+        controller = OBSController()
         controller.current_scene = "Webex-Video"
         with patch.object(controller, "_refresh_recording_status", return_value=False), \
              patch.object(controller, "start_recording", return_value=True) as start:
             self.assertTrue(controller.ensure_recording())
-        start.assert_called_once_with(scene_name="Webex-Video", relaunch=True)
+        start.assert_called_once_with(scene_name="Webex-Video")
 
     def test_transient_start_failure_retries_without_second_obs_restart(self):
-        controller = OBSController(relaunch_per_call=True)
+        controller = OBSController()
         controller.ws = Mock()
         controller.ws.call.side_effect = [RuntimeError("OBS is still initializing"), Mock()]
-        with patch.object(controller, "relaunch_obs", return_value=True) as restart, \
-             patch.object(controller, "switch_scene", return_value=True), \
+        with patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "_refresh_recording_status",
                           side_effect=[False, False, False, True]), \
              patch("webex_obs.obs_controller.time.sleep"):
             self.assertTrue(controller.start_recording())
-        restart.assert_called_once()
         self.assertEqual(controller.ws.call.call_count, 2)
 
     def test_status_poll_catches_delayed_success_without_duplicate_start(self):
-        controller = OBSController(relaunch_per_call=True)
+        controller = OBSController()
         controller.ws = Mock()
-        with patch.object(controller, "relaunch_obs", return_value=True) as restart, \
-             patch.object(controller, "switch_scene", return_value=True), \
+        with patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "_refresh_recording_status", side_effect=[False, False, True]), \
              patch("webex_obs.obs_controller.time.sleep"):
             self.assertTrue(controller.start_recording())
-        restart.assert_called_once()
         self.assertEqual(controller.ws.call.call_count, 1)
+
+    def test_stop_quits_only_when_verified_and_enabled(self):
+        for enabled, verified in ((True, True), (False, True), (True, False)):
+            controller = OBSController(exit_on_stop=enabled)
+            controller.ws = Mock()
+            controller.recorded_files = ["/tmp/segment.mkv"]
+            controller.ws.call.return_value = _Response()
+            with patch.object(controller, "check_connection", return_value=True), \
+                 patch.object(controller, "_recording_is_confirmed_stopped", return_value=verified), \
+                 patch.object(controller, "quit_obs") as quit_obs, \
+                 patch("webex_obs.obs_controller.time.sleep"):
+                self.assertEqual(controller.stop_recording(), ["/tmp/segment.mkv"])
+            self.assertEqual(quit_obs.call_count, int(enabled and verified))
 
 
 if __name__ == "__main__":
