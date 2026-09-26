@@ -18,8 +18,9 @@ class RecordingBackend(Protocol):
     def is_recording(self) -> bool: ...
 
     def connect(self) -> bool: ...
+    def initialize(self) -> bool: ...
     def disconnect(self) -> None: ...
-    def start_recording(self, mode: RecordingMode = "audio", relaunch: bool = False) -> bool: ...
+    def start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def retry_start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def ensure_recording(self) -> bool: ...
     def switch_to_video_mode(self) -> None: ...
@@ -36,7 +37,7 @@ class OBSRecordingBackend:
 
     def configure(self, config: Config) -> None:
         """Keep the live OBS socket until the current recording has stopped."""
-        self.controller.relaunch_per_call = config.relaunch_obs_per_call
+        self.controller.exit_on_stop = config.exit_obs_on_recording_stop
         connection = (config.obs_address, config.obs_port, config.obs_password)
         if self.controller.is_recording:
             self._pending_connection = connection
@@ -60,24 +61,25 @@ class OBSRecordingBackend:
     def connect(self) -> bool:
         return self.controller.connect()
 
+    def initialize(self) -> bool:
+        return self.controller.initialize()
+
     def disconnect(self) -> None:
         self.controller.disconnect()
 
-    def start_recording(self, mode: RecordingMode = "audio", relaunch: bool = False) -> bool:
+    def start_recording(self, mode: RecordingMode = "audio") -> bool:
         if mode not in ("audio", "video"):
             raise ValueError(f"Unknown recording mode: {mode}")
         return self.controller.start_recording(
             scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
-            relaunch=relaunch,
         )
 
     def retry_start_recording(self, mode: RecordingMode = "audio") -> bool:
-        """Retry an initial start without repeating the per-call OBS restart."""
+        """Retry an initial start while reusing a running OBS instance."""
         if mode not in ("audio", "video"):
             raise ValueError(f"Unknown recording mode: {mode}")
         return self.controller.start_recording(
             scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
-            skip_relaunch=True,
         )
 
     def ensure_recording(self) -> bool:
@@ -98,5 +100,5 @@ def create_recording_backend(config: Config) -> RecordingBackend:
         address=config.obs_address,
         port=config.obs_port,
         password=config.obs_password,
-        relaunch_per_call=config.relaunch_obs_per_call,
+        exit_on_stop=config.exit_obs_on_recording_stop,
     ))

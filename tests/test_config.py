@@ -18,6 +18,12 @@ def test_webex_delivery_can_be_disabled_in_env():
     assert Settings(_env_file=None, WEBEX_DELIVERY_ENABLED="false").webex_delivery_enabled is False
 
 
+def test_new_obs_option_accepts_legacy_value_and_prefers_new_value():
+    assert Settings(_env_file=None, RELAUNCH_OBS_PER_CALL="false").exit_obs_on_recording_stop is False
+    assert Settings(_env_file=None, RELAUNCH_OBS_PER_CALL="false",
+                    EXIT_OBS_ON_RECORDING_STOP="true").exit_obs_on_recording_stop is True
+
+
 def test_hotkeys_are_normalized():
     settings = Settings(
         _env_file=None,

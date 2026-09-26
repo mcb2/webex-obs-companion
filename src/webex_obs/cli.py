@@ -243,7 +243,7 @@ def setup():
     existing_room_id = ""
     existing_obs_port = "4455"
     existing_obs_password = ""
-    existing_relaunch_obs = True
+    existing_exit_obs = True
     existing_whisper_model = "mlx-community/whisper-large-v3-turbo"
     existing_enable_diarize = True
     existing_hf_token = ""
@@ -274,7 +274,7 @@ def setup():
                 existing_obs_port = str(current.obs_ws_port)
             if current.obs_ws_password:
                 existing_obs_password = current.obs_ws_password
-            existing_relaunch_obs = current.relaunch_obs_per_call
+            existing_exit_obs = current.exit_obs_on_recording_stop
             if current.whisper_model:
                 existing_whisper_model = current.whisper_model
             existing_enable_diarize = current.enable_diarization
@@ -321,7 +321,7 @@ def setup():
     console.print("\n[bold]2. OBS Studio WebSocket Configuration[/bold]")
     obs_port = Prompt.ask("Enter OBS WebSocket port", default=existing_obs_port)
     obs_password = Prompt.ask("Enter OBS WebSocket password", default=existing_obs_password, password=True)
-    relaunch_obs = Confirm.ask("Restart OBS on each call start to guarantee clean system audio capture?", default=existing_relaunch_obs)
+    exit_obs = Confirm.ask("Exit OBS after recording stops?", default=existing_exit_obs)
 
     console.print("\n[bold]3. Transcription & Speaker Diarization[/bold]")
     whisper_model = Prompt.ask("Enter Whisper model", default=existing_whisper_model)
@@ -391,7 +391,7 @@ WEBEX_ROOM_ID={room_id}
 OBS_WS_HOST=localhost
 OBS_WS_PORT={obs_port}
 OBS_WS_PASSWORD={obs_password}
-RELAUNCH_OBS_PER_CALL={'true' if relaunch_obs else 'false'}
+EXIT_OBS_ON_RECORDING_STOP={'true' if exit_obs else 'false'}
 
 # Transcription & Neural Diarization
 WHISPER_MODEL={whisper_model}
