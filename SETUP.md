@@ -67,11 +67,14 @@ Webex Bots provide **permanent access tokens** that never expire (unlike persona
 ### Direct 1:1 Delivery Configuration
 In `~/Projects/webex_obs_companion/.env`:
 ```ini
+WEBEX_DELIVERY_ENABLED=true
 WEBEX_ACCESS_TOKEN=your_bot_token_here
 WEBEX_RECIPIENT_EMAIL=your_webex_email@example.com
 MY_AGENT_EMAIL=your_agent@webex.bot
 WEBEX_ROOM_ID=
 ```
+- Set `WEBEX_DELIVERY_ENABLED=false`, or turn off **Deliver transcripts to Webex**
+  in Settings, to save transcripts locally without automatically sending them.
 - **How it Works**: When a meeting ends, your bot sends the full transcript directly to your personal 1:1 Webex chat.
 - **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` for instant executive summaries and action items.
 
@@ -92,6 +95,14 @@ tokens, and can retain an existing token without displaying it.
 The wizard also configures the three global keyboard shortcuts. They use `pynput`
 syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
 them so the new shortcuts are registered.
+
+The macOS menu-bar icon shows recording status and offers controls and a
+**Settings…** dialog for the configuration offered by setup, including masked
+passwords and tokens, plus OBS host and polling interval. Clicking **OK**
+saves and applies changes without a service restart. OBS connection changes
+take effect after the current recording finishes. Keep the OBS recording
+output path aligned with the recordings folder you select here. LaunchAgent
+stdout/stderr log paths are fixed by the installed service definition.
 
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
@@ -125,6 +136,10 @@ uv run webex-obs logs
 uv run webex-obs stop
 uv run webex-obs start
 ```
+
+The menu bar's **Quit (stop service)** action is equivalent to stopping the
+LaunchAgent for the current login session. Use `uv run webex-obs start` to
+resume it; the installed service starts again on the next login.
 
 ---
 

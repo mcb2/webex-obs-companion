@@ -51,6 +51,30 @@ class OBSControllerTests(unittest.TestCase):
             self.assertTrue(controller.ensure_recording())
         start.assert_called_once_with(scene_name="Webex-Video", relaunch=True)
 
+    def test_transient_start_failure_retries_without_second_obs_restart(self):
+        controller = OBSController(relaunch_per_call=True)
+        controller.ws = Mock()
+        controller.ws.call.side_effect = [RuntimeError("OBS is still initializing"), Mock()]
+        with patch.object(controller, "relaunch_obs", return_value=True) as restart, \
+             patch.object(controller, "switch_scene", return_value=True), \
+             patch.object(controller, "_refresh_recording_status",
+                          side_effect=[False, False, False, True]), \
+             patch("webex_obs.obs_controller.time.sleep"):
+            self.assertTrue(controller.start_recording())
+        restart.assert_called_once()
+        self.assertEqual(controller.ws.call.call_count, 2)
+
+    def test_status_poll_catches_delayed_success_without_duplicate_start(self):
+        controller = OBSController(relaunch_per_call=True)
+        controller.ws = Mock()
+        with patch.object(controller, "relaunch_obs", return_value=True) as restart, \
+             patch.object(controller, "switch_scene", return_value=True), \
+             patch.object(controller, "_refresh_recording_status", side_effect=[False, False, True]), \
+             patch("webex_obs.obs_controller.time.sleep"):
+            self.assertTrue(controller.start_recording())
+        restart.assert_called_once()
+        self.assertEqual(controller.ws.call.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

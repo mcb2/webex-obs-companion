@@ -146,41 +146,38 @@ class OBSController:
             logger.debug(f"Dynamic window bind notice: {e}")
             return False
 
-    def start_recording(self, scene_name: str = "Webex-Audio", relaunch: bool = False) -> bool:
-        if relaunch or self.relaunch_per_call:
+    def start_recording(self, scene_name: str = "Webex-Audio", relaunch: bool = False, skip_relaunch: bool = False) -> bool:
+        if not skip_relaunch and (relaunch or self.relaunch_per_call):
             if not self.relaunch_obs():
                 logger.error("Cannot start recording because OBS did not restart and reconnect.")
                 return False
-        elif not self.check_connection():
-            return False
-
-        try:
-            self.switch_scene(scene_name)
-            if scene_name == "Webex-Video":
-                self.bind_webex_video_window()
-            self.ws.call(requests.StartRecord())
-            if not self._refresh_recording_status():
-                raise RuntimeError("OBS accepted StartRecord but did not report an active recording")
-            logger.info(f"OBS recording started in scene '{scene_name}'.")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start OBS recording: {e}")
-            # The command may have succeeded even if its response was interrupted.
+        for attempt in range(3):
+            # The previous command may have succeeded even if its response was
+            # interrupted. Never send a second StartRecord in that case.
             if self._refresh_recording_status():
-                logger.info(f"OBS recording is active in scene '{scene_name}' after status verification.")
+                logger.info("OBS recording is already active in scene '%s'.", scene_name)
                 return True
-            # Try one reconnect attempt
-            if self.connect():
-                try:
-                    self.switch_scene(scene_name)
-                    self.ws.call(requests.StartRecord())
-                    if not self._refresh_recording_status():
-                        raise RuntimeError("OBS did not report an active recording after reconnect")
-                    logger.info(f"OBS recording started in scene '{scene_name}' after reconnect.")
+            try:
+                if not self.switch_scene(scene_name):
+                    raise RuntimeError("OBS scene is not ready")
+                if scene_name == "Webex-Video":
+                    self.bind_webex_video_window()
+                self.ws.call(requests.StartRecord())
+                for _ in range(3):
+                    if self._refresh_recording_status():
+                        logger.info("OBS recording started in scene '%s'.", scene_name)
+                        return True
+                    time.sleep(0.4)
+                raise RuntimeError("OBS accepted StartRecord but did not report an active recording")
+            except Exception as e:
+                if self._refresh_recording_status():
+                    logger.info("OBS recording is active after an interrupted start command.")
                     return True
-                except Exception as retry_err:
-                    logger.error(f"Retry start recording failed: {retry_err}")
-            return False
+                logger.warning("OBS start attempt %d/3 failed: %s", attempt + 1, e)
+                if attempt < 2:
+                    time.sleep(1.0)
+        logger.error("Could not start OBS recording after three attempts without another restart.")
+        return False
 
     def _refresh_recording_status(self) -> bool:
         """Query OBS instead of trusting the last command sent over WebSocket."""

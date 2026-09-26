@@ -7,10 +7,15 @@ from webex_obs.config import Settings
 def test_hotkeys_have_backward_compatible_defaults():
     settings = Settings(_env_file=None)
 
+    assert settings.webex_delivery_enabled is True
     assert settings.call_end_grace_seconds == 15.0
     assert settings.hotkey_video == "<cmd>+<shift>+v"
     assert settings.hotkey_menu == "<cmd>+<shift>+r"
     assert settings.hotkey_stop_transcribe == "<cmd>+<shift>+s"
+
+
+def test_webex_delivery_can_be_disabled_in_env():
+    assert Settings(_env_file=None, WEBEX_DELIVERY_ENABLED="false").webex_delivery_enabled is False
 
 
 def test_hotkeys_are_normalized():
