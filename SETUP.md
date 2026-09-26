@@ -46,8 +46,9 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 5. Check **Enable Authentication** and set a password (or copy the generated password).
 6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
 
-### Automatic OBS Audio Reset & Auto-Reconnection
-- **Audio Capture Refresh**: macOS CoreAudio / ScreenCaptureKit can occasionally freeze audio buffers if OBS has been running continuously for days. The companion defaults to `RELAUNCH_OBS_PER_CALL=true` which cleanly restarts OBS when each call starts to guarantee fresh audio capture.
+### OBS Lifecycle & Auto-Reconnection
+- **Startup check**: The service opens OBS and verifies WebSocket connectivity. If OBS was already running, it leaves it open; otherwise it closes the instance it launched after confirming recording is idle.
+- **Recording**: The service opens OBS when needed and keeps it running throughout the recording. By default, `EXIT_OBS_ON_RECORDING_STOP=true` closes OBS after a confirmed stop. Turn off **Exit OBS on recording stop** to leave OBS open between recordings. An existing `RELAUNCH_OBS_PER_CALL` value is accepted as a legacy setting until the new option is saved.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
