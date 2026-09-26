@@ -99,3 +99,19 @@ def test_manual_video_start_enters_worker_lifecycle_without_second_prompt():
     daemon.ui.show_startup_prompt.assert_not_called()
     daemon.recorder.stop_recording.assert_called_once()
     assert daemon.monitor.is_in_meeting is False
+
+
+def test_controls_use_cached_title_without_blocking_call_window_probe():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=True)
+    daemon.monitor = Mock(current_call_title="Cached title", default_call_title="Webex Session")
+    daemon._active_session = Mock(display_title="Recording title")
+    daemon.ui = Mock()
+    daemon.ui.show_control_prompt.return_value = "close"
+
+    daemon._handle_dialog_request()
+
+    daemon.monitor.get_active_call_title.assert_not_called()
+    daemon.ui.show_control_prompt.assert_called_once_with(
+        is_recording=True, meeting_title="Recording title"
+    )

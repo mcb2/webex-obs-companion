@@ -24,7 +24,12 @@ class _MenuTarget(Foundation.NSObject):
         self.ui = ui
 
     def controls_(self, sender):
-        threading.Thread(target=self.ui.daemon._handle_dialog_request, daemon=True).start()
+        is_recording, title = self.ui.daemon.control_prompt_state()
+        choice = self.ui.show_control_prompt(is_recording=is_recording, meeting_title=title)
+        if choice != "close":
+            threading.Thread(
+                target=self.ui.daemon._handle_control_choice, args=(choice,), daemon=True
+            ).start()
 
     def stop_(self, sender):
         self.ui.daemon._handle_stop_transcribe_request()

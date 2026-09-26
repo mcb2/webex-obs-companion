@@ -140,22 +140,25 @@ class WebexOBSDaemon:
         self.ui.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
         self._manual_stop_event.set()
 
-    def _handle_dialog_request(self):
-        """Handle Cmd+Shift+R hotkey to bring up recording controls anytime."""
-        if self._active_session:
-            self._active_session.use_title_if_missing(
-                self.monitor.get_active_call_title()
-            )
+    def control_prompt_state(self) -> tuple[bool, str]:
+        """Read cached state; accessibility window probes can stall UI presentation."""
         meeting_title = (
             self._active_session.display_title
             if self._active_session
             else self.monitor.current_call_title or self.monitor.default_call_title
         )
+        return self.recorder.is_recording, meeting_title
+
+    def _handle_dialog_request(self):
+        """Handle the global controls hotkey from its background listener."""
+        is_recording, meeting_title = self.control_prompt_state()
         choice = self.ui.show_control_prompt(
-            is_recording=self.recorder.is_recording,
+            is_recording=is_recording,
             meeting_title=meeting_title,
         )
+        self._handle_control_choice(choice)
 
+    def _handle_control_choice(self, choice: str) -> None:
         if choice == "stop_transcribe":
             self._handle_stop_transcribe_request()
         elif choice == "switch_video":
