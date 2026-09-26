@@ -32,3 +32,14 @@ def control_dialog(is_recording: bool, meeting_title: str) -> ControlDialog:
          ("Start Video", "start_video"),
          ("Cancel", "close")),
     )
+
+
+def startup_dialog(meeting_title: str) -> ControlDialog:
+    return ControlDialog(
+        "Recording started",
+        f"Meeting: {meeting_title}\n\nRecording consent\n{CONSENT_NOTICE}\n\n"
+        "Audio continues automatically after 15 seconds.",
+        (("Keep Audio", "keep_audio"),
+         ("Switch to Video", "switch_video"),
+         ("Cancel & Discard", "cancel")),
+    )

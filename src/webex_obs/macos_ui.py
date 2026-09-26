@@ -13,7 +13,7 @@ import Foundation
 import objc
 
 from .config import DEFAULT_ENV_FILE
-from .control_dialog import control_dialog
+from .control_dialog import control_dialog, startup_dialog
 from .settings_store import save_settings
 from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
@@ -59,8 +59,8 @@ class _MenuTarget(Foundation.NSObject):
     def tick_(self, timer):
         self.ui._tick()
 
-    def timeout_(self, timer):
-        AppKit.NSApp.stopModalWithCode_(AppKit.NSAlertFirstButtonReturn)
+    def controlTimeout_(self, timer):
+        AppKit.NSApp.stopModalWithCode_(1)
 
 
 class _SettingsSidebar(Foundation.NSObject):
@@ -149,7 +149,7 @@ class MacOSUI:
         return result[0]
 
     @staticmethod
-    def _alert(title, message, informative, buttons, timeout=None):
+    def _alert(title, message, informative, buttons):
         alert = AppKit.NSAlert.alloc().init()
         alert.setMessageText_(message)
         alert.setInformativeText_(informative)
@@ -158,32 +158,17 @@ class MacOSUI:
             alert.addButtonWithTitle_(button)
         alert.window().setTitle_(title)
         AppKit.NSApp.activateIgnoringOtherApps_(True)
-        timer = None
-        if timeout:
-            # A modal alert spins a nested main run loop, so the timer still fires.
-            timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                timeout, _TIMEOUT_TARGET, "timeout:", None, False
-            )
-        try:
-            return alert.runModal() - AppKit.NSAlertFirstButtonReturn
-        finally:
-            if timer:
-                timer.invalidate()
+        return alert.runModal() - AppKit.NSAlertFirstButtonReturn
 
     def show_startup_prompt(self, meeting_title="Webex Session"):
-        index = self._on_main(lambda: self._alert(
-            "Webex OBS Companion", "Recording started", meeting_title + "\n\n"
-            "Recording laws vary by location. Obtain permission from all participants "
-            "when required by applicable law.\n\nAudio continues automatically after 15 seconds.",
-            ["Keep Audio", "Switch to Video", "Cancel & Discard"], timeout=15,
-        ))
-        return {0: "keep_audio", 1: "switch_video", 2: "cancel"}.get(index, "keep_audio")
+        spec = startup_dialog(meeting_title)
+        return self._on_main(lambda: self._control_window(spec, timeout=15))
 
     def show_control_prompt(self, is_recording=True, meeting_title="Webex Session"):
         spec = control_dialog(is_recording, meeting_title)
         return self._on_main(lambda: self._control_window(spec))
 
-    def _control_window(self, spec):
+    def _control_window(self, spec, timeout=None):
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0, 0), (570, 270)), AppKit.NSWindowStyleMaskTitled,
             AppKit.NSBackingStoreBuffered, False,
@@ -212,14 +197,21 @@ class MacOSUI:
             button.setTag_(index + 1)
             button.setTarget_(self.target)
             button.setAction_("controlChoice:")
-            if choice == "close":
+            if choice in ("close", "cancel"):
                 button.setKeyEquivalent_("\x1b")
             content.addSubview_(button)
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
+        timer = None
+        if timeout:
+            timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                timeout, self.target, "controlTimeout:", None, False
+            )
         try:
             selected = AppKit.NSApp.runModalForWindow_(window) - 1
         finally:
+            if timer:
+                timer.invalidate()
             window.orderOut_(None)
         return spec.choices[selected][1] if 0 <= selected < len(spec.choices) else "close"
 
@@ -367,6 +359,3 @@ class MacOSUI:
                 raise
         except Exception as exc:
             self._alert("Settings", "Could not save settings", str(exc), ["OK"])
-
-
-_TIMEOUT_TARGET = _MenuTarget.alloc().init()
