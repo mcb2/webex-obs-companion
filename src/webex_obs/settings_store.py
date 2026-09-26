@@ -20,7 +20,7 @@ EDITABLE = {
     "obs_ws_host": "OBS_WS_HOST",
     "obs_ws_port": "OBS_WS_PORT",
     "obs_ws_password": "OBS_WS_PASSWORD",
-    "relaunch_obs_per_call": "RELAUNCH_OBS_PER_CALL",
+    "exit_obs_on_recording_stop": "EXIT_OBS_ON_RECORDING_STOP",
     "recordings_dir": "RECORDINGS_DIR",
     "transcripts_dir": "TRANSCRIPTS_DIR",
     "retention_days": "RETENTION_DAYS",

@@ -75,10 +75,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OBS_WS_PASSWORD", "obs_ws_password", "OBS_PASSWORD", "obs_password"),
         description="OBS WebSocket password"
     )
-    relaunch_obs_per_call: bool = Field(
+    exit_obs_on_recording_stop: bool = Field(
         default=True,
-        validation_alias=AliasChoices("RELAUNCH_OBS_PER_CALL", "relaunch_obs_per_call", "RELAUNCH_OBS", "relaunch_obs"),
-        description="Gracefully restart OBS Studio on each call to prevent macOS CoreAudio / ScreenCaptureKit capture stall"
+        validation_alias=AliasChoices("EXIT_OBS_ON_RECORDING_STOP", "exit_obs_on_recording_stop", "RELAUNCH_OBS_PER_CALL"),
+        description="Gracefully exit OBS Studio after recording stops and its stopped status is verified"
     )
 
     # Transcription & Diarization settings

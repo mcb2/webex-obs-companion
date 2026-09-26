@@ -14,80 +14,105 @@ except ImportError:
 
 
 class OBSController:
-    def __init__(self, address: str = "localhost", port: int = 4455, password: str = "", relaunch_per_call: bool = True):
+    def __init__(self, address: str = "localhost", port: int = 4455, password: str = "", exit_on_stop: bool = True):
         self.address = address
         self.port = port
         self.password = password
-        self.relaunch_per_call = relaunch_per_call
+        self.exit_on_stop = exit_on_stop
         self.ws: obsws | None = None
         self.is_connected = False
         self.is_recording = False
         self.recorded_files: list[str] = []
         self.current_scene = "Webex-Audio"
 
-    def relaunch_obs(self) -> bool:
-        """Gracefully quit any existing OBS instance and launch fresh to clear macOS CoreAudio stalls."""
-        logger.info("Restarting OBS Studio to guarantee fresh CoreAudio capture buffers...")
-        self.disconnect()
+    def obs_is_running(self) -> bool:
+        return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0
 
-        try:
-            # Request graceful quit via AppleScript
-            subprocess.run(["osascript", "-e", 'quit app "OBS"'], capture_output=True)
-            for _ in range(6):
-                time.sleep(0.5)
-                if subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode != 0:
-                    break
-
-            # Force terminate if still lingering
-            if subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0:
-                subprocess.run(["pkill", "-9", "-x", "OBS"], capture_output=True)
-                time.sleep(0.5)
-
-            # Launch OBS in background
-            subprocess.run(["open", "-g", "-a", "OBS"])
-
-            # Poll for WebSocket availability
-            for attempt in range(1, 15):
-                time.sleep(1.0)
-                if self.connect():
-                    logger.info("OBS Studio successfully restarted and reconnected.")
+    def quit_obs(self) -> bool:
+        """Ask OBS to finish shutting down; never force-kill a recording."""
+        for attempt in range(2):
+            try:
+                if not self.obs_is_running():
+                    self.disconnect()
                     return True
+                result = subprocess.run(
+                    ["osascript", "-e", 'quit app "OBS"'],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode:
+                    logger.warning("OBS quit request failed: %s", result.stderr.strip())
+                for _ in range(20):
+                    if not self.obs_is_running():
+                        self.disconnect()
+                        logger.info("OBS Studio exited.")
+                        return True
+                    time.sleep(0.5)
+            except Exception as e:
+                logger.warning("Could not quit OBS Studio: %s", e)
+            if attempt == 0:
+                # A quit command can be ignored while OBS is still completing
+                # startup. Do not send it again if recording began meanwhile.
+                if self._recording_active_status() is not False:
+                    logger.warning("OBS is no longer confirmed idle; skipping another quit request.")
+                    return False
+                logger.warning("OBS remains open; retrying the graceful quit request.")
+        logger.warning("OBS Studio did not exit after two quit requests.")
+        return False
 
-            logger.warning("OBS Studio relaunched but WebSocket connection timed out.")
-            return False
-        except Exception as e:
-            logger.warning(f"Error during OBS relaunch: {e}")
-            return self.connect()
-
-    def ensure_obs_running(self) -> None:
-        """Launch OBS Studio in the background if not currently running."""
+    def initialize(self) -> bool:
+        """Check OBS at service start, closing only an instance started for this check."""
         try:
-            res = subprocess.run(["pgrep", "-x", "OBS"], capture_output=True)
-            if res.returncode != 0:
-                logger.info("OBS Studio is not running. Auto-launching in background (-g)...")
-                subprocess.run(["open", "-g", "-a", "OBS"])
-                for _ in range(8):
-                    time.sleep(1.0)
-                    if subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0:
-                        break
-                time.sleep(1.5)
+            was_running = self.obs_is_running()
         except Exception as e:
-            logger.warning(f"Could not auto-launch OBS Studio: {e}")
+            logger.warning("Could not check whether OBS is running: %s", e)
+            return False
+        if not self.connect():
+            return False
+        if not was_running:
+            for attempt in range(10):
+                active = self._recording_active_status()
+                if active is False:
+                    if not self.quit_obs():
+                        logger.warning("Startup OBS check succeeded, but OBS could not be closed.")
+                    break
+                if active is True:
+                    logger.warning("OBS is recording after startup; leaving it open.")
+                    break
+                if attempt < 9:
+                    time.sleep(0.5)
+            else:
+                logger.warning("OBS recording status remained unavailable; leaving it open.")
+        return True
 
     def connect(self) -> bool:
         """Establish connection to OBS WebSocket server."""
-        self.ensure_obs_running()
+        try:
+            started_here = not self.obs_is_running()
+            if started_here:
+                logger.info("OBS Studio is not running. Launching in background...")
+                subprocess.run(["open", "-g", "-a", "OBS"], check=True)
+        except Exception as e:
+            logger.warning("Could not launch OBS Studio: %s", e)
+            return False
         try:
             if self.ws:
                 try:
                     self.ws.disconnect()
                 except Exception:
                     pass
-            self.ws = obsws(self.address, self.port, self.password)
-            self.ws.connect()
-            self.is_connected = True
-            logger.info("Connected to OBS Studio WebSocket v5.")
-            return True
+            attempts = 15 if started_here else 3
+            for attempt in range(attempts):
+                try:
+                    self.ws = obsws(self.address, self.port, self.password)
+                    self.ws.connect()
+                    self.is_connected = True
+                    logger.info("Connected to OBS Studio WebSocket v5.")
+                    return True
+                except Exception:
+                    self.ws = None
+                    if attempt < attempts - 1:
+                        time.sleep(1.0)
+            raise ConnectionError("OBS WebSocket did not become available")
         except Exception as e:
             logger.debug(f"Could not connect to OBS Studio at {self.address}:{self.port}: {e}")
             self.is_connected = False
@@ -146,11 +171,7 @@ class OBSController:
             logger.debug(f"Dynamic window bind notice: {e}")
             return False
 
-    def start_recording(self, scene_name: str = "Webex-Audio", relaunch: bool = False, skip_relaunch: bool = False) -> bool:
-        if not skip_relaunch and (relaunch or self.relaunch_per_call):
-            if not self.relaunch_obs():
-                logger.error("Cannot start recording because OBS did not restart and reconnect.")
-                return False
+    def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
             # The previous command may have succeeded even if its response was
             # interrupted. Never send a second StartRecord in that case.
@@ -176,7 +197,7 @@ class OBSController:
                 logger.warning("OBS start attempt %d/3 failed: %s", attempt + 1, e)
                 if attempt < 2:
                     time.sleep(1.0)
-        logger.error("Could not start OBS recording after three attempts without another restart.")
+        logger.error("Could not start OBS recording after three attempts.")
         return False
 
     def _refresh_recording_status(self) -> bool:
@@ -201,8 +222,8 @@ class OBSController:
         """Keep a live call recording even if OBS exits or its output stops."""
         if self._refresh_recording_status():
             return True
-        logger.warning("OBS recording is no longer active. Restarting OBS and resuming in a new segment...")
-        return self.start_recording(scene_name=scene_name or self.current_scene, relaunch=True)
+        logger.warning("OBS recording is no longer active. Resuming in a new segment...")
+        return self.start_recording(scene_name=scene_name or self.current_scene)
 
     def switch_scene(self, scene_name: str) -> bool:
         if not self.check_connection():
@@ -219,27 +240,54 @@ class OBSController:
     def stop_recording(self) -> list[str]:
         if not self.check_connection():
             logger.warning("Cannot stop OBS recording cleanly: WebSocket is not connected.")
-            self.is_recording = False
             files = list(self.recorded_files)
             self.recorded_files.clear()
             return files
 
         try:
             res = self.ws.call(requests.StopRecord())
-            self.is_recording = False
             output_path = getattr(res, "datain", {}).get("outputPath", "")
             if output_path and os.path.exists(output_path):
                 if output_path not in self.recorded_files:
                     self.recorded_files.append(output_path)
-            logger.info("OBS recording stopped.")
+            logger.info("OBS StopRecord command returned.")
         except Exception as e:
             logger.error(f"Error stopping OBS recording: {e}")
-            self.is_recording = False
-
-        time.sleep(1.0)
+        # OBS may still be finalizing its output after StopRecord returns.
+        stopped = False
+        for _ in range(10):
+            if self._recording_is_confirmed_stopped():
+                stopped = True
+                break
+            time.sleep(0.5)
+        if stopped and self.exit_on_stop:
+            self.quit_obs()
+        elif not stopped:
+            logger.warning("OBS recording stop could not be verified; leaving OBS open.")
+        else:
+            logger.info("OBS recording stopped; keeping OBS open as configured.")
         files = list(self.recorded_files)
         self.recorded_files.clear()
         return files
+
+    def _recording_is_confirmed_stopped(self) -> bool:
+        return self._recording_active_status() is False
+
+    def _recording_active_status(self) -> bool | None:
+        """Return OBS's status, or None if it could not be verified."""
+        if not self.check_connection():
+            return None
+        try:
+            data = self.ws.call(requests.GetRecordStatus()).datain
+            if "outputActive" not in data:
+                logger.warning("OBS recording status response lacked outputActive.")
+                return None
+            active = bool(data["outputActive"])
+            self.is_recording = active
+            return active
+        except Exception as e:
+            logger.warning("Could not verify OBS recording status: %s", e)
+            return None
 
     def switch_to_video_mode(self) -> None:
         if not self.is_recording:

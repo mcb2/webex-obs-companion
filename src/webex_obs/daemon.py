@@ -197,14 +197,12 @@ class WebexOBSDaemon:
 
         self.hotkeys.start()
 
-        # Startup OBS WebSocket connection test & log
-        if self.recorder.connect():
-            logger.info(f"Connected to OBS Studio WebSocket ({self.config.obs_address}:{self.config.obs_port}).")
+        # Launch and verify OBS once at service start; a newly launched instance
+        # is closed by initialize after its idle status is confirmed.
+        if self.recorder.initialize():
+            logger.info("Verified OBS Studio WebSocket (%s:%s).", self.config.obs_address, self.config.obs_port)
         else:
-            logger.info(
-                "OBS Studio is not currently running. It will be launched automatically "
-                "when a supported call starts."
-            )
+            logger.warning("Could not verify OBS Studio at startup; recording start will retry.")
 
         MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
 
@@ -232,7 +230,7 @@ class WebexOBSDaemon:
 
                 started = self.recorder.start_recording(mode=mode)
                 if not started:
-                    logger.warning("OBS did not start recording; retrying without restarting OBS again.")
+                    logger.warning("OBS did not start recording; retrying with the running OBS instance.")
                     for _ in range(2):
                         time.sleep(1.0)
                         started = self.recorder.retry_start_recording(mode=mode)
@@ -240,7 +238,7 @@ class WebexOBSDaemon:
                             break
                     while not manual and self.monitor.is_call_active() and not started:
                         time.sleep(5)
-                        started = self.recorder.start_recording(mode=mode, relaunch=True)
+                        started = self.recorder.start_recording(mode=mode)
                     if not started:
                         if manual:
                             self.ui.show_notification(
