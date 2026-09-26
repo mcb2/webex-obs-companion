@@ -30,18 +30,33 @@ class OBSController:
 
     def quit_obs(self) -> bool:
         """Ask OBS to finish shutting down; never force-kill a recording."""
-        try:
-            subprocess.run(["osascript", "-e", 'quit app "OBS"'], capture_output=True, check=True)
-            for _ in range(12):
+        for attempt in range(2):
+            try:
                 if not self.obs_is_running():
                     self.disconnect()
-                    logger.info("OBS Studio exited.")
                     return True
-                time.sleep(0.5)
-        except Exception as e:
-            logger.warning("Could not quit OBS Studio: %s", e)
-            return False
-        logger.warning("OBS Studio did not exit after the quit request.")
+                result = subprocess.run(
+                    ["osascript", "-e", 'quit app "OBS"'],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode:
+                    logger.warning("OBS quit request failed: %s", result.stderr.strip())
+                for _ in range(20):
+                    if not self.obs_is_running():
+                        self.disconnect()
+                        logger.info("OBS Studio exited.")
+                        return True
+                    time.sleep(0.5)
+            except Exception as e:
+                logger.warning("Could not quit OBS Studio: %s", e)
+            if attempt == 0:
+                # A quit command can be ignored while OBS is still completing
+                # startup. Do not send it again if recording began meanwhile.
+                if self._recording_active_status() is not False:
+                    logger.warning("OBS is no longer confirmed idle; skipping another quit request.")
+                    return False
+                logger.warning("OBS remains open; retrying the graceful quit request.")
+        logger.warning("OBS Studio did not exit after two quit requests.")
         return False
 
     def initialize(self) -> bool:
@@ -54,10 +69,19 @@ class OBSController:
         if not self.connect():
             return False
         if not was_running:
-            if self._recording_is_confirmed_stopped():
-                self.quit_obs()
+            for attempt in range(10):
+                active = self._recording_active_status()
+                if active is False:
+                    if not self.quit_obs():
+                        logger.warning("Startup OBS check succeeded, but OBS could not be closed.")
+                    break
+                if active is True:
+                    logger.warning("OBS is recording after startup; leaving it open.")
+                    break
+                if attempt < 9:
+                    time.sleep(0.5)
             else:
-                logger.warning("OBS recording status could not be confirmed idle; leaving it open.")
+                logger.warning("OBS recording status remained unavailable; leaving it open.")
         return True
 
     def connect(self) -> bool:
@@ -247,19 +271,23 @@ class OBSController:
         return files
 
     def _recording_is_confirmed_stopped(self) -> bool:
+        return self._recording_active_status() is False
+
+    def _recording_active_status(self) -> bool | None:
+        """Return OBS's status, or None if it could not be verified."""
         if not self.check_connection():
-            return False
+            return None
         try:
             data = self.ws.call(requests.GetRecordStatus()).datain
             if "outputActive" not in data:
                 logger.warning("OBS recording status response lacked outputActive.")
-                return False
+                return None
             active = bool(data["outputActive"])
             self.is_recording = active
-            return not active
+            return active
         except Exception as e:
-            logger.warning("Could not verify OBS recording stop: %s", e)
-            return False
+            logger.warning("Could not verify OBS recording status: %s", e)
+            return None
 
     def switch_to_video_mode(self) -> None:
         if not self.is_recording:
