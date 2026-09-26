@@ -14,6 +14,8 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
+- **macOS Status Menu**: Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
+- When idle, the menu shows Recording controls, Settings, and Quit. Recording controls opens an icon-free dialog with audio/video start choices and a recording-consent reminder. During a recording, Stop & Transcribe appears in the menu and controls offer video switching or stop and transcribe.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
 Automatic detection currently targets the native macOS desktop clients. It
@@ -58,6 +60,18 @@ Run the interactive setup wizard (intelligently preserves existing `.env` values
 ```bash
 uv run webex-obs setup
 ```
+
+Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
+connection, transcription, detection, and shortcuts. Changes are saved and
+applied when you click **OK**, without restarting the service. An active
+recording retains its OBS connection until it stops. OBS still performs all
+capture: update its recording output path in OBS too if you change the
+recordings folder here. Tokens and passwords are masked in Settings.
+Turn off **Deliver transcripts to Webex** to retain transcripts locally without
+sending them to the bot; recording and transcription continue as usual.
+**Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays
+closed for the current login session. Start it again with `uv run webex-obs start`;
+the installed LaunchAgent also starts at the next login.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash

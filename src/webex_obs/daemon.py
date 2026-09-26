@@ -17,7 +17,7 @@ os.environ["PATH"] = current_path
 from .cleaner import MediaCleaner
 from .config import Config, settings
 from .hotkey_listener import HotkeyListener, display_hotkey
-from .obs_controller import OBSController
+from .recording_backend import RecordingBackend, create_recording_backend
 from .process_monitor import ProcessMonitor
 from .session import RecordingSession
 from .transcriber import Transcriber
@@ -28,14 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 class WebexOBSDaemon:
-    def __init__(self, config: Config | None = None):
+    def __init__(self, config: Config | None = None, backend: RecordingBackend | None = None, ui=None):
         self.config = config or settings
-        self.obs = OBSController(
-            address=self.config.obs_address,
-            port=self.config.obs_port,
-            password=self.config.obs_password,
-            relaunch_per_call=self.config.relaunch_obs_per_call,
-        )
+        self.recorder = backend or create_recording_backend(self.config)
+        # UI is injected so the lifecycle can run without AppKit (including tests).
+        self.ui = ui or UIBanner
         self.monitor = ProcessMonitor(
             poll_interval=self.config.poll_interval,
             call_end_grace_seconds=self.config.call_end_grace_seconds,
@@ -53,7 +50,7 @@ class WebexOBSDaemon:
             my_agent_email=self.config.my_agent_email,
         )
         self.hotkeys = HotkeyListener(
-            on_video_switch=self.obs.switch_to_video_mode,
+            on_video_switch=self.recorder.switch_to_video_mode,
             on_show_dialog=self._handle_dialog_request,
             on_stop_transcribe=self._handle_stop_transcribe_request,
             video_hotkey=self.config.hotkey_video,
@@ -61,8 +58,67 @@ class WebexOBSDaemon:
             stop_transcribe_hotkey=self.config.hotkey_stop_transcribe,
         )
         self._manual_stop_event = threading.Event()
+        self._manual_start_event = threading.Event()
+        self._manual_start_mode = "audio"
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
+
+    def apply_settings(self, config: Config) -> None:
+        """Install validated settings without interrupting a recording."""
+        old = self.config
+        # Construct workers before stopping the old hotkey listener.
+        transcriber = Transcriber(
+            model_name=config.whisper_model,
+            transcripts_dir=config.transcripts_dir,
+            enable_diarization=config.enable_diarization,
+            hf_token=config.hf_token,
+        )
+        webex = WebexClient(
+            token=config.webex_access_token,
+            recipient_email=config.webex_recipient_email,
+            room_id=config.webex_room_id,
+            my_agent_email=config.my_agent_email,
+        )
+        if any(getattr(old, key) != getattr(config, key) for key in (
+            "hotkey_video", "hotkey_menu", "hotkey_stop_transcribe"
+        )):
+            replacement = HotkeyListener(
+                on_video_switch=self.recorder.switch_to_video_mode,
+                on_show_dialog=self._handle_dialog_request,
+                on_stop_transcribe=self._handle_stop_transcribe_request,
+                video_hotkey=config.hotkey_video,
+                menu_hotkey=config.hotkey_menu,
+                stop_transcribe_hotkey=config.hotkey_stop_transcribe,
+            )
+            self.hotkeys.stop()
+            try:
+                replacement.start()
+            except Exception:
+                self.hotkeys.start()
+                raise
+            self.hotkeys = replacement
+        self.recorder.configure(config)
+        self.monitor.poll_interval = config.poll_interval
+        self.monitor.call_end_grace_seconds = config.call_end_grace_seconds
+        self.transcriber = transcriber
+        self.webex = webex
+        self.config = config
+        logger.info("Settings applied to running service.")
+
+    def status(self) -> tuple[bool, str]:
+        title = self._active_session.display_title if self._active_session else "Ready for calls"
+        return self.recorder.is_recording, title
+
+    def deliver_transcript(self, transcript_file: Path, meeting_title: str) -> None:
+        if not self.config.webex_delivery_enabled:
+            logger.info("Webex delivery disabled; transcript saved locally: %s", transcript_file)
+            return
+        self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
+        sent = self.webex.send_transcript(transcript_file, meeting_title=meeting_title)
+        if sent:
+            self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
+        else:
+            self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
 
     def _new_recording_session(self) -> RecordingSession:
         title = self.monitor.current_call_title or self.monitor.get_active_call_title()
@@ -73,66 +129,64 @@ class WebexOBSDaemon:
 
     def _handle_stop_transcribe_request(self):
         """Handle Cmd+Shift+S hotkey to immediately stop recording and start transcription."""
-        if not self.obs.is_recording:
-            UIBanner.show_notification("Webex OBS Companion", "No active meeting recording currently running.")
+        if not self.recorder.is_recording:
+            self.ui.show_notification("Webex OBS Companion", "No active meeting recording currently running.")
             return
 
         logger.info(
             "Manual Stop & Transcribe requested via hotkey (%s).",
             display_hotkey(self.config.hotkey_stop_transcribe),
         )
-        UIBanner.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
+        self.ui.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
         self._manual_stop_event.set()
 
-    def _handle_dialog_request(self):
-        """Handle Cmd+Shift+R hotkey to bring up recording controls anytime."""
-        if self._active_session:
-            self._active_session.use_title_if_missing(
-                self.monitor.get_active_call_title()
-            )
+    def control_prompt_state(self) -> tuple[bool, str]:
+        """Read cached state; accessibility window probes can stall UI presentation."""
         meeting_title = (
             self._active_session.display_title
             if self._active_session
             else self.monitor.current_call_title or self.monitor.default_call_title
         )
-        choice = UIBanner.show_control_prompt(
-            is_recording=self.obs.is_recording,
+        return self.recorder.is_recording, meeting_title
+
+    def _handle_dialog_request(self):
+        """Handle the global controls hotkey from its background listener."""
+        is_recording, meeting_title = self.control_prompt_state()
+        choice = self.ui.show_control_prompt(
+            is_recording=is_recording,
             meeting_title=meeting_title,
         )
+        self._handle_control_choice(choice)
 
+    def _handle_control_choice(self, choice: str) -> None:
         if choice == "stop_transcribe":
             self._handle_stop_transcribe_request()
         elif choice == "switch_video":
-            self.obs.switch_to_video_mode()
-            UIBanner.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
+            self.recorder.switch_to_video_mode()
+            self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
         elif choice == "start_audio":
-            logger.info("Manual Start Audio recording triggered from menu.")
-            self._active_session = self._new_recording_session()
-            if self.obs.start_recording(scene_name="Webex-Audio"):
-                self.monitor.is_in_meeting = True
-                UIBanner.show_notification("Webex OBS Companion", "Manual Audio recording started.")
-            else:
-                self._active_session = None
+            self._request_manual_start("audio")
         elif choice == "start_video":
-            logger.info("Manual Start Video recording triggered from menu.")
-            self._active_session = self._new_recording_session()
-            if self.obs.start_recording(scene_name="Webex-Video"):
-                self.monitor.is_in_meeting = True
-                UIBanner.show_notification("Webex OBS Companion", "Manual Video recording started.")
-            else:
-                self._active_session = None
+            self._request_manual_start("video")
         elif choice == "cancel":
             logger.info("User requested Cancel & Discard via dialog.")
             self._discard_requested = True
-            discarded = self.obs.stop_recording()
+            discarded = self.recorder.stop_recording()
             for f in discarded:
                 if os.path.exists(f):
                     try:
                         os.remove(f)
                     except Exception:
                         pass
-            UIBanner.show_notification("Webex OBS Companion", "Recording discarded.")
+            self.ui.show_notification("Webex OBS Companion", "Recording discarded.")
             self._active_session = None
+
+    def _request_manual_start(self, mode: str) -> None:
+        if self.recorder.is_recording or self._manual_start_event.is_set():
+            return
+        self._manual_start_mode = mode
+        self._manual_start_event.set()
+        logger.info("Manual %s recording requested from controls.", mode)
 
     def start(self):
         logger.info("Starting Webex OBS Companion Daemon...")
@@ -144,7 +198,7 @@ class WebexOBSDaemon:
         self.hotkeys.start()
 
         # Startup OBS WebSocket connection test & log
-        if self.obs.connect():
+        if self.recorder.connect():
             logger.info(f"Connected to OBS Studio WebSocket ({self.config.obs_address}:{self.config.obs_port}).")
         else:
             logger.info(
@@ -156,11 +210,14 @@ class WebexOBSDaemon:
 
         try:
             while True:
-                meeting_active = self.monitor.wait_for_state_change()
+                meeting_active = self.monitor.wait_for_state_change(self._manual_start_event)
                 if not meeting_active:
                     continue
+                manual = self._manual_start_event.is_set()
+                mode = self._manual_start_mode if manual else "audio"
+                self._manual_start_event.clear()
 
-                if self.monitor.should_suppress_automatic_prompt():
+                if not manual and self.monitor.should_suppress_automatic_prompt():
                     logger.info(
                         "Skipping automatic recording prompt for a call already declined by the user."
                     )
@@ -170,14 +227,25 @@ class WebexOBSDaemon:
                 self._discard_requested = False
                 self._manual_stop_event.clear()
                 self._active_session = self._new_recording_session()
+                if manual:
+                    self.monitor.is_in_meeting = True
 
-                started = self.obs.start_recording(scene_name="Webex-Audio")
+                started = self.recorder.start_recording(mode=mode)
                 if not started:
-                    logger.warning("Could not start OBS recording. Will retry while the call remains active...")
-                    while self.monitor.is_call_active() and not started:
+                    logger.warning("OBS did not start recording; retrying without restarting OBS again.")
+                    for _ in range(2):
+                        time.sleep(1.0)
+                        started = self.recorder.retry_start_recording(mode=mode)
+                        if started:
+                            break
+                    while not manual and self.monitor.is_call_active() and not started:
                         time.sleep(5)
-                        started = self.obs.start_recording(scene_name="Webex-Audio", relaunch=True)
+                        started = self.recorder.start_recording(mode=mode, relaunch=True)
                     if not started:
+                        if manual:
+                            self.ui.show_notification(
+                                "Webex OBS Companion", "Recording could not start. Check OBS and the service log."
+                            )
                         self.monitor.is_in_meeting = False
                         self._active_session = None
                         continue
@@ -187,7 +255,7 @@ class WebexOBSDaemon:
                     session.use_title_if_missing(
                         self.monitor.get_active_call_title()
                     )
-                choice = UIBanner.show_startup_prompt(
+                choice = "keep_audio" if manual else self.ui.show_startup_prompt(
                     meeting_title=(
                         session.display_title if session else self.monitor.default_call_title
                     )
@@ -201,7 +269,7 @@ class WebexOBSDaemon:
                         if session and session.display_title != self.monitor.default_call_title
                         else None
                     )
-                    discarded = self.obs.stop_recording()
+                    discarded = self.recorder.stop_recording()
                     for f in discarded:
                         if os.path.exists(f):
                             try:
@@ -212,11 +280,11 @@ class WebexOBSDaemon:
                     self._active_session = None
                     continue
                 elif choice == "switch_video":
-                    self.obs.switch_to_video_mode()
+                    self.recorder.switch_to_video_mode()
 
-                UIBanner.show_notification(
+                self.ui.show_notification(
                     "Webex OBS Companion",
-                    "Recording active (Audio). "
+                    f"Recording active ({'Video' if mode == 'video' or choice == 'switch_video' else 'Audio'}). "
                     f"{display_hotkey(self.config.hotkey_video)} Video, "
                     f"{display_hotkey(self.config.hotkey_stop_transcribe)} Transcribe, "
                     f"{display_hotkey(self.config.hotkey_menu)} Menu."
@@ -227,10 +295,12 @@ class WebexOBSDaemon:
                     if self._manual_stop_event.is_set():
                         break
                     time.sleep(self.config.poll_interval)
-                    if self.monitor.has_call_ended():
+                    if self._manual_stop_event.is_set():
+                        break
+                    if not manual and self.monitor.has_call_ended():
                         self.monitor.is_in_meeting = False
                         break
-                    if not self.obs.ensure_recording():
+                    if not self.recorder.ensure_recording():
                         logger.error("OBS recovery failed; another recovery attempt will be made on the next poll.")
 
                 if self._discard_requested:
@@ -238,9 +308,15 @@ class WebexOBSDaemon:
                     self._discard_requested = False
                     self._manual_stop_event.clear()
                     self._active_session = None
+                    if manual:
+                        self.monitor.is_in_meeting = False
                     continue
 
-                recorded_files = self.obs.stop_recording()
+                if (not manual and self._manual_stop_event.is_set()) or (manual and self.monitor.is_call_active()):
+                    self.monitor.suppress_current_call_prompt()
+                if manual or self._manual_stop_event.is_set():
+                    self.monitor.is_in_meeting = False
+                recorded_files = self.recorder.stop_recording()
                 logger.info(f"Recording session stopped. Captured segments: {recorded_files}")
 
                 if not recorded_files:
@@ -252,7 +328,7 @@ class WebexOBSDaemon:
                 session.use_title_if_missing(self.monitor.current_call_title)
                 recorded_files = session.rename_recordings(recorded_files)
 
-                UIBanner.show_notification("Webex OBS Companion", "Transcribing and diarizing meeting audio...")
+                self.ui.show_notification("Webex OBS Companion", "Transcribing and diarizing meeting audio...")
                 transcript_file = self.transcriber.transcribe_files(
                     recorded_files,
                     meeting_title=session.display_title,
@@ -260,15 +336,7 @@ class WebexOBSDaemon:
                 )
 
                 if transcript_file:
-                    UIBanner.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
-                    sent = self.webex.send_transcript(
-                        transcript_file,
-                        meeting_title=session.display_title,
-                    )
-                    if sent:
-                        UIBanner.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
-                    else:
-                        UIBanner.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+                    self.deliver_transcript(transcript_file, session.display_title)
 
                 self._manual_stop_event.clear()
                 self._active_session = None
@@ -278,7 +346,7 @@ class WebexOBSDaemon:
             logger.info("Shutting down daemon...")
         finally:
             self.hotkeys.stop()
-            self.obs.disconnect()
+            self.recorder.disconnect()
 
 
 def main():
@@ -289,7 +357,14 @@ def main():
         force=True,
     )
     daemon = WebexOBSDaemon()
-    daemon.start()
+    if sys.platform == "darwin":
+        from .macos_ui import MacOSUI
+
+        ui = MacOSUI(daemon)
+        daemon.ui = ui
+        ui.run()
+    else:
+        daemon.start()
 
 
 if __name__ == "__main__":

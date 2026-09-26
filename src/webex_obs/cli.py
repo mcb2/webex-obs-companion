@@ -236,6 +236,7 @@ def setup():
     env_file = project_root / ".env"
 
     # Default configuration values
+    existing_webex_delivery = True
     existing_token = ""
     existing_recipient_email = ""
     existing_my_agent_email = ""
@@ -260,6 +261,7 @@ def setup():
         try:
             from webex_obs.config import Settings
             current = Settings()
+            existing_webex_delivery = current.webex_delivery_enabled
             if current.webex_access_token:
                 existing_token = current.webex_access_token
             if current.webex_recipient_email:
@@ -294,16 +296,27 @@ def setup():
     console.print("[bold]1. Webex Bot Configuration[/bold]")
     console.print("Create a permanent bot at: [cyan]https://developer.webex.com/my-apps[/cyan]\n")
 
-    token = Prompt.ask("Enter your Webex Bot Access Token", default=existing_token if existing_token else None)
-    recipient_email = Prompt.ask(
-        "Enter your Webex email for 1:1 direct delivery (Option 1)",
-        default=existing_recipient_email,
+    webex_delivery = Confirm.ask(
+        "Automatically deliver completed transcripts to Webex?",
+        default=existing_webex_delivery,
     )
-    my_agent_email = Prompt.ask(
-        "Enter your My Agent bot email (optional)",
-        default=existing_my_agent_email,
-    )
-    room_id = Prompt.ask("Optional Webex Space/Room ID (leave blank for Option 1 direct 1:1 DM)", default=existing_room_id)
+    token = existing_token
+    recipient_email = existing_recipient_email
+    my_agent_email = existing_my_agent_email
+    room_id = existing_room_id
+    if webex_delivery:
+        token = Prompt.ask("Enter your Webex Bot Access Token", default=existing_token if existing_token else None)
+        recipient_email = Prompt.ask(
+            "Enter your Webex email for 1:1 direct delivery (Option 1)",
+            default=existing_recipient_email,
+        )
+        my_agent_email = Prompt.ask(
+            "Enter your My Agent bot email (optional)",
+            default=existing_my_agent_email,
+        )
+        room_id = Prompt.ask("Optional Webex Space/Room ID (leave blank for Option 1 direct 1:1 DM)", default=existing_room_id)
+    else:
+        console.print("[dim]Webex credentials retained; no transcripts will be sent automatically.[/dim]")
 
     console.print("\n[bold]2. OBS Studio WebSocket Configuration[/bold]")
     obs_port = Prompt.ask("Enter OBS WebSocket port", default=existing_obs_port)
@@ -368,6 +381,7 @@ def setup():
 
     env_content = f"""# Webex OBS Companion Configuration
 # Permanent Webex Bot Access Token (developer.webex.com)
+WEBEX_DELIVERY_ENABLED={'true' if webex_delivery else 'false'}
 WEBEX_ACCESS_TOKEN={token}
 WEBEX_RECIPIENT_EMAIL={recipient_email}
 MY_AGENT_EMAIL={my_agent_email}

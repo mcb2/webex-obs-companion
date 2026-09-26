@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 
@@ -499,13 +500,19 @@ class ProcessMonitor:
         logger.info("%s call / meeting media stream has ended.", platform_name)
         return True
 
-    def wait_for_state_change(self) -> bool:
+    def wait_for_state_change(self, wake_event: threading.Event | None = None) -> bool:
+        if wake_event is not None and wake_event.is_set():
+            return True
         if not self.is_in_meeting:
             # Do not let identity from the previous call leak into a new session.
             self.current_call_title = None
             self.current_platform = None
         while True:
+            if wake_event is not None and wake_event.is_set():
+                return True
             running = self.is_call_active()
+            if wake_event is not None and wake_event.is_set():
+                return True
             self._track_prompt_suppression(running)
             if running and not self.is_in_meeting:
                 self._active_poll_count += 1
@@ -536,4 +543,7 @@ class ProcessMonitor:
                 if not running:
                     self._active_poll_count = 0
 
-            time.sleep(self.poll_interval)
+            if wake_event is None:
+                time.sleep(self.poll_interval)
+            else:
+                wake_event.wait(self.poll_interval)

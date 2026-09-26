@@ -21,10 +21,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=DEFAULT_ENV_FILE,
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
+        populate_by_name=True,
     )
 
     # Webex settings (Permanent Bot Token)
+    webex_delivery_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEBEX_DELIVERY_ENABLED", "webex_delivery_enabled"),
+        description="Automatically deliver completed transcripts through the Webex bot",
+    )
     webex_access_token: str = Field(
         default="",
         validation_alias=AliasChoices("WEBEX_ACCESS_TOKEN", "webex_access_token", "WEBEX_BOT_TOKEN", "webex_bot_token", "WEBEX_TOKEN", "webex_token"),
@@ -59,6 +65,8 @@ class Settings(BaseSettings):
     )
     obs_ws_port: int = Field(
         default=4455,
+        ge=1,
+        le=65535,
         validation_alias=AliasChoices("OBS_WS_PORT", "obs_ws_port", "OBS_PORT", "obs_port"),
         description="OBS WebSocket port"
     )
@@ -110,6 +118,7 @@ class Settings(BaseSettings):
     # Retention settings
     retention_days: int = Field(
         default=14,
+        ge=0,
         validation_alias=AliasChoices("RETENTION_DAYS", "retention_days"),
         description="Days to keep raw media files before auto-pruning"
     )
@@ -117,6 +126,7 @@ class Settings(BaseSettings):
     # Polling settings
     poll_interval: float = Field(
         default=3.0,
+        gt=0.0,
         validation_alias=AliasChoices("POLL_INTERVAL", "poll_interval"),
         description="Process polling interval in seconds"
     )
