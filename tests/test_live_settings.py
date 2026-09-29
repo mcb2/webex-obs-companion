@@ -11,6 +11,7 @@ sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
 
 from webex_obs.config import Config
 from webex_obs.daemon import WebexOBSDaemon
+from webex_obs.post_processing import PostProcessingJob
 
 
 def test_applies_settings_to_running_components_without_restarting_service():
@@ -19,6 +20,7 @@ def test_applies_settings_to_running_components_without_restarting_service():
     daemon.recorder = Mock()
     daemon.monitor = SimpleNamespace(poll_interval=3.0, call_end_grace_seconds=15.0)
     daemon.hotkeys = Mock()
+    daemon._settings_lock = threading.Lock()
     updated = daemon.config.model_copy(update={
         "poll_interval": 1.0, "call_end_grace_seconds": 7.0,
         "webex_recipient_email": "updated@example.com", "whisper_model": "new-model",
@@ -81,12 +83,14 @@ def test_manual_video_start_enters_worker_lifecycle_without_second_prompt():
     daemon.monitor.is_call_active.return_value = False
     daemon.hotkeys = Mock()
     daemon.ui = Mock()
+    daemon._post_processing_worker = Mock()
     daemon._manual_start_event = threading.Event()
     daemon._manual_start_event.set()
     daemon._manual_start_mode = "video"
     daemon._manual_stop_event = threading.Event()
     daemon._discard_requested = False
     daemon._active_session = None
+    daemon._settings_lock = threading.Lock()
     session = Mock(display_title="Manual recording")
     daemon.recorder.start_recording.return_value = False
     daemon.recorder.retry_start_recording.side_effect = lambda **kwargs: daemon._manual_stop_event.set() or True
@@ -118,3 +122,87 @@ def test_controls_use_cached_title_without_blocking_call_window_probe():
     daemon.ui.show_control_prompt.assert_called_once_with(
         is_recording=True, meeting_title="Recording title"
     )
+
+
+def test_completed_recording_is_queued_before_lifecycle_rearms():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, enable_diarization=False)
+    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder.initialize.return_value = True
+    daemon.recorder.stop_recording.return_value = ["recording.mkv"]
+    daemon.monitor = Mock(
+        is_in_meeting=False,
+        current_call_title=None,
+        default_call_title="Webex Session",
+    )
+    daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
+    daemon.monitor.is_call_active.return_value = False
+    daemon.hotkeys = Mock()
+    daemon.ui = Mock()
+    daemon.transcriber = Mock()
+    daemon.webex = Mock()
+    daemon._post_processing_worker = Mock()
+    daemon._manual_start_event = threading.Event()
+    daemon._manual_start_event.set()
+    daemon._manual_start_mode = "audio"
+    daemon._manual_stop_event = threading.Event()
+    daemon._discard_requested = False
+    daemon._active_session = None
+    daemon._settings_lock = threading.Lock()
+    session = Mock(
+        display_title="Architecture Review",
+        filename_stem="2026-09-28_10-00-00 - Architecture Review",
+    )
+    session.rename_recordings.return_value = ["renamed.mkv"]
+    daemon.recorder.start_recording.side_effect = (
+        lambda **kwargs: daemon._manual_stop_event.set() or True
+    )
+
+    with patch.object(daemon, "_new_recording_session", return_value=session), \
+         patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
+        daemon.start()
+
+    daemon.transcriber.transcribe_files.assert_not_called()
+    daemon._post_processing_worker.submit.assert_called_once()
+    job = daemon._post_processing_worker.submit.call_args.args[0]
+    assert isinstance(job, PostProcessingJob)
+    assert job.media_files == ("renamed.mkv",)
+    assert job.meeting_title == "Architecture Review"
+    assert daemon.monitor.wait_for_state_change.call_count == 2
+
+
+def test_post_processing_job_uses_snapshotted_workers_and_settings():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.ui = Mock()
+    daemon.deliver_transcript = Mock()
+    transcriber = Mock()
+    transcript = Path("transcript.txt")
+    transcriber.transcribe_files.return_value = transcript
+    webex = Mock()
+    job = PostProcessingJob(
+        media_files=("recording.mkv",),
+        meeting_title="Architecture Review",
+        output_stem="session-stem",
+        transcriber=transcriber,
+        webex=webex,
+        delivery_enabled=False,
+        recordings_dir=Path("/tmp/recordings"),
+        retention_days=30,
+    )
+
+    with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings") as prune:
+        daemon._process_post_processing_job(job)
+
+    transcriber.transcribe_files.assert_called_once_with(
+        ["recording.mkv"],
+        meeting_title="Architecture Review",
+        output_stem="session-stem",
+    )
+    daemon.deliver_transcript.assert_called_once_with(
+        transcript,
+        "Architecture Review",
+        delivery_enabled=False,
+        webex=webex,
+    )
+    prune.assert_called_once_with(Path("/tmp/recordings"), 30)

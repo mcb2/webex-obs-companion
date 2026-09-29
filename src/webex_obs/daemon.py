@@ -17,6 +17,7 @@ os.environ["PATH"] = current_path
 from .cleaner import MediaCleaner
 from .config import Config, settings
 from .hotkey_listener import HotkeyListener, display_hotkey
+from .post_processing import PostProcessingJob, PostProcessingWorker
 from .recording_backend import RecordingBackend, create_recording_backend
 from .process_monitor import ProcessMonitor
 from .session import RecordingSession
@@ -62,6 +63,10 @@ class WebexOBSDaemon:
         self._manual_start_mode = "audio"
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
+        self._settings_lock = threading.Lock()
+        self._post_processing_worker = PostProcessingWorker(
+            self._process_post_processing_job
+        )
 
     def apply_settings(self, config: Config) -> None:
         """Install validated settings without interrupting a recording."""
@@ -100,25 +105,61 @@ class WebexOBSDaemon:
         self.recorder.configure(config)
         self.monitor.poll_interval = config.poll_interval
         self.monitor.call_end_grace_seconds = config.call_end_grace_seconds
-        self.transcriber = transcriber
-        self.webex = webex
-        self.config = config
+        with self._settings_lock:
+            self.transcriber = transcriber
+            self.webex = webex
+            self.config = config
         logger.info("Settings applied to running service.")
 
     def status(self) -> tuple[bool, str]:
         title = self._active_session.display_title if self._active_session else "Ready for calls"
         return self.recorder.is_recording, title
 
-    def deliver_transcript(self, transcript_file: Path, meeting_title: str) -> None:
-        if not self.config.webex_delivery_enabled:
+    def deliver_transcript(
+        self,
+        transcript_file: Path,
+        meeting_title: str,
+        *,
+        delivery_enabled: bool | None = None,
+        webex: WebexClient | None = None,
+    ) -> None:
+        if delivery_enabled is None:
+            delivery_enabled = self.config.webex_delivery_enabled
+        if not delivery_enabled:
             logger.info("Webex delivery disabled; transcript saved locally: %s", transcript_file)
             return
+        client = webex if webex is not None else self.webex
         self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
-        sent = self.webex.send_transcript(transcript_file, meeting_title=meeting_title)
+        sent = client.send_transcript(transcript_file, meeting_title=meeting_title)
         if sent:
             self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
         else:
             self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+
+    def _process_post_processing_job(self, job: PostProcessingJob) -> None:
+        """Transcribe, deliver, and clean up one finalized meeting."""
+        try:
+            self.ui.show_notification(
+                "Webex OBS Companion",
+                f"Transcribing and diarizing {job.meeting_title}...",
+            )
+            transcript_file = job.transcriber.transcribe_files(
+                list(job.media_files),
+                meeting_title=job.meeting_title,
+                output_stem=job.output_stem,
+            )
+            if transcript_file:
+                self.deliver_transcript(
+                    transcript_file,
+                    job.meeting_title,
+                    delivery_enabled=job.delivery_enabled,
+                    webex=job.webex,
+                )
+        finally:
+            MediaCleaner.prune_old_recordings(
+                job.recordings_dir,
+                job.retention_days,
+            )
 
     def _new_recording_session(self) -> RecordingSession:
         title = self.monitor.current_call_title or self.monitor.get_active_call_title()
@@ -196,6 +237,7 @@ class WebexOBSDaemon:
             logger.error("ffmpeg not found in PATH! Please install ffmpeg with: brew install ffmpeg")
 
         self.hotkeys.start()
+        self._post_processing_worker.start()
 
         # Launch and verify OBS once at service start; a newly launched instance
         # is closed by initialize after its idle status is confirmed.
@@ -326,23 +368,30 @@ class WebexOBSDaemon:
                 session.use_title_if_missing(self.monitor.current_call_title)
                 recorded_files = session.rename_recordings(recorded_files)
 
-                self.ui.show_notification("Webex OBS Companion", "Transcribing and diarizing meeting audio...")
-                transcript_file = self.transcriber.transcribe_files(
-                    recorded_files,
-                    meeting_title=session.display_title,
-                    output_stem=session.filename_stem,
+                with self._settings_lock:
+                    job = PostProcessingJob(
+                        media_files=tuple(recorded_files),
+                        meeting_title=session.display_title,
+                        output_stem=session.filename_stem,
+                        transcriber=self.transcriber,
+                        webex=self.webex,
+                        delivery_enabled=self.config.webex_delivery_enabled,
+                        recordings_dir=self.config.recordings_dir,
+                        retention_days=self.config.retention_days,
+                    )
+                self._post_processing_worker.submit(job)
+                logger.info(
+                    "Queued recording session for background post-processing: '%s'.",
+                    session.display_title,
                 )
-
-                if transcript_file:
-                    self.deliver_transcript(transcript_file, session.display_title)
 
                 self._manual_stop_event.clear()
                 self._active_session = None
-                MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
 
         except KeyboardInterrupt:
             logger.info("Shutting down daemon...")
         finally:
+            self._post_processing_worker.shutdown(wait=False)
             self.hotkeys.stop()
             self.recorder.disconnect()
 
