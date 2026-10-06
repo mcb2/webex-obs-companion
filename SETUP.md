@@ -47,8 +47,8 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
 7. In the `Webex-Video` scene, add a **macOS Screen Capture** source named `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
 
-In the companion's **Settings… ➔ OBS recording**, set **New Webex window** to
-**Prompt me** (the default) or **Always switch**. When a new Webex window
+In the companion's **Settings… ➔ OBS recording**, set **New Webex window (video only)** to
+**Prompt me (recommended)** (the default) or **Always switch**. When a new Webex window
 appears during video recording, the companion offers or switches only when it
 looks like a persistent meeting or shared-content window. Brief chat previews
 and small pop-ups are ignored while the selected window remains available. The

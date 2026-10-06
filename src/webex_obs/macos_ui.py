@@ -276,7 +276,7 @@ class MacOSUI:
                 ("WebSocket port", "obs_ws_port", "text"),
                 ("WebSocket password", "obs_ws_password", "secret"),
                 ("Exit OBS on recording stop", "exit_obs_on_recording_stop", "bool"),
-                ("New Webex window", "shared_window_behavior", "window_behavior"),
+                ("New Webex window (video only)", "shared_window_behavior", "window_behavior"),
             ]),
             ("Transcription", [
                 ("Whisper model", "whisper_model", "text"),
@@ -349,12 +349,12 @@ class MacOSUI:
                     field.setState_(bool(getattr(config, key)))
                 elif kind == "window_behavior":
                     caption = AppKit.NSTextField.labelWithString_(label)
-                    caption.setFrame_(((15, y), (190, 24)))
+                    caption.setFrame_(((15, y), (230, 24)))
                     pane.addSubview_(caption)
                     field = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-                        ((215, y), (330, 28)), False
+                        ((250, y), (295, 28)), False
                     )
-                    field.addItemsWithTitles_(["Prompt me", "Always switch"])
+                    field.addItemsWithTitles_(["Prompt me (recommended)", "Always switch"])
                     field.selectItemAtIndex_(0 if getattr(config, key) == "prompt" else 1)
                 else:
                     caption = AppKit.NSTextField.labelWithString_(label)
