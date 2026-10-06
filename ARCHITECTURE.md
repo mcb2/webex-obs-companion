@@ -26,6 +26,14 @@ The OBS adapter defers connection changes until an active recording stops.
 LaunchAgent stdout/stderr paths and OBS's recording output path are managed by
 their respective applications.
 
+During Webex video recording, `OBSController` enumerates capturable Webex
+windows through Quartz and the OBS source's window list. A new window is
+selected automatically or presented in an AppKit picker according to
+`SHARED_WINDOW_BEHAVIOR`. Picker results return to the lifecycle worker before
+OBS source settings are changed, so the recording output stays active while
+the selected video window changes. This selection applies to the current
+session only because macOS window IDs change when Webex recreates windows.
+
 ```
 +-------------------------------------------------------------+
 |                     macOS User Session                      |

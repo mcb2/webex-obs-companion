@@ -14,6 +14,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
+- **Live Webex Window Selection**: Choose whether a newly opened Webex window is selected automatically or offered in a picker during video recording. The menu bar also lets you select a window at any time.
 - **macOS Status Menu**: Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
 - When idle, the menu shows Recording controls, Settings, and Quit. Recording controls opens an icon-free dialog with audio/video start choices and a recording-consent reminder. During a recording, Stop & Transcribe appears in the menu and controls offer video switching or stop and transcribe.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
@@ -24,6 +25,9 @@ This works independently of whether the call uses UDP, dynamic peer-to-peer
 ports, or TCP-only media. Known UDP media sockets provide an additional signal
 and a fallback on macOS versions without per-process audio state. Dynamic OBS
 video-window binding remains Webex-specific.
+The `Webex-Video` scene needs a macOS Screen Capture source named
+`Webex-Meeting-Window` configured for Window Capture. Switching its window
+while recording keeps the same OBS recording active.
 
 ---
 

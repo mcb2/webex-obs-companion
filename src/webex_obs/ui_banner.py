@@ -13,6 +13,29 @@ def _escape_applescript_string(value: str) -> str:
 
 class UIBanner:
     @staticmethod
+    def choose_webex_window(windows, suggested_window_id=None) -> int | None:
+        """Picker for foreground CLI runs without the AppKit menu bar."""
+        if not windows:
+            return None
+        labels = {
+            f"{window.window_id} | {window.title} ({window.owner})": window.window_id
+            for window in windows
+        }
+        items = ", ".join(f'"{_escape_applescript_string(label)}"' for label in labels)
+        script = (
+            f'set selectedWindow to choose from list {{{items}}} '
+            'with title "Webex OBS Companion" '
+            'with prompt "Select the Webex window to record"\n'
+            'if selectedWindow is false then return ""\n'
+            'return item 1 of selectedWindow'
+        )
+        try:
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            return labels.get(result.stdout.strip()) if result.returncode == 0 else None
+        except Exception:
+            return None
+
+    @staticmethod
     def show_startup_prompt(meeting_title: str = "Webex Session") -> str:
         meeting_title = _escape_applescript_string(meeting_title)
         prompt_text = (

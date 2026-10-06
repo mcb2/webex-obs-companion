@@ -24,6 +24,13 @@ def test_new_obs_option_accepts_legacy_value_and_prefers_new_value():
                     EXIT_OBS_ON_RECORDING_STOP="true").exit_obs_on_recording_stop is True
 
 
+def test_shared_window_behavior_is_validated():
+    assert Settings(_env_file=None).shared_window_behavior == "prompt"
+    assert Settings(_env_file=None, SHARED_WINDOW_BEHAVIOR="always_switch").shared_window_behavior == "always_switch"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, SHARED_WINDOW_BEHAVIOR="unexpected")
+
+
 def test_hotkeys_are_normalized():
     settings = Settings(
         _env_file=None,

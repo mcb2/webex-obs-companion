@@ -21,6 +21,7 @@ EDITABLE = {
     "obs_ws_port": "OBS_WS_PORT",
     "obs_ws_password": "OBS_WS_PASSWORD",
     "exit_obs_on_recording_stop": "EXIT_OBS_ON_RECORDING_STOP",
+    "shared_window_behavior": "SHARED_WINDOW_BEHAVIOR",
     "recordings_dir": "RECORDINGS_DIR",
     "transcripts_dir": "TRANSCRIPTS_DIR",
     "retention_days": "RETENTION_DAYS",
