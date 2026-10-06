@@ -8,9 +8,17 @@ def test_idle_choices_and_consent_notice():
     assert "Obtain permission from all participants" in dialog.detail
 
 
-def test_active_choices_do_not_offer_discard_or_new_recording():
+def test_active_choices_offer_confirmed_discard_but_not_new_recording():
     dialog = control_dialog(True, "Architecture Review")
-    assert [choice for _, choice in dialog.choices] == ["switch_video", "stop_transcribe", "close"]
+    assert [choice for _, choice in dialog.choices] == [
+        "switch_video", "stop_transcribe", "stop_discard", "close"
+    ]
+    assert not dialog.disabled_choices
+
+
+def test_video_recording_disables_switch_to_video():
+    dialog = control_dialog(True, "Architecture Review", is_video_recording=True)
+    assert dialog.disabled_choices == frozenset({"switch_video"})
 
 
 def test_startup_prompt_keeps_consent_and_audio_timeout_choice():

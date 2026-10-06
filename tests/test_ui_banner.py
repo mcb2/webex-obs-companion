@@ -51,6 +51,28 @@ class UIBannerTests(unittest.TestCase):
         self.assertIn("MEETING\\nArchitecture Review", apple_script)
         self.assertIn("with icon note", apple_script)
 
+    def test_discard_confirmation_defaults_to_no(self):
+        with patch("webex_obs.ui_banner.subprocess.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess(["osascript"], 0, "button returned:Stop & Discard", ""),
+                subprocess.CompletedProcess(["osascript"], 0, "button returned:No, keep recording", ""),
+            ]
+            self.assertEqual(UIBanner.show_control_prompt(is_video_recording=True), "close")
+
+        controls_script = run.call_args_list[0].args[0][2]
+        confirm_script = run.call_args_list[1].args[0][2]
+        self.assertNotIn("Switch to Video", controls_script)
+        self.assertIn('default button "No, keep recording"', confirm_script)
+        self.assertIn('cancel button "No, keep recording"', confirm_script)
+
+    def test_discard_requires_explicit_yes(self):
+        with patch("webex_obs.ui_banner.subprocess.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess(["osascript"], 0, "button returned:Stop & Discard", ""),
+                subprocess.CompletedProcess(["osascript"], 0, "button returned:Yes, stop and delete", ""),
+            ]
+            self.assertEqual(UIBanner.show_control_prompt(), "stop_discard")
+
     def test_meeting_title_is_escaped_for_applescript(self):
         with patch("webex_obs.ui_banner.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(

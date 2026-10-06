@@ -25,7 +25,11 @@ class _MenuTarget(Foundation.NSObject):
 
     def controls_(self, sender):
         is_recording, title = self.ui.daemon.control_prompt_state()
-        choice = self.ui.show_control_prompt(is_recording=is_recording, meeting_title=title)
+        choice = self.ui.show_control_prompt(
+            is_recording=is_recording,
+            meeting_title=title,
+            is_video_recording=self.ui.daemon.recorder.is_video_recording is True,
+        )
         if choice != "close":
             threading.Thread(
                 target=self.ui.daemon._handle_control_choice, args=(choice,), daemon=True
@@ -172,9 +176,33 @@ class MacOSUI:
         spec = startup_dialog(meeting_title)
         return self._on_main(lambda: self._control_window(spec, timeout=15))
 
-    def show_control_prompt(self, is_recording=True, meeting_title="Webex Session"):
-        spec = control_dialog(is_recording, meeting_title)
-        return self._on_main(lambda: self._control_window(spec))
+    def show_control_prompt(
+        self, is_recording=True, meeting_title="Webex Session", is_video_recording=False
+    ):
+        spec = control_dialog(is_recording, meeting_title, is_video_recording)
+
+        def show():
+            choice = self._control_window(spec)
+            if choice == "stop_discard" and not self._confirm_discard():
+                return "close"
+            return choice
+
+        return self._on_main(show)
+
+    @staticmethod
+    def _confirm_discard():
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Stop and delete this recording?")
+        alert.setInformativeText_(
+            "This will permanently delete all recording segments from this session. "
+            "No transcript will be created."
+        )
+        alert.setAlertStyle_(AppKit.NSAlertStyleWarning)
+        no_button = alert.addButtonWithTitle_("No, keep recording")
+        no_button.setKeyEquivalent_("\x1b")
+        alert.addButtonWithTitle_("Yes, stop and delete")
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        return alert.runModal() == AppKit.NSAlertSecondButtonReturn
 
     def choose_webex_window(self, windows, suggested_window_id=None):
         def show():
@@ -208,8 +236,9 @@ class MacOSUI:
         return self._on_main(show)
 
     def _control_window(self, spec, timeout=None):
+        width = 750 if len(spec.choices) > 3 else 570
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (570, 270)), AppKit.NSWindowStyleMaskTitled,
+            ((0, 0), (width, 270)), AppKit.NSWindowStyleMaskTitled,
             AppKit.NSBackingStoreBuffered, False,
         )
         window.setTitle_("Webex OBS Companion")
@@ -219,10 +248,10 @@ class MacOSUI:
         content = window.contentView()
         heading = AppKit.NSTextField.labelWithString_(spec.heading)
         heading.setFont_(AppKit.NSFont.boldSystemFontOfSize_(19))
-        heading.setFrame_(((24, 217), (520, 30)))
+        heading.setFrame_(((24, 217), (width - 50, 30)))
         content.addSubview_(heading)
         detail = AppKit.NSTextField.labelWithString_(spec.detail)
-        detail.setFrame_(((24, 91), (520, 115)))
+        detail.setFrame_(((24, 91), (width - 50, 115)))
         detail.setUsesSingleLineMode_(False)
         detail.cell().setWraps_(True)
         detail.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
@@ -236,6 +265,7 @@ class MacOSUI:
             button.setTag_(index + 1)
             button.setTarget_(self.target)
             button.setAction_("controlChoice:")
+            button.setEnabled_(choice not in spec.disabled_choices)
             if choice in ("close", "cancel"):
                 button.setKeyEquivalent_("\x1b")
             content.addSubview_(button)

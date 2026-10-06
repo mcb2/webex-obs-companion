@@ -81,6 +81,7 @@ class UIBanner:
     def show_control_prompt(
         is_recording: bool = True,
         meeting_title: str = "Webex Session",
+        is_video_recording: bool = False,
     ) -> str:
         if is_recording:
             meeting_title = _escape_applescript_string(meeting_title)
@@ -94,7 +95,11 @@ class UIBanner:
                 "• Reopen Menu: ⌘ + Shift + R\\n\\n"
                 "Choose an action:"
             )
-            buttons_str = '{"Cancel & Discard", "Stop & Transcribe", "Switch to Video"}'
+            buttons_str = (
+                '{"Stop & Discard", "Stop & Transcribe", "Close Menu"}'
+                if is_video_recording else
+                '{"Stop & Discard", "Stop & Transcribe", "Switch to Video"}'
+            )
             default_btn = "Stop & Transcribe"
         else:
             prompt_text = (
@@ -113,18 +118,12 @@ class UIBanner:
             with icon note ¬
             buttons {buttons_str} ¬
             default button "{default_btn}" ¬
-            cancel button "Cancel" ¬
             giving up after 25
         """
         if not is_recording:
             apple_script = apple_script.replace(
-                'cancel button "Cancel"',
-                'cancel button "Close Menu"',
-            )
-        else:
-            apple_script = apple_script.replace(
-                'cancel button "Cancel"',
-                'cancel button "Cancel & Discard"',
+                'giving up after 25',
+                'cancel button "Close Menu" ¬\n            giving up after 25',
             )
 
         try:
@@ -142,8 +141,22 @@ class UIBanner:
                 return "start_audio"
             elif "Start Video Rec" in output or "button returned:Start Video Rec" in output:
                 return "start_video"
-            elif "Cancel & Discard" in output or "button returned:Cancel & Discard" in output:
-                return "cancel"
+            elif "Stop & Discard" in output or "button returned:Stop & Discard" in output:
+                confirmation = subprocess.run(
+                    ["osascript", "-e", '''display dialog "Stop and permanently delete this recording?" ¬
+                        with title "Webex OBS Companion" ¬
+                        with icon caution ¬
+                        buttons {"No, keep recording", "Yes, stop and delete"} ¬
+                        default button "No, keep recording" ¬
+                        cancel button "No, keep recording"'''],
+                    capture_output=True,
+                    text=True,
+                )
+                return (
+                    "stop_discard" if confirmation.returncode == 0
+                    and "button returned:Yes, stop and delete" in confirmation.stdout
+                    else "close"
+                )
             else:
                 return "close"
         except Exception:
