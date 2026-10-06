@@ -2,9 +2,23 @@ import logging
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from obswebsocket import obsws, requests
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WebexWindow:
+    window_id: int
+    title: str
+    owner: str
+    width: int
+    height: int
+
+    @property
+    def area(self) -> int:
+        return self.width * self.height
 
 try:
     import Quartz
@@ -24,6 +38,9 @@ class OBSController:
         self.is_recording = False
         self.recorded_files: list[str] = []
         self.current_scene = "Webex-Audio"
+        self.selected_window_id: int | None = None
+        self._seen_window_ids: set[int] = set()
+        self._missing_selected_window_reported = False
 
     def obs_is_running(self) -> bool:
         return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0
@@ -142,34 +159,112 @@ class OBSController:
         self.is_connected = False
         self.ws = None
 
-    def find_webex_window_title(self) -> str | None:
-        if not HAS_QUARTZ:
-            return None
-        options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
-        window_list = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
-        for window in window_list:
-            owner = window.get("kCGWindowOwnerName", "")
-            name = window.get("kCGWindowName", "")
-            if any(t.lower() in owner.lower() for t in ["Webex", "CiscoCollabHost", "washost", "Meeting Center"]):
-                if name and not any(ign in name for ign in ["Item-0", "Control Bar", "Floating Bar", "Panel"]):
-                    return name
-        return None
+    def list_webex_windows(self) -> list[WebexWindow]:
+        window_list = []
+        if HAS_QUARTZ:
+            options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+            window_list = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []
+        by_id = {int(item.get("kCGWindowNumber") or 0): item for item in window_list}
+        matches: dict[int, WebexWindow] = {}
 
-    def bind_webex_video_window(self, source_name: str = "Webex-Meeting-Window") -> bool:
-        title = self.find_webex_window_title()
-        if not title or not self.check_connection():
+        def add(window_id: int, title: str, owner: str, item: dict) -> None:
+            title = title.strip()
+            if not any(name in owner.casefold() for name in (
+                "webex", "ciscocollabhost", "washost", "meeting center"
+            )) or not title or window_id <= 0:
+                return
+            if title.casefold() in {"webex", "webex multitasking floating window"}:
+                return
+            if any(name in title.casefold() for name in (
+                "item-0", "control bar", "floating bar", "panel"
+            )) or item.get("kCGWindowLayer", 0) != 0:
+                return
+            bounds = item.get("kCGWindowBounds") or {}
+            width = int(bounds.get("Width", 0))
+            height = int(bounds.get("Height", 0))
+            if width and height and (width < 320 or height < 200):
+                return
+            matches[window_id] = WebexWindow(window_id, title, owner, width, height)
+
+        for item in window_list:
+            add(int(item.get("kCGWindowNumber") or 0),
+                str(item.get("kCGWindowName") or ""),
+                str(item.get("kCGWindowOwnerName") or ""), item)
+
+        # OBS has Screen Recording permission even when the companion does not.
+        # Its own window dropdown is the authoritative list of capturable IDs.
+        if self.ws and self.is_connected:
+            try:
+                response = self.ws.call(requests.GetInputPropertiesListPropertyItems(
+                    inputName="Webex-Meeting-Window", propertyName="window"
+                )).datain
+                for option in response.get("propertyItems", []):
+                    label = str(option.get("itemName") or "")
+                    if not label.startswith("[") or "] " not in label:
+                        continue
+                    owner, title = label[1:].split("] ", 1)
+                    window_id = int(option.get("itemValue") or 0)
+                    if by_id and window_id not in by_id:
+                        continue
+                    add(window_id, title, owner, by_id.get(window_id, {}))
+            except Exception as exc:
+                logger.debug("OBS window property list unavailable: %s", exc)
+        return sorted(matches.values(), key=lambda w: w.area, reverse=True)
+
+    def bind_webex_video_window(
+        self, window_id: int | None = None, source_name: str = "Webex-Meeting-Window"
+    ) -> bool:
+        windows = self.list_webex_windows()
+        chosen = next((w for w in windows if w.window_id == window_id), None)
+        if window_id is not None and chosen is None:
+            logger.warning("Selected Webex window %s is no longer available.", window_id)
+            return False
+        if chosen is None:
+            chosen = next((w for w in windows if w.window_id == self.selected_window_id), None)
+        if chosen is None and windows:
+            chosen = max(windows, key=lambda w: w.area)
+        if chosen is None or not self.check_connection():
             return False
         try:
+            info = self.ws.call(requests.GetInputSettings(inputName=source_name)).datain
+            kind = info.get("inputKind")
+            if kind == "screen_capture":
+                settings = {"type": 1, "window": chosen.window_id}
+            elif kind == "window_capture":
+                settings = {"window_name": chosen.title, "owner_name": chosen.owner}
+            else:
+                logger.warning("OBS source '%s' has unsupported input kind '%s'.", source_name, kind)
+                return False
             self.ws.call(requests.SetInputSettings(
                 inputName=source_name,
-                inputSettings={"window_name": title, "owner_name": "CiscoCollabHost"},
+                inputSettings=settings,
                 overlay=True
             ))
-            logger.info(f"Dynamically bound OBS source '{source_name}' to live window: '{title}'")
+            self.selected_window_id = chosen.window_id
+            self._seen_window_ids = {w.window_id for w in windows}
+            self._missing_selected_window_reported = False
+            logger.info("Bound OBS source '%s' to Webex window %s: '%s'", source_name,
+                        chosen.window_id, chosen.title)
             return True
         except Exception as e:
-            logger.debug(f"Dynamic window bind notice: {e}")
+            logger.warning("Could not bind OBS video source to Webex window: %s", e)
             return False
+
+    def poll_webex_window_change(self) -> list[WebexWindow]:
+        """Return new capture candidates, or replacements if the selected window vanished."""
+        if not self.is_recording or self.current_scene != "Webex-Video":
+            return []
+        windows = self.list_webex_windows()
+        present = {w.window_id for w in windows}
+        new = [w for w in windows if w.window_id not in self._seen_window_ids]
+        self._seen_window_ids = present
+        if self.selected_window_id not in present:
+            if windows and not self._missing_selected_window_reported:
+                self._missing_selected_window_reported = True
+                return windows
+            return new
+        self._missing_selected_window_reported = False
+        return new
 
     def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
@@ -182,7 +277,8 @@ class OBSController:
                 if not self.switch_scene(scene_name):
                     raise RuntimeError("OBS scene is not ready")
                 if scene_name == "Webex-Video":
-                    self.bind_webex_video_window()
+                    if not self.bind_webex_video_window():
+                        logger.warning("Video recording started without a bound Webex window.")
                 self.ws.call(requests.StartRecord())
                 for _ in range(3):
                     if self._refresh_recording_status():
@@ -242,6 +338,9 @@ class OBSController:
             logger.warning("Cannot stop OBS recording cleanly: WebSocket is not connected.")
             files = list(self.recorded_files)
             self.recorded_files.clear()
+            self.selected_window_id = None
+            self._seen_window_ids.clear()
+            self._missing_selected_window_reported = False
             return files
 
         try:
@@ -268,6 +367,9 @@ class OBSController:
             logger.info("OBS recording stopped; keeping OBS open as configured.")
         files = list(self.recorded_files)
         self.recorded_files.clear()
+        self.selected_window_id = None
+        self._seen_window_ids.clear()
+        self._missing_selected_window_reported = False
         return files
 
     def _recording_is_confirmed_stopped(self) -> bool:

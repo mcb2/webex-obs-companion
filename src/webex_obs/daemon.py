@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import shutil
 import sys
 import threading
@@ -51,7 +52,7 @@ class WebexOBSDaemon:
             my_agent_email=self.config.my_agent_email,
         )
         self.hotkeys = HotkeyListener(
-            on_video_switch=self.recorder.switch_to_video_mode,
+            on_video_switch=self._switch_to_video_mode,
             on_show_dialog=self._handle_dialog_request,
             on_stop_transcribe=self._handle_stop_transcribe_request,
             video_hotkey=self.config.hotkey_video,
@@ -64,6 +65,9 @@ class WebexOBSDaemon:
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
         self._settings_lock = threading.Lock()
+        self._window_selection_queue: queue.Queue[tuple[int, int]] = queue.Queue()
+        self._window_prompt_pending = threading.Event()
+        self._window_session_generation = 0
         self._post_processing_worker = PostProcessingWorker(
             self._process_post_processing_job
         )
@@ -88,7 +92,7 @@ class WebexOBSDaemon:
             "hotkey_video", "hotkey_menu", "hotkey_stop_transcribe"
         )):
             replacement = HotkeyListener(
-                on_video_switch=self.recorder.switch_to_video_mode,
+                on_video_switch=self._switch_to_video_mode,
                 on_show_dialog=self._handle_dialog_request,
                 on_stop_transcribe=self._handle_stop_transcribe_request,
                 video_hotkey=config.hotkey_video,
@@ -199,12 +203,21 @@ class WebexOBSDaemon:
         )
         self._handle_control_choice(choice)
 
+    def _switch_to_video_mode(self) -> None:
+        self.recorder.switch_to_video_mode()
+        if (self.recorder.is_video_recording is True
+                and self.config.shared_window_behavior == "prompt"
+                and len(self.recorder.list_webex_windows()) > 1):
+            self.request_window_selection()
+
     def _handle_control_choice(self, choice: str) -> None:
         if choice == "stop_transcribe":
             self._handle_stop_transcribe_request()
         elif choice == "switch_video":
-            self.recorder.switch_to_video_mode()
+            self._switch_to_video_mode()
             self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
+        elif choice == "select_window":
+            self.request_window_selection()
         elif choice == "start_audio":
             self._request_manual_start("audio")
         elif choice == "start_video":
@@ -228,6 +241,54 @@ class WebexOBSDaemon:
         self._manual_start_mode = mode
         self._manual_start_event.set()
         logger.info("Manual %s recording requested from controls.", mode)
+
+    def request_window_selection(self, suggested_window_id: int | None = None) -> None:
+        """Show the picker without holding up the recording lifecycle worker."""
+        if self.recorder.is_video_recording is not True or self._window_prompt_pending.is_set():
+            return
+        windows = self.recorder.list_webex_windows()
+        if not windows:
+            self.ui.show_notification("Webex OBS Companion", "No Webex recording windows are available.")
+            return
+        self._window_prompt_pending.set()
+        generation = self._window_session_generation
+
+        def choose() -> None:
+            try:
+                window_id = self.ui.choose_webex_window(windows, suggested_window_id)
+                if window_id is not None:
+                    self._window_selection_queue.put((generation, window_id))
+            except Exception:
+                logger.exception("Could not show the Webex window picker")
+            finally:
+                self._window_prompt_pending.clear()
+
+        threading.Thread(target=choose, name="webex-window-picker", daemon=True).start()
+
+    def _update_video_window(self) -> None:
+        if self.recorder.is_video_recording is not True:
+            return
+        try:
+            while True:
+                generation, window_id = self._window_selection_queue.get_nowait()
+                if generation == self._window_session_generation:
+                    if self.recorder.select_webex_window(window_id):
+                        self.ui.show_notification("Webex OBS Companion", "Video recording window changed.")
+                    else:
+                        self.ui.show_notification("Webex OBS Companion", "Could not select that Webex window.")
+        except queue.Empty:
+            pass
+        candidates = self.recorder.poll_webex_window_change()
+        if not candidates:
+            return
+        suggested_id = max(candidates, key=lambda w: w.area).window_id
+        if self.config.shared_window_behavior == "always_switch":
+            if self.recorder.select_webex_window(suggested_id):
+                self.ui.show_notification("Webex OBS Companion", "Following a new Webex window.")
+            else:
+                self.ui.show_notification("Webex OBS Companion", "Could not follow the new Webex window.")
+        elif not self._window_prompt_pending.is_set():
+            self.request_window_selection(suggested_id)
 
     def start(self):
         logger.info("Starting Webex OBS Companion Daemon...")
@@ -266,6 +327,7 @@ class WebexOBSDaemon:
 
                 self._discard_requested = False
                 self._manual_stop_event.clear()
+                self._window_session_generation = getattr(self, "_window_session_generation", 0) + 1
                 self._active_session = self._new_recording_session()
                 if manual:
                     self.monitor.is_in_meeting = True
@@ -320,7 +382,12 @@ class WebexOBSDaemon:
                     self._active_session = None
                     continue
                 elif choice == "switch_video":
-                    self.recorder.switch_to_video_mode()
+                    self._switch_to_video_mode()
+
+                if (mode == "video" and self.recorder.is_video_recording is True
+                        and self.config.shared_window_behavior == "prompt"
+                        and len(self.recorder.list_webex_windows()) > 1):
+                    self.request_window_selection()
 
                 self.ui.show_notification(
                     "Webex OBS Companion",
@@ -342,6 +409,7 @@ class WebexOBSDaemon:
                         break
                     if not self.recorder.ensure_recording():
                         logger.error("OBS recovery failed; another recovery attempt will be made on the next poll.")
+                    self._update_video_window()
 
                 if self._discard_requested:
                     logger.info("Meeting finished, recording was discarded by user request.")

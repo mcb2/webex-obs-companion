@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,6 +79,11 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("EXIT_OBS_ON_RECORDING_STOP", "exit_obs_on_recording_stop", "RELAUNCH_OBS_PER_CALL"),
         description="Gracefully exit OBS Studio after recording stops and its stopped status is verified"
+    )
+    shared_window_behavior: Literal["always_switch", "prompt"] = Field(
+        default="prompt",
+        validation_alias=AliasChoices("SHARED_WINDOW_BEHAVIOR", "shared_window_behavior"),
+        description="Switch to a new Webex window automatically or ask which window to record",
     )
 
     # Transcription & Diarization settings

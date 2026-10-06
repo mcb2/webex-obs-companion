@@ -244,6 +244,7 @@ def setup():
     existing_obs_port = "4455"
     existing_obs_password = ""
     existing_exit_obs = True
+    existing_shared_window_behavior = "prompt"
     existing_whisper_model = "mlx-community/whisper-large-v3-turbo"
     existing_enable_diarize = True
     existing_hf_token = ""
@@ -275,6 +276,7 @@ def setup():
             if current.obs_ws_password:
                 existing_obs_password = current.obs_ws_password
             existing_exit_obs = current.exit_obs_on_recording_stop
+            existing_shared_window_behavior = current.shared_window_behavior
             if current.whisper_model:
                 existing_whisper_model = current.whisper_model
             existing_enable_diarize = current.enable_diarization
@@ -322,6 +324,11 @@ def setup():
     obs_port = Prompt.ask("Enter OBS WebSocket port", default=existing_obs_port)
     obs_password = Prompt.ask("Enter OBS WebSocket password", default=existing_obs_password, password=True)
     exit_obs = Confirm.ask("Exit OBS after recording stops?", default=existing_exit_obs)
+    shared_window_behavior = Prompt.ask(
+        "When a new Webex window appears during video recording",
+        choices=["prompt", "always_switch"],
+        default=existing_shared_window_behavior,
+    )
 
     console.print("\n[bold]3. Transcription & Speaker Diarization[/bold]")
     whisper_model = Prompt.ask("Enter Whisper model", default=existing_whisper_model)
@@ -392,6 +399,7 @@ OBS_WS_HOST=localhost
 OBS_WS_PORT={obs_port}
 OBS_WS_PASSWORD={obs_password}
 EXIT_OBS_ON_RECORDING_STOP={'true' if exit_obs else 'false'}
+SHARED_WINDOW_BEHAVIOR={shared_window_behavior}
 
 # Transcription & Neural Diarization
 WHISPER_MODEL={whisper_model}

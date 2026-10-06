@@ -7,7 +7,7 @@ including all segments after a recovery or an audio/video mode change.
 from typing import Literal, Protocol
 
 from .config import Config
-from .obs_controller import OBSController
+from .obs_controller import OBSController, WebexWindow
 
 
 RecordingMode = Literal["audio", "video"]
@@ -24,6 +24,11 @@ class RecordingBackend(Protocol):
     def retry_start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def ensure_recording(self) -> bool: ...
     def switch_to_video_mode(self) -> None: ...
+    def list_webex_windows(self) -> list[WebexWindow]: ...
+    def select_webex_window(self, window_id: int) -> bool: ...
+    def poll_webex_window_change(self) -> list[WebexWindow]: ...
+    @property
+    def is_video_recording(self) -> bool: ...
     def stop_recording(self) -> list[str]: ...
     def configure(self, config: Config) -> None: ...
 
@@ -58,6 +63,10 @@ class OBSRecordingBackend:
     def is_recording(self) -> bool:
         return self.controller.is_recording
 
+    @property
+    def is_video_recording(self) -> bool:
+        return self.controller.is_recording and self.controller.current_scene == "Webex-Video"
+
     def connect(self) -> bool:
         return self.controller.connect()
 
@@ -87,6 +96,15 @@ class OBSRecordingBackend:
 
     def switch_to_video_mode(self) -> None:
         self.controller.switch_to_video_mode()
+
+    def list_webex_windows(self) -> list[WebexWindow]:
+        return self.controller.list_webex_windows()
+
+    def select_webex_window(self, window_id: int) -> bool:
+        return self.controller.bind_webex_video_window(window_id)
+
+    def poll_webex_window_change(self) -> list[WebexWindow]:
+        return self.controller.poll_webex_window_change()
 
     def stop_recording(self) -> list[str]:
         files = self.controller.stop_recording()

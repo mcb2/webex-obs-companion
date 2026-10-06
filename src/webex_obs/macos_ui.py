@@ -34,6 +34,11 @@ class _MenuTarget(Foundation.NSObject):
     def stop_(self, sender):
         self.ui.daemon._handle_stop_transcribe_request()
 
+    def selectWindow_(self, sender):
+        threading.Thread(
+            target=self.ui.daemon.request_window_selection, name="select-webex-window", daemon=True
+        ).start()
+
     def settings_(self, sender):
         self.ui.show_settings()
 
@@ -102,10 +107,12 @@ class MacOSUI:
             self.item.button().setTitle_("●")
         menu = AppKit.NSMenu.alloc().init()
         self.controls_item = self._add(menu, "Recording controls…", "controls:")
+        self.select_window_item = self._add(menu, "Select Webex recording window…", "selectWindow:")
         self.stop_item = self._add(menu, "Stop & Transcribe", "stop:")
         self._add(menu, "Settings…", "settings:")
         self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
         self.stop_item.setHidden_(True)
+        self.select_window_item.setHidden_(True)
         self.item.setMenu_(menu)
         self.timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.15, self.target, "tick:", None, True
@@ -134,6 +141,7 @@ class MacOSUI:
             pass
         recording, title = self.daemon.status()
         self.stop_item.setHidden_(not recording)
+        self.select_window_item.setHidden_(self.daemon.recorder.is_video_recording is not True)
         self.quit_item.setHidden_(recording)
         if self.item.button():
             self.item.button().setToolTip_("Recording • " + title if recording else "Ready for calls")
@@ -167,6 +175,37 @@ class MacOSUI:
     def show_control_prompt(self, is_recording=True, meeting_title="Webex Session"):
         spec = control_dialog(is_recording, meeting_title)
         return self._on_main(lambda: self._control_window(spec))
+
+    def choose_webex_window(self, windows, suggested_window_id=None):
+        def show():
+            alert = AppKit.NSAlert.alloc().init()
+            alert.setMessageText_("Select a Webex recording window")
+            alert.setInformativeText_(
+                ("A new Webex window appeared. " if suggested_window_id is not None else "")
+                + "Choose the window to record. Keep current leaves the video unchanged."
+            )
+            popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                ((0, 0), (440, 28)), False
+            )
+            for window in windows:
+                size = f" — {window.width}×{window.height}" if window.area else ""
+                popup.addItemWithTitle_(
+                    f"{window.title}{size} ({window.owner})"
+                )
+            for index, window in enumerate(windows):
+                if window.window_id == suggested_window_id:
+                    popup.selectItemAtIndex_(index)
+                    break
+            alert.setAccessoryView_(popup)
+            alert.addButtonWithTitle_("Record selected window")
+            alert.addButtonWithTitle_("Keep current")
+            AppKit.NSApp.activateIgnoringOtherApps_(True)
+            if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+                return None
+            index = popup.indexOfSelectedItem()
+            return windows[index].window_id if 0 <= index < len(windows) else None
+
+        return self._on_main(show)
 
     def _control_window(self, spec, timeout=None):
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -237,6 +276,7 @@ class MacOSUI:
                 ("WebSocket port", "obs_ws_port", "text"),
                 ("WebSocket password", "obs_ws_password", "secret"),
                 ("Exit OBS on recording stop", "exit_obs_on_recording_stop", "bool"),
+                ("New Webex window", "shared_window_behavior", "window_behavior"),
             ]),
             ("Transcription", [
                 ("Whisper model", "whisper_model", "text"),
@@ -307,6 +347,15 @@ class MacOSUI:
                     field.setButtonType_(AppKit.NSButtonTypeSwitch)
                     field.setTitle_(label)
                     field.setState_(bool(getattr(config, key)))
+                elif kind == "window_behavior":
+                    caption = AppKit.NSTextField.labelWithString_(label)
+                    caption.setFrame_(((15, y), (190, 24)))
+                    pane.addSubview_(caption)
+                    field = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                        ((215, y), (330, 28)), False
+                    )
+                    field.addItemsWithTitles_(["Prompt me", "Always switch"])
+                    field.selectItemAtIndex_(0 if getattr(config, key) == "prompt" else 1)
                 else:
                     caption = AppKit.NSTextField.labelWithString_(label)
                     caption.setFrame_(((15, y), (190, 24)))
@@ -344,7 +393,12 @@ class MacOSUI:
             return
         values = {}
         for key, (field, kind) in inputs.items():
-            value = bool(field.state()) if kind == "bool" else str(field.stringValue())
+            if kind == "bool":
+                value = bool(field.state())
+            elif kind == "window_behavior":
+                value = "prompt" if field.indexOfSelectedItem() == 0 else "always_switch"
+            else:
+                value = str(field.stringValue())
             original = getattr(config, key)
             if value != (bool(original) if kind == "bool" else str(original or "")):
                 values[key] = value

@@ -45,6 +45,15 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 4. Set Server Port to `4455`.
 5. Check **Enable Authentication** and set a password (or copy the generated password).
 6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
+7. In the `Webex-Video` scene, add a **macOS Screen Capture** source named `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
+
+In the companion's **Settings… ➔ OBS recording**, set **New Webex window** to
+**Prompt me** (the default) or **Always switch**. When a new Webex window
+appears during video recording, the companion uses that choice. The **Select
+Webex recording window…** menu-bar command lets you change the source at any
+time without stopping the recording. Window titles and IDs depend on what
+Webex exposes to macOS; content rendered inside the meeting window stays
+part of that window.
 
 ### OBS Lifecycle & Auto-Reconnection
 - **Startup check**: The service opens OBS and verifies WebSocket connectivity. If OBS was already running, it leaves it open; otherwise it closes the instance it launched after confirming recording is idle.

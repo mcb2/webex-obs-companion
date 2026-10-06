@@ -1,4 +1,5 @@
 import sys
+import queue
 import threading
 import types
 from pathlib import Path
@@ -12,6 +13,7 @@ sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
 from webex_obs.config import Config
 from webex_obs.daemon import WebexOBSDaemon
 from webex_obs.post_processing import PostProcessingJob
+from webex_obs.obs_controller import WebexWindow
 
 
 def test_applies_settings_to_running_components_without_restarting_service():
@@ -122,6 +124,55 @@ def test_controls_use_cached_title_without_blocking_call_window_probe():
     daemon.ui.show_control_prompt.assert_called_once_with(
         is_recording=True, meeting_title="Recording title"
     )
+
+
+def test_new_webex_window_follows_configured_behavior():
+    candidate = WebexWindow(202, "Shared content", "Webex", 1440, 900)
+    for behavior in ("always_switch", "prompt"):
+        daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+        daemon.config = Config(_env_file=None, shared_window_behavior=behavior)
+        daemon.recorder = Mock(is_video_recording=True)
+        daemon.recorder.poll_webex_window_change.return_value = [candidate]
+        daemon.ui = Mock()
+        daemon._window_selection_queue = queue.Queue()
+        daemon._window_prompt_pending = threading.Event()
+        daemon._window_session_generation = 1
+        daemon.request_window_selection = Mock()
+        daemon._update_video_window()
+        if behavior == "always_switch":
+            daemon.recorder.select_webex_window.assert_called_once_with(202)
+            daemon.request_window_selection.assert_not_called()
+        else:
+            daemon.recorder.select_webex_window.assert_not_called()
+            daemon.request_window_selection.assert_called_once_with(202)
+
+
+def test_video_switch_offers_existing_windows_in_prompt_mode():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, shared_window_behavior="prompt")
+    daemon.recorder = Mock(is_video_recording=True)
+    daemon.recorder.list_webex_windows.return_value = [
+        WebexWindow(101, "Meeting", "Webex", 1200, 800),
+        WebexWindow(202, "Shared content", "Webex", 1400, 900),
+    ]
+    daemon.request_window_selection = Mock()
+    daemon._switch_to_video_mode()
+    daemon.recorder.switch_to_video_mode.assert_called_once()
+    daemon.request_window_selection.assert_called_once_with()
+
+
+def test_window_choice_from_previous_session_is_ignored():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, shared_window_behavior="prompt")
+    daemon.recorder = Mock(is_video_recording=True)
+    daemon.recorder.poll_webex_window_change.return_value = []
+    daemon.ui = Mock()
+    daemon._window_selection_queue = queue.Queue()
+    daemon._window_selection_queue.put((1, 101))
+    daemon._window_session_generation = 2
+    daemon._window_prompt_pending = threading.Event()
+    daemon._update_video_window()
+    daemon.recorder.select_webex_window.assert_not_called()
 
 
 def test_completed_recording_is_queued_before_lifecycle_rearms():

@@ -9,6 +9,9 @@ fake_requests = types.SimpleNamespace(
     StartRecord=lambda: "start",
     StopRecord=lambda: "stop",
     SetCurrentProgramScene=lambda **kwargs: ("scene", kwargs),
+    GetInputSettings=lambda **kwargs: ("get-input-settings", kwargs),
+    SetInputSettings=lambda **kwargs: ("set-input-settings", kwargs),
+    GetInputPropertiesListPropertyItems=lambda **kwargs: ("get-window-list", kwargs),
     GetVersion=lambda: "version",
 )
 fake_obs_module = types.ModuleType("obswebsocket")
@@ -16,7 +19,7 @@ fake_obs_module.obsws = Mock
 fake_obs_module.requests = fake_requests
 sys.modules.setdefault("obswebsocket", fake_obs_module)
 
-from webex_obs.obs_controller import OBSController
+from webex_obs.obs_controller import OBSController, WebexWindow
 
 
 class _Response:
@@ -139,6 +142,60 @@ class OBSControllerTests(unittest.TestCase):
              patch("webex_obs.obs_controller.time.sleep"):
             self.assertTrue(controller.start_recording())
         self.assertEqual(controller.ws.call.call_count, 1)
+
+    def test_live_window_change_updates_screen_capture_without_stopping_recording(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.is_connected = True
+        controller.is_recording = True
+        controller.current_scene = "Webex-Video"
+        windows = [WebexWindow(101, "Weekly meeting", "Webex", 1200, 800),
+                   WebexWindow(202, "Shared content", "CiscoCollabHost", 1440, 900)]
+        controller.ws.call.side_effect = [_Response(inputKind="screen_capture"), _Response()]
+        with patch.object(controller, "list_webex_windows", return_value=windows), \
+             patch.object(controller, "check_connection", return_value=True):
+            self.assertTrue(controller.bind_webex_video_window(202))
+        request = controller.ws.call.call_args_list[1].args[0]
+        name, data = (request[0], request[1]) if isinstance(request, tuple) else (
+            request.name, request.dataout
+        )
+        self.assertIn(name, ("SetInputSettings", "set-input-settings"))
+        self.assertEqual(data, {
+            "inputName": "Webex-Meeting-Window",
+            "inputSettings": {"type": 1, "window": 202}, "overlay": True,
+        })
+        self.assertEqual(controller.selected_window_id, 202)
+        self.assertTrue(controller.is_recording)
+        self.assertEqual(controller.current_scene, "Webex-Video")
+
+    def test_new_window_is_reported_once_and_selected_window_replacement_is_detected(self):
+        controller = OBSController()
+        controller.is_recording = True
+        controller.current_scene = "Webex-Video"
+        controller.selected_window_id = 101
+        controller._seen_window_ids = {101}
+        meeting = WebexWindow(101, "Meeting", "Webex", 1200, 800)
+        shared = WebexWindow(202, "Shared content", "Webex", 1400, 900)
+        with patch.object(controller, "list_webex_windows",
+                          side_effect=[[meeting, shared], [meeting, shared], [meeting],
+                                       [shared], [shared]]):
+            self.assertEqual(controller.poll_webex_window_change(), [shared])
+            self.assertEqual(controller.poll_webex_window_change(), [])
+            self.assertEqual(controller.poll_webex_window_change(), [])
+            self.assertEqual(controller.poll_webex_window_change(), [shared])
+            self.assertEqual(controller.poll_webex_window_change(), [])
+
+    def test_obs_window_list_supplies_titles_when_quartz_titles_are_unavailable(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.is_connected = True
+        controller.ws.call.return_value = _Response(propertyItems=[
+            {"itemName": "[Webex] Shared content", "itemValue": 202},
+            {"itemName": "[Safari] Browser", "itemValue": 303},
+        ])
+        with patch("webex_obs.obs_controller.HAS_QUARTZ", False):
+            windows = controller.list_webex_windows()
+        self.assertEqual(windows, [WebexWindow(202, "Shared content", "Webex", 0, 0)])
 
     def test_stop_quits_only_when_verified_and_enabled(self):
         for enabled, verified in ((True, True), (False, True), (True, False)):
