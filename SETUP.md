@@ -49,8 +49,10 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 
 In the companion's **Settings… ➔ OBS recording**, set **New Webex window** to
 **Prompt me** (the default) or **Always switch**. When a new Webex window
-appears during video recording, the companion uses that choice. The **Select
-Webex recording window…** menu-bar command lets you change the source at any
+appears during video recording, the companion offers or switches only when it
+looks like a persistent meeting or shared-content window. Brief chat previews
+and small pop-ups are ignored while the selected window remains available. The
+**Select Webex recording window…** menu-bar command lets you change the source at any
 time without stopping the recording. Window titles and IDs depend on what
 Webex exposes to macOS; content rendered inside the meeting window stays
 part of that window.

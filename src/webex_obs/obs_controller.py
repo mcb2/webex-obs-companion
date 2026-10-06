@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ class OBSController:
         self.current_scene = "Webex-Audio"
         self.selected_window_id: int | None = None
         self._seen_window_ids: set[int] = set()
+        self._candidate_polls: dict[int, int] = {}
+        self._selected_missing_polls = 0
         self._missing_selected_window_reported = False
 
     def obs_is_running(self) -> bool:
@@ -242,6 +245,8 @@ class OBSController:
             ))
             self.selected_window_id = chosen.window_id
             self._seen_window_ids = {w.window_id for w in windows}
+            self._candidate_polls.clear()
+            self._selected_missing_polls = 0
             self._missing_selected_window_reported = False
             logger.info("Bound OBS source '%s' to Webex window %s: '%s'", source_name,
                         chosen.window_id, chosen.title)
@@ -251,20 +256,77 @@ class OBSController:
             return False
 
     def poll_webex_window_change(self) -> list[WebexWindow]:
-        """Return new capture candidates, or replacements if the selected window vanished."""
+        """Offer only stable, plausible replacements for the recorded window."""
         if not self.is_recording or self.current_scene != "Webex-Video":
             return []
         windows = self.list_webex_windows()
         present = {w.window_id for w in windows}
-        new = [w for w in windows if w.window_id not in self._seen_window_ids]
-        self._seen_window_ids = present
-        if self.selected_window_id not in present:
-            if windows and not self._missing_selected_window_reported:
+        selected = next((w for w in windows if w.window_id == self.selected_window_id), None)
+        if selected:
+            self._selected_missing_polls = 0
+            self._missing_selected_window_reported = False
+        elif self.selected_window_id is not None:
+            # macOS can briefly omit a window while Webex changes layouts.
+            self._selected_missing_polls += 1
+            if self._selected_missing_polls < 2 or self._missing_selected_window_reported:
+                return []
+            replacements = [w for w in windows if not self._is_transient_webex_window(w)]
+            if replacements:
                 self._missing_selected_window_reported = True
-                return windows
-            return new
-        self._missing_selected_window_reported = False
-        return new
+                return [max(replacements, key=self._recording_window_priority)]
+            return []
+
+        new = []
+        for window in windows:
+            if window.window_id == self.selected_window_id:
+                continue
+            if self._is_transient_webex_window(window):
+                continue
+            if selected and not self._is_better_recording_window(window, selected):
+                continue
+            count = self._candidate_polls.get(window.window_id, 0) + 1
+            self._candidate_polls[window.window_id] = count
+            if count >= 2 and window.window_id not in self._seen_window_ids:
+                new.append(window)
+
+        self._candidate_polls = {
+            window_id: count for window_id, count in self._candidate_polls.items()
+            if window_id in present
+        }
+        if new:
+            self._seen_window_ids.update(w.window_id for w in new)
+        # Forget windows that disappear so a recreated meeting window can be
+        # considered again, but retain the selected ID until it is rebound.
+        self._seen_window_ids.intersection_update(present)
+        return [max(new, key=self._recording_window_priority)] if new else []
+
+    @staticmethod
+    def _is_transient_webex_window(window: WebexWindow) -> bool:
+        title = window.title.casefold()
+        return bool(re.search(r"\b(chat|preview|notification|message|floating)\b", title)) or (
+            window.width > 0 and window.height > 0
+            and (window.width < 640 or window.height < 360)
+        )
+
+    @staticmethod
+    def _is_better_recording_window(candidate: WebexWindow, selected: WebexWindow) -> bool:
+        # Keep the existing meeting/share window unless the newcomer is a
+        # clearly identified share or a substantially larger main window. If Quartz
+        # cannot supply dimensions, require an explicit share-like title.
+        if OBSController._is_share_title(candidate.title):
+            return True
+        return bool(candidate.area and selected.area and candidate.area >= selected.area * 1.2)
+
+    @staticmethod
+    def _is_share_title(title: str) -> bool:
+        return bool(re.search(
+            r"\b(shared? content|screen shar(?:e|ing)|presentation)\b",
+            title.casefold(),
+        ))
+
+    @staticmethod
+    def _recording_window_priority(window: WebexWindow) -> tuple[bool, int]:
+        return OBSController._is_share_title(window.title), window.area
 
     def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
@@ -340,6 +402,8 @@ class OBSController:
             self.recorded_files.clear()
             self.selected_window_id = None
             self._seen_window_ids.clear()
+            self._candidate_polls.clear()
+            self._selected_missing_polls = 0
             self._missing_selected_window_reported = False
             return files
 
@@ -369,6 +433,8 @@ class OBSController:
         self.recorded_files.clear()
         self.selected_window_id = None
         self._seen_window_ids.clear()
+        self._candidate_polls.clear()
+        self._selected_missing_polls = 0
         self._missing_selected_window_reported = False
         return files
 

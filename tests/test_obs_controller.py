@@ -177,12 +177,45 @@ class OBSControllerTests(unittest.TestCase):
         meeting = WebexWindow(101, "Meeting", "Webex", 1200, 800)
         shared = WebexWindow(202, "Shared content", "Webex", 1400, 900)
         with patch.object(controller, "list_webex_windows",
-                          side_effect=[[meeting, shared], [meeting, shared], [meeting],
+                          side_effect=[[meeting, shared], [meeting, shared],
+                                       [meeting, shared], [meeting], [shared],
                                        [shared], [shared]]):
+            self.assertEqual(controller.poll_webex_window_change(), [])
             self.assertEqual(controller.poll_webex_window_change(), [shared])
             self.assertEqual(controller.poll_webex_window_change(), [])
             self.assertEqual(controller.poll_webex_window_change(), [])
+            self.assertEqual(controller.poll_webex_window_change(), [])
             self.assertEqual(controller.poll_webex_window_change(), [shared])
+            self.assertEqual(controller.poll_webex_window_change(), [])
+
+    def test_chat_previews_do_not_displace_selected_meeting_window(self):
+        controller = OBSController()
+        controller.is_recording = True
+        controller.current_scene = "Webex-Video"
+        controller.selected_window_id = 101
+        controller._seen_window_ids = {101}
+        meeting = WebexWindow(101, "Weekly meeting", "Webex", 1200, 800)
+        preview = WebexWindow(202, "Chat preview", "Webex", 1200, 800)
+        tiny_popup = WebexWindow(303, "Colleague", "Webex", 420, 320)
+        similar_sized_chat = WebexWindow(404, "Colleague", "Webex", 1200, 800)
+        with patch.object(controller, "list_webex_windows",
+                          return_value=[meeting, preview, tiny_popup, similar_sized_chat]):
+            for _ in range(4):
+                self.assertEqual(controller.poll_webex_window_change(), [])
+
+    def test_unknown_size_window_only_prompts_for_explicit_share(self):
+        controller = OBSController()
+        controller.is_recording = True
+        controller.current_scene = "Webex-Video"
+        controller.selected_window_id = 101
+        controller._seen_window_ids = {101}
+        meeting = WebexWindow(101, "Weekly meeting", "Webex", 0, 0)
+        other = WebexWindow(202, "Colleague", "Webex", 0, 0)
+        share = WebexWindow(303, "Shared content", "Webex", 0, 0)
+        with patch.object(controller, "list_webex_windows",
+                          return_value=[meeting, other, share]):
+            self.assertEqual(controller.poll_webex_window_change(), [])
+            self.assertEqual(controller.poll_webex_window_change(), [share])
             self.assertEqual(controller.poll_webex_window_change(), [])
 
     def test_obs_window_list_supplies_titles_when_quartz_titles_are_unavailable(self):
