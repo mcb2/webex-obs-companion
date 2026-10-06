@@ -14,16 +14,21 @@ class ControlDialog:
     heading: str
     detail: str
     choices: tuple[tuple[str, str], ...]
+    disabled_choices: frozenset[str] = frozenset()
 
 
-def control_dialog(is_recording: bool, meeting_title: str) -> ControlDialog:
+def control_dialog(
+    is_recording: bool, meeting_title: str, is_video_recording: bool = False
+) -> ControlDialog:
     if is_recording:
         return ControlDialog(
             "Recording controls",
             f"Recording: {meeting_title}",
             (("Switch to Video", "switch_video"),
              ("Stop & Transcribe", "stop_transcribe"),
+             ("Stop & Discard", "stop_discard"),
              ("Cancel", "close")),
+            frozenset({"switch_video"}) if is_video_recording else frozenset(),
         )
     return ControlDialog(
         "Start recording",

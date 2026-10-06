@@ -1,6 +1,7 @@
 import sys
 import queue
 import threading
+import tempfile
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -122,8 +123,65 @@ def test_controls_use_cached_title_without_blocking_call_window_probe():
 
     daemon.monitor.get_active_call_title.assert_not_called()
     daemon.ui.show_control_prompt.assert_called_once_with(
-        is_recording=True, meeting_title="Recording title"
+        is_recording=True, meeting_title="Recording title", is_video_recording=False
     )
+
+
+def test_confirmed_discard_is_queued_for_recording_worker():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=True)
+    daemon._manual_stop_event = threading.Event()
+    daemon._discard_requested = False
+
+    daemon._handle_control_choice("stop_discard")
+
+    assert daemon._discard_requested is True
+    assert daemon._manual_stop_event.is_set()
+    daemon.recorder.stop_recording.assert_not_called()
+
+
+def test_confirmed_discard_stops_and_deletes_without_post_processing():
+    with tempfile.TemporaryDirectory() as folder:
+        recording = Path(folder) / "recording.mkv"
+        recording.write_bytes(b"test recording")
+        daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+        daemon.config = Config(_env_file=None, enable_diarization=False)
+        daemon.recorder = Mock(is_recording=False, is_video_recording=False)
+        daemon.recorder.initialize.return_value = True
+        daemon.recorder.start_recording.side_effect = lambda **kwargs: True
+
+        def stop_recording():
+            daemon.recorder.is_recording = False
+            return [str(recording)]
+
+        daemon.recorder.stop_recording.side_effect = stop_recording
+        daemon.monitor = Mock(is_in_meeting=False, current_call_title=None,
+                              default_call_title="Webex Session")
+        daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
+        daemon.hotkeys = Mock()
+        daemon.ui = Mock()
+        daemon._post_processing_worker = Mock()
+        daemon._manual_start_event = threading.Event()
+        daemon._manual_start_event.set()
+        daemon._manual_start_mode = "audio"
+        daemon._manual_stop_event = threading.Event()
+        daemon._discard_requested = False
+        daemon._active_session = None
+        daemon._settings_lock = threading.Lock()
+
+        def request_discard(_seconds):
+            daemon.recorder.is_recording = True
+            daemon._handle_control_choice("stop_discard")
+
+        with patch.object(daemon, "_new_recording_session", return_value=Mock()), \
+             patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+             patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("webex_obs.daemon.time.sleep", side_effect=request_discard):
+            daemon.start()
+
+        assert not recording.exists()
+        daemon.recorder.stop_recording.assert_called_once()
+        daemon._post_processing_worker.submit.assert_not_called()
 
 
 def test_new_webex_window_follows_configured_behavior():

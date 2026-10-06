@@ -200,6 +200,7 @@ class WebexOBSDaemon:
         choice = self.ui.show_control_prompt(
             is_recording=is_recording,
             meeting_title=meeting_title,
+            is_video_recording=self.recorder.is_video_recording is True,
         )
         self._handle_control_choice(choice)
 
@@ -213,7 +214,7 @@ class WebexOBSDaemon:
     def _handle_control_choice(self, choice: str) -> None:
         if choice == "stop_transcribe":
             self._handle_stop_transcribe_request()
-        elif choice == "switch_video":
+        elif choice == "switch_video" and self.recorder.is_video_recording is not True:
             self._switch_to_video_mode()
             self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
         elif choice == "select_window":
@@ -222,18 +223,10 @@ class WebexOBSDaemon:
             self._request_manual_start("audio")
         elif choice == "start_video":
             self._request_manual_start("video")
-        elif choice == "cancel":
-            logger.info("User requested Cancel & Discard via dialog.")
+        elif choice == "stop_discard" and self.recorder.is_recording:
+            logger.info("User confirmed Stop & Discard via recording controls.")
             self._discard_requested = True
-            discarded = self.recorder.stop_recording()
-            for f in discarded:
-                if os.path.exists(f):
-                    try:
-                        os.remove(f)
-                    except Exception:
-                        pass
-            self.ui.show_notification("Webex OBS Companion", "Recording discarded.")
-            self._active_session = None
+            self._manual_stop_event.set()
 
     def _request_manual_start(self, mode: str) -> None:
         if self.recorder.is_recording or self._manual_start_event.is_set():
@@ -412,12 +405,37 @@ class WebexOBSDaemon:
                     self._update_video_window()
 
                 if self._discard_requested:
-                    logger.info("Meeting finished, recording was discarded by user request.")
+                    discarded = self.recorder.stop_recording()
+                    if self.recorder.is_recording:
+                        logger.error("OBS stop could not be verified; keeping recording files.")
+                        self.ui.show_notification(
+                            "Webex OBS Companion",
+                            "Could not verify recording stopped; it may still be active. Files were kept.",
+                        )
+                    else:
+                        failed = []
+                        for filename in discarded:
+                            try:
+                                os.remove(filename)
+                            except FileNotFoundError:
+                                pass
+                            except OSError:
+                                logger.exception("Could not delete discarded recording: %s", filename)
+                                failed.append(filename)
+                        if failed:
+                            self.ui.show_notification(
+                                "Webex OBS Companion",
+                                "Recording stopped, but some files could not be deleted.",
+                            )
+                        else:
+                            logger.info("Recording stopped and discarded by user request.")
+                            self.ui.show_notification("Webex OBS Companion", "Recording discarded.")
+                    if not manual and self.monitor.is_call_active():
+                        self.monitor.suppress_current_call_prompt()
+                    self.monitor.is_in_meeting = False
                     self._discard_requested = False
                     self._manual_stop_event.clear()
                     self._active_session = None
-                    if manual:
-                        self.monitor.is_in_meeting = False
                     continue
 
                 if (not manual and self._manual_stop_event.is_set()) or (manual and self.monitor.is_call_active()):
