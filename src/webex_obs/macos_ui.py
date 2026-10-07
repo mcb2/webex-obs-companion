@@ -111,7 +111,7 @@ class MacOSUI:
             self.item.button().setTitle_("●")
         menu = AppKit.NSMenu.alloc().init()
         self.controls_item = self._add(menu, "Recording controls…", "controls:")
-        self.select_window_item = self._add(menu, "Select Webex recording window…", "selectWindow:")
+        self.select_window_item = self._add(menu, "Select Webex window or screen…", "selectWindow:")
         self.stop_item = self._add(menu, "Stop & Transcribe", "stop:")
         self._add(menu, "Settings…", "settings:")
         self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
@@ -204,34 +204,47 @@ class MacOSUI:
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         return alert.runModal() == AppKit.NSAlertSecondButtonReturn
 
-    def choose_webex_window(self, windows, suggested_window_id=None):
+    def choose_webex_window(
+        self, windows, suggested_window_id=None, displays=(), selected_display_uuid=None
+    ):
         def show():
             alert = AppKit.NSAlert.alloc().init()
-            alert.setMessageText_("Select a Webex recording window")
+            alert.setMessageText_("Select a video recording source")
             alert.setInformativeText_(
                 ("A new Webex window appeared. " if suggested_window_id is not None else "")
-                + "Choose the window to record. Keep current leaves the video unchanged."
+                + "Choose a Webex window or an entire screen. Keep current leaves the video unchanged."
             )
             popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 ((0, 0), (440, 28)), False
             )
+            choices = []
             for window in windows:
                 size = f" — {window.width}×{window.height}" if window.area else ""
                 popup.addItemWithTitle_(
                     f"{window.title}{size} ({window.owner})"
                 )
+                choices.append(window.window_id)
+            for display in displays:
+                popup.addItemWithTitle_(f"Entire screen — {display.label}")
+                choices.append(display.display_uuid)
             for index, window in enumerate(windows):
                 if window.window_id == suggested_window_id:
                     popup.selectItemAtIndex_(index)
                     break
+            else:
+                if selected_display_uuid is not None:
+                    for index, choice in enumerate(choices):
+                        if choice == selected_display_uuid:
+                            popup.selectItemAtIndex_(index)
+                            break
             alert.setAccessoryView_(popup)
-            alert.addButtonWithTitle_("Record selected window")
+            alert.addButtonWithTitle_("Record selected source")
             alert.addButtonWithTitle_("Keep current")
             AppKit.NSApp.activateIgnoringOtherApps_(True)
             if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
                 return None
             index = popup.indexOfSelectedItem()
-            return windows[index].window_id if 0 <= index < len(windows) else None
+            return choices[index] if 0 <= index < len(choices) else None
 
         return self._on_main(show)
 

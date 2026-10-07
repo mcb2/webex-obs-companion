@@ -19,7 +19,7 @@ fake_obs_module.obsws = Mock
 fake_obs_module.requests = fake_requests
 sys.modules.setdefault("obswebsocket", fake_obs_module)
 
-from webex_obs.obs_controller import OBSController, WebexWindow
+from webex_obs.obs_controller import CaptureDisplay, OBSController, WebexWindow
 
 
 class _Response:
@@ -167,6 +167,69 @@ class OBSControllerTests(unittest.TestCase):
         self.assertEqual(controller.selected_window_id, 202)
         self.assertTrue(controller.is_recording)
         self.assertEqual(controller.current_scene, "Webex-Video")
+
+    def test_entire_screen_selection_uses_obs_display_and_skips_window_polling(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.is_connected = True
+        controller.is_recording = True
+        controller.current_scene = "Webex-Video"
+        controller.selected_window_id = 101
+        controller.ws.call.side_effect = [
+            _Response(inputKind="screen_capture"),
+            _Response(propertyItems=[
+                {"itemName": " ", "itemValue": ""},
+                {"itemName": "Main Display", "itemValue": "display-uuid"},
+            ]),
+            _Response(),
+        ]
+
+        self.assertEqual(controller.list_capture_displays(), [
+            CaptureDisplay("display-uuid", "Main Display")
+        ])
+        with patch.object(controller, "list_capture_displays", return_value=[
+            CaptureDisplay("display-uuid", "Main Display")
+        ]), patch.object(controller, "list_webex_windows") as windows:
+            self.assertTrue(controller.select_capture_display("display-uuid"))
+            self.assertEqual(controller.poll_webex_window_change(), [])
+        windows.assert_not_called()
+        request = controller.ws.call.call_args.args[0]
+        name, data = (request[0], request[1]) if isinstance(request, tuple) else (
+            request.name, request.dataout
+        )
+        self.assertIn(name, ("SetInputSettings", "set-input-settings"))
+        self.assertEqual(data["inputSettings"], {"type": 0, "display_uuid": "display-uuid"})
+        self.assertTrue(controller.is_screen_recording)
+        self.assertIsNone(controller.selected_window_id)
+
+    def test_selecting_window_again_resumes_window_following(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.is_connected = True
+        controller.selected_display_uuid = "display-uuid"
+        controller.ws.call.side_effect = [_Response(inputKind="screen_capture"), _Response()]
+        window = WebexWindow(101, "Meeting", "Webex", 1200, 800)
+        with patch.object(controller, "list_webex_windows", return_value=[window]), \
+             patch.object(controller, "check_connection", return_value=True):
+            self.assertTrue(controller.bind_webex_video_window(101))
+        self.assertFalse(controller.is_screen_recording)
+
+    def test_new_video_segment_preserves_entire_screen_selection(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.selected_display_uuid = "display-uuid"
+        with patch.object(controller, "switch_scene", return_value=True), \
+             patch.object(controller, "bind_webex_video_window") as bind_window, \
+             patch.object(controller, "_refresh_recording_status", side_effect=[False, True]):
+            self.assertTrue(controller.start_recording("Webex-Video"))
+        bind_window.assert_not_called()
+
+    def test_legacy_window_source_does_not_offer_entire_screen(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.is_connected = True
+        controller.ws.call.return_value = _Response(inputKind="window_capture")
+        self.assertEqual(controller.list_capture_displays(), [])
 
     def test_new_window_is_reported_once_and_selected_window_replacement_is_detected(self):
         controller = OBSController()

@@ -65,7 +65,7 @@ class WebexOBSDaemon:
         self._discard_requested = False
         self._active_session: RecordingSession | None = None
         self._settings_lock = threading.Lock()
-        self._window_selection_queue: queue.Queue[tuple[int, int]] = queue.Queue()
+        self._window_selection_queue: queue.Queue[tuple[int, int | str]] = queue.Queue()
         self._window_prompt_pending = threading.Event()
         self._window_session_generation = 0
         self._post_processing_worker = PostProcessingWorker(
@@ -207,6 +207,7 @@ class WebexOBSDaemon:
     def _switch_to_video_mode(self) -> None:
         self.recorder.switch_to_video_mode()
         if (self.recorder.is_video_recording is True
+                and self.recorder.is_screen_recording is not True
                 and self.config.shared_window_behavior == "prompt"
                 and len(self.recorder.list_webex_windows()) > 1):
             self.request_window_selection()
@@ -240,17 +241,20 @@ class WebexOBSDaemon:
         if self.recorder.is_video_recording is not True or self._window_prompt_pending.is_set():
             return
         windows = self.recorder.list_webex_windows()
-        if not windows:
-            self.ui.show_notification("Webex OBS Companion", "No Webex recording windows are available.")
+        displays = self.recorder.list_capture_displays()
+        if not windows and not displays:
+            self.ui.show_notification("Webex OBS Companion", "No recording windows or screens are available.")
             return
         self._window_prompt_pending.set()
         generation = self._window_session_generation
 
         def choose() -> None:
             try:
-                window_id = self.ui.choose_webex_window(windows, suggested_window_id)
-                if window_id is not None:
-                    self._window_selection_queue.put((generation, window_id))
+                selection = self.ui.choose_webex_window(
+                    windows, suggested_window_id, displays, self.recorder.selected_display_uuid
+                )
+                if selection is not None:
+                    self._window_selection_queue.put((generation, selection))
             except Exception:
                 logger.exception("Could not show the Webex window picker")
             finally:
@@ -263,14 +267,24 @@ class WebexOBSDaemon:
             return
         try:
             while True:
-                generation, window_id = self._window_selection_queue.get_nowait()
+                generation, selection = self._window_selection_queue.get_nowait()
                 if generation == self._window_session_generation:
-                    if self.recorder.select_webex_window(window_id):
-                        self.ui.show_notification("Webex OBS Companion", "Video recording window changed.")
+                    if isinstance(selection, str):
+                        changed = self.recorder.select_capture_display(selection)
                     else:
-                        self.ui.show_notification("Webex OBS Companion", "Could not select that Webex window.")
+                        changed = self.recorder.select_webex_window(selection)
+                    if changed:
+                        self.ui.show_notification(
+                            "Webex OBS Companion",
+                            "Recording the entire screen." if isinstance(selection, str)
+                            else "Video recording window changed.",
+                        )
+                    else:
+                        self.ui.show_notification("Webex OBS Companion", "Could not select that recording source.")
         except queue.Empty:
             pass
+        if self.recorder.is_screen_recording is True:
+            return
         candidates = self.recorder.poll_webex_window_change()
         if not candidates:
             return
@@ -378,6 +392,7 @@ class WebexOBSDaemon:
                     self._switch_to_video_mode()
 
                 if (mode == "video" and self.recorder.is_video_recording is True
+                        and self.recorder.is_screen_recording is not True
                         and self.config.shared_window_behavior == "prompt"
                         and len(self.recorder.list_webex_windows()) > 1):
                     self.request_window_selection()

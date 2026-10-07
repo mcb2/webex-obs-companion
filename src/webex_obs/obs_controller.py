@@ -21,6 +21,13 @@ class WebexWindow:
     def area(self) -> int:
         return self.width * self.height
 
+
+@dataclass(frozen=True)
+class CaptureDisplay:
+    display_uuid: str
+    label: str
+
+
 try:
     import Quartz
     HAS_QUARTZ = True
@@ -40,6 +47,7 @@ class OBSController:
         self.recorded_files: list[str] = []
         self.current_scene = "Webex-Audio"
         self.selected_window_id: int | None = None
+        self.selected_display_uuid: str | None = None
         self._seen_window_ids: set[int] = set()
         self._candidate_polls: dict[int, int] = {}
         self._selected_missing_polls = 0
@@ -214,6 +222,58 @@ class OBSController:
                 logger.debug("OBS window property list unavailable: %s", exc)
         return sorted(matches.values(), key=lambda w: w.area, reverse=True)
 
+    @property
+    def is_screen_recording(self) -> bool:
+        return self.selected_display_uuid is not None
+
+    def list_capture_displays(self, source_name: str = "Webex-Meeting-Window") -> list[CaptureDisplay]:
+        """Return displays available to the macOS Screen Capture OBS source."""
+        if not self.ws or not self.is_connected:
+            return []
+        try:
+            info = self.ws.call(requests.GetInputSettings(inputName=source_name)).datain
+            if info.get("inputKind") != "screen_capture":
+                return []
+            response = self.ws.call(requests.GetInputPropertiesListPropertyItems(
+                inputName=source_name, propertyName="display_uuid"
+            )).datain
+            displays = []
+            for item in response.get("propertyItems", []):
+                display_uuid = str(item.get("itemValue") or "").strip()
+                if display_uuid:
+                    displays.append(CaptureDisplay(display_uuid, str(item.get("itemName") or "Display")))
+            return displays
+        except Exception as exc:
+            logger.warning("Could not list OBS capture displays: %s", exc)
+            return []
+
+    def select_capture_display(
+        self, display_uuid: str, source_name: str = "Webex-Meeting-Window"
+    ) -> bool:
+        """Switch the existing video source to full-display capture."""
+        if not display_uuid or not any(
+            display.display_uuid == display_uuid for display in self.list_capture_displays(source_name)
+        ):
+            logger.warning("Selected display is not available to OBS: %s", display_uuid)
+            return False
+        try:
+            self.ws.call(requests.SetInputSettings(
+                inputName=source_name,
+                inputSettings={"type": 0, "display_uuid": display_uuid},
+                overlay=True,
+            ))
+            self.selected_display_uuid = display_uuid
+            self.selected_window_id = None
+            self._seen_window_ids.clear()
+            self._candidate_polls.clear()
+            self._selected_missing_polls = 0
+            self._missing_selected_window_reported = False
+            logger.info("Bound OBS source '%s' to full display %s.", source_name, display_uuid)
+            return True
+        except Exception as exc:
+            logger.warning("Could not bind OBS video source to display: %s", exc)
+            return False
+
     def bind_webex_video_window(
         self, window_id: int | None = None, source_name: str = "Webex-Meeting-Window"
     ) -> bool:
@@ -244,6 +304,7 @@ class OBSController:
                 overlay=True
             ))
             self.selected_window_id = chosen.window_id
+            self.selected_display_uuid = None
             self._seen_window_ids = {w.window_id for w in windows}
             self._candidate_polls.clear()
             self._selected_missing_polls = 0
@@ -257,7 +318,7 @@ class OBSController:
 
     def poll_webex_window_change(self) -> list[WebexWindow]:
         """Offer only stable, plausible replacements for the recorded window."""
-        if not self.is_recording or self.current_scene != "Webex-Video":
+        if not self.is_recording or self.current_scene != "Webex-Video" or self.is_screen_recording:
             return []
         windows = self.list_webex_windows()
         present = {w.window_id for w in windows}
@@ -338,7 +399,7 @@ class OBSController:
             try:
                 if not self.switch_scene(scene_name):
                     raise RuntimeError("OBS scene is not ready")
-                if scene_name == "Webex-Video":
+                if scene_name == "Webex-Video" and not self.is_screen_recording:
                     if not self.bind_webex_video_window():
                         logger.warning("Video recording started without a bound Webex window.")
                 self.ws.call(requests.StartRecord())
@@ -469,7 +530,8 @@ class OBSController:
                 self.recorded_files.append(output_path)
             time.sleep(1.0)
             self.switch_scene("Webex-Video")
-            self.bind_webex_video_window()
+            if not self.is_screen_recording:
+                self.bind_webex_video_window()
             self.ws.call(requests.StartRecord())
             self.is_recording = True
             logger.info("Started new Video segment in OBS.")
