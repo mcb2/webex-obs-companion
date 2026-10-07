@@ -14,7 +14,7 @@ sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
 from webex_obs.config import Config
 from webex_obs.daemon import WebexOBSDaemon
 from webex_obs.post_processing import PostProcessingJob
-from webex_obs.obs_controller import WebexWindow
+from webex_obs.obs_controller import CaptureDisplay, WebexWindow
 
 
 def test_applies_settings_to_running_components_without_restarting_service():
@@ -231,6 +231,43 @@ def test_window_choice_from_previous_session_is_ignored():
     daemon._window_prompt_pending = threading.Event()
     daemon._update_video_window()
     daemon.recorder.select_webex_window.assert_not_called()
+
+
+def test_manual_picker_offers_entire_screen_without_webex_windows():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_video_recording=True, selected_display_uuid=None)
+    daemon.recorder.list_webex_windows.return_value = []
+    displays = [CaptureDisplay("display-uuid", "Main Display")]
+    daemon.recorder.list_capture_displays.return_value = displays
+    daemon.ui = Mock()
+    daemon.ui.choose_webex_window.return_value = "display-uuid"
+    daemon._window_selection_queue = queue.Queue()
+    daemon._window_prompt_pending = threading.Event()
+    daemon._window_session_generation = 1
+
+    with patch("webex_obs.daemon.threading.Thread") as thread:
+        thread.side_effect = lambda **kwargs: SimpleNamespace(start=kwargs["target"])
+        daemon.request_window_selection()
+
+    daemon.ui.choose_webex_window.assert_called_once_with([], None, displays, None)
+    assert daemon._window_selection_queue.get_nowait() == (1, "display-uuid")
+
+
+def test_entire_screen_choice_disables_automatic_window_following():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_video_recording=True, is_screen_recording=False)
+    daemon.recorder.select_capture_display.side_effect = lambda _uuid: setattr(
+        daemon.recorder, "is_screen_recording", True
+    ) or True
+    daemon.ui = Mock()
+    daemon._window_selection_queue = queue.Queue()
+    daemon._window_selection_queue.put((1, "display-uuid"))
+    daemon._window_session_generation = 1
+
+    daemon._update_video_window()
+
+    daemon.recorder.select_capture_display.assert_called_once_with("display-uuid")
+    daemon.recorder.poll_webex_window_change.assert_not_called()
 
 
 def test_completed_recording_is_queued_before_lifecycle_rearms():

@@ -7,7 +7,7 @@ including all segments after a recovery or an audio/video mode change.
 from typing import Literal, Protocol
 
 from .config import Config
-from .obs_controller import OBSController, WebexWindow
+from .obs_controller import CaptureDisplay, OBSController, WebexWindow
 
 
 RecordingMode = Literal["audio", "video"]
@@ -26,9 +26,15 @@ class RecordingBackend(Protocol):
     def switch_to_video_mode(self) -> None: ...
     def list_webex_windows(self) -> list[WebexWindow]: ...
     def select_webex_window(self, window_id: int) -> bool: ...
+    def list_capture_displays(self) -> list[CaptureDisplay]: ...
+    def select_capture_display(self, display_uuid: str) -> bool: ...
     def poll_webex_window_change(self) -> list[WebexWindow]: ...
     @property
     def is_video_recording(self) -> bool: ...
+    @property
+    def is_screen_recording(self) -> bool: ...
+    @property
+    def selected_display_uuid(self) -> str | None: ...
     def stop_recording(self) -> list[str]: ...
     def configure(self, config: Config) -> None: ...
 
@@ -67,6 +73,14 @@ class OBSRecordingBackend:
     def is_video_recording(self) -> bool:
         return self.controller.is_recording and self.controller.current_scene == "Webex-Video"
 
+    @property
+    def is_screen_recording(self) -> bool:
+        return self.is_video_recording and self.controller.is_screen_recording
+
+    @property
+    def selected_display_uuid(self) -> str | None:
+        return self.controller.selected_display_uuid
+
     def connect(self) -> bool:
         return self.controller.connect()
 
@@ -102,6 +116,12 @@ class OBSRecordingBackend:
 
     def select_webex_window(self, window_id: int) -> bool:
         return self.controller.bind_webex_video_window(window_id)
+
+    def list_capture_displays(self) -> list[CaptureDisplay]:
+        return self.controller.list_capture_displays()
+
+    def select_capture_display(self, display_uuid: str) -> bool:
+        return self.controller.select_capture_display(display_uuid)
 
     def poll_webex_window_change(self) -> list[WebexWindow]:
         return self.controller.poll_webex_window_change()

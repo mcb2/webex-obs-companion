@@ -52,8 +52,12 @@ In the companion's **Settings… ➔ OBS recording**, set **New Webex window (vi
 appears during video recording, the companion offers or switches only when it
 looks like a persistent meeting or shared-content window. Brief chat previews
 and small pop-ups are ignored while the selected window remains available. The
-**Select Webex recording window…** menu-bar command lets you change the source at any
-time without stopping the recording. Window titles and IDs depend on what
+**Select Webex window or screen…** menu-bar command is visible only during video
+recording. It lets you select a Webex window or an entire screen without stopping
+the recording. Entire-screen capture pauses automatic Webex-window switching and
+prompts until you select a window again. The screen choices come from OBS and
+require a macOS Screen Capture source; the legacy Window Capture source supports
+window choices only. Window titles and IDs depend on what
 Webex exposes to macOS; content rendered inside the meeting window stays
 part of that window.
 

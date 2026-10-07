@@ -13,19 +13,25 @@ def _escape_applescript_string(value: str) -> str:
 
 class UIBanner:
     @staticmethod
-    def choose_webex_window(windows, suggested_window_id=None) -> int | None:
+    def choose_webex_window(
+        windows, suggested_window_id=None, displays=(), selected_display_uuid=None
+    ) -> int | str | None:
         """Picker for foreground CLI runs without the AppKit menu bar."""
-        if not windows:
+        if not windows and not displays:
             return None
         labels = {
             f"{window.window_id} | {window.title} ({window.owner})": window.window_id
             for window in windows
         }
+        labels.update({
+            f"Entire screen | {display.label}": display.display_uuid
+            for display in displays
+        })
         items = ", ".join(f'"{_escape_applescript_string(label)}"' for label in labels)
         script = (
             f'set selectedWindow to choose from list {{{items}}} '
             'with title "Webex OBS Companion" '
-            'with prompt "Select the Webex window to record"\n'
+            'with prompt "Select a Webex window or entire screen to record"\n'
             'if selectedWindow is false then return ""\n'
             'return item 1 of selectedWindow'
         )

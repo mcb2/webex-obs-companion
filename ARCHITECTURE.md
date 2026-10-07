@@ -33,7 +33,9 @@ chat previews do not displace the selected recording window. A qualifying
 window is selected automatically or presented in an AppKit picker according to
 `SHARED_WINDOW_BEHAVIOR`. Picker results return to the lifecycle worker before
 OBS source settings are changed, so the recording output stays active while
-the selected video window changes. This selection applies to the current
+the selected video window changes. The same picker can switch the macOS Screen
+Capture source to an OBS-listed full display; window polling is suspended until
+a Webex window is selected again. This selection applies to the current
 session only because macOS window IDs change when Webex recreates windows.
 
 ```
