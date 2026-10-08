@@ -55,7 +55,7 @@ and small pop-ups are ignored while the selected window remains available. The
 **Select Webex window or screen…** menu-bar command is visible only during video
 recording. It lets you select a Webex window or an entire screen without stopping
 the recording. Entire-screen capture pauses automatic Webex-window switching and
-prompts until you select a window again. The screen choices come from OBS and
+prompts until you select a window again. The screen choices come from macOS and
 require a macOS Screen Capture source; the legacy Window Capture source supports
 window choices only. Window titles and IDs depend on what
 Webex exposes to macOS; content rendered inside the meeting window stays

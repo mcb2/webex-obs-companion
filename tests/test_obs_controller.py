@@ -177,16 +177,17 @@ class OBSControllerTests(unittest.TestCase):
         controller.selected_window_id = 101
         controller.ws.call.side_effect = [
             _Response(inputKind="screen_capture"),
-            _Response(propertyItems=[
-                {"itemName": " ", "itemValue": ""},
-                {"itemName": "Main Display", "itemValue": "display-uuid"},
-            ]),
             _Response(),
         ]
 
-        self.assertEqual(controller.list_capture_displays(), [
-            CaptureDisplay("display-uuid", "Main Display")
-        ])
+        with patch("webex_obs.obs_controller.active_displays", return_value=[
+            ("display-uuid", "Main Display")
+        ]):
+            self.assertEqual(controller.list_capture_displays(), [
+                CaptureDisplay("display-uuid", "Main Display")
+            ])
+        # Enumerating screens must never request OBS's crashing property list.
+        self.assertEqual(controller.ws.call.call_count, 1)
         with patch.object(controller, "list_capture_displays", return_value=[
             CaptureDisplay("display-uuid", "Main Display")
         ]), patch.object(controller, "list_webex_windows") as windows:
