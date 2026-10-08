@@ -21,11 +21,12 @@ def control_dialog(
     is_recording: bool, meeting_title: str, is_video_recording: bool = False
 ) -> ControlDialog:
     if is_recording:
+        source_choice = (("Select Video Source…", "select_window"),) if is_video_recording else ()
         return ControlDialog(
             "Recording controls",
             f"Recording: {meeting_title}",
-            (("Switch to Video", "switch_video"),
-             ("Stop & Transcribe", "stop_transcribe"),
+            (("Switch to Video", "switch_video"),) + source_choice +
+            (("Stop & Transcribe", "stop_transcribe"),
              ("Stop & Discard", "stop_discard"),
              ("Cancel", "close")),
             frozenset({"switch_video"}) if is_video_recording else frozenset(),
