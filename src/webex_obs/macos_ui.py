@@ -311,9 +311,11 @@ class MacOSUI:
         return self._on_main(show)
 
     def _control_window(self, spec, timeout=None):
-        width = 750 if len(spec.choices) > 3 else 570
+        two_rows = len(spec.choices) > 3
+        width = 570
+        extra_height = 44 if two_rows else 0
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (width, 270)), AppKit.NSWindowStyleMaskTitled,
+            ((0, 0), (width, 270 + extra_height)), AppKit.NSWindowStyleMaskTitled,
             AppKit.NSBackingStoreBuffered, False,
         )
         window.setTitle_("Webex OBS Companion")
@@ -323,17 +325,20 @@ class MacOSUI:
         content = window.contentView()
         heading = AppKit.NSTextField.labelWithString_(spec.heading)
         heading.setFont_(AppKit.NSFont.boldSystemFontOfSize_(19))
-        heading.setFrame_(((24, 217), (width - 50, 30)))
+        heading.setFrame_(((24, 217 + extra_height), (width - 50, 30)))
         content.addSubview_(heading)
         detail = AppKit.NSTextField.labelWithString_(spec.detail)
-        detail.setFrame_(((24, 91), (width - 50, 115)))
+        detail.setFrame_(((24, 91 + extra_height), (width - 50, 115)))
         detail.setUsesSingleLineMode_(False)
         detail.cell().setWraps_(True)
         detail.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         content.addSubview_(detail)
         for index, (label, choice) in enumerate(spec.choices):
+            top_count = len(spec.choices) - 3 if two_rows else 0
+            column = index if index < top_count else index - top_count
+            y = 71 if index < top_count else 27
             button = AppKit.NSButton.alloc().initWithFrame_(
-                ((24 + index * 180, 27), (166, 34))
+                ((24 + column * 180, y), (166, 34))
             )
             button.setTitle_(label)
             button.setBezelStyle_(AppKit.NSBezelStyleRounded)
