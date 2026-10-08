@@ -96,6 +96,65 @@ class MacOSUI:
         self.requests = queue.Queue()
         self.target = None
         self.item = None
+        self._status_images = {}
+        self._icon_state = None
+
+    @staticmethod
+    def _status_image(badge_symbol=None):
+        """Compose a template image so both symbols follow the menu bar theme."""
+        base = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            "record.circle", "Meeting recorder"
+        )
+        badge = None
+        if badge_symbol:
+            badge = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                badge_symbol, None
+            )
+        if base is None or (badge_symbol and badge is None):
+            return None
+
+        def draw_fitted(symbol, rect):
+            (x, y), (width, height) = rect
+            size = symbol.size()
+            scale = min(width / size.width, height / size.height)
+            fitted = (size.width * scale, size.height * scale)
+            symbol.drawInRect_fromRect_operation_fraction_(
+                ((x + (width - fitted[0]) / 2, y + (height - fitted[1]) / 2), fitted),
+                AppKit.NSZeroRect, AppKit.NSCompositingOperationSourceOver, 1.0,
+            )
+
+        def draw(_rect):
+            draw_fitted(base, ((0, 0), (18, 18)))
+            if badge is not None:
+                # A transparent gap keeps the small badge distinct from the circle.
+                AppKit.NSRectFillUsingOperation(
+                    ((11, 0), (13, 11)), AppKit.NSCompositingOperationClear
+                )
+                draw_fitted(badge, ((12, 0), (11, 10)))
+            return True
+
+        image = AppKit.NSImage.imageWithSize_flipped_drawingHandler_((24, 18), False, draw)
+        image.setTemplate_(True)
+        return image
+
+    def _update_status_icon(self, recording, video):
+        state = "video" if recording and video else "audio" if recording else "idle"
+        if state == self._icon_state:
+            return
+        button = self.item.button()
+        if button is None:
+            return
+        image = self._status_images.get(state)
+        button.setImage_(image)
+        button.setTitle_("" if image is not None else {
+            "idle": "●", "audio": "● A", "video": "● V",
+        }[state])
+        button.setAccessibilityLabel_({
+            "idle": "Meeting recorder: not recording",
+            "audio": "Meeting recorder: recording audio",
+            "video": "Meeting recorder: recording video",
+        }[state])
+        self._icon_state = state
 
     def run(self):
         app = AppKit.NSApplication.sharedApplication()
@@ -103,12 +162,12 @@ class MacOSUI:
         self.target = _MenuTarget.alloc().init()
         self.target.configure(self)
         self.item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(AppKit.NSVariableStatusItemLength)
-        image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_("record.circle", "Meeting recorder")
-        if image is not None:
-            image.setTemplate_(True)
-            self.item.button().setImage_(image)
-        else:
-            self.item.button().setTitle_("●")
+        self._status_images = {
+            "idle": self._status_image(),
+            "audio": self._status_image("mic.fill"),
+            "video": self._status_image("video.fill"),
+        }
+        self._update_status_icon(False, False)
         menu = AppKit.NSMenu.alloc().init()
         self.controls_item = self._add(menu, "Recording controls…", "controls:")
         self.select_window_item = self._add(menu, "Select Webex window or screen…", "selectWindow:")
@@ -144,11 +203,14 @@ class MacOSUI:
         except queue.Empty:
             pass
         recording, title = self.daemon.status()
+        video = self.daemon.recorder.is_video_recording is True
+        self._update_status_icon(recording, video)
         self.stop_item.setHidden_(not recording)
-        self.select_window_item.setHidden_(self.daemon.recorder.is_video_recording is not True)
+        self.select_window_item.setHidden_(not video)
         self.quit_item.setHidden_(recording)
         if self.item.button():
-            self.item.button().setToolTip_("Recording • " + title if recording else "Ready for calls")
+            mode = "Recording video" if video else "Recording audio"
+            self.item.button().setToolTip_(mode + " • " + title if recording else "Ready for calls")
 
     def _on_main(self, func):
         if threading.current_thread() is threading.main_thread():
