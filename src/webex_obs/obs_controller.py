@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from obswebsocket import obsws, requests
 
+from .macos_displays import active_displays
+
 logger = logging.getLogger(__name__)
 
 
@@ -234,15 +236,10 @@ class OBSController:
             info = self.ws.call(requests.GetInputSettings(inputName=source_name)).datain
             if info.get("inputKind") != "screen_capture":
                 return []
-            response = self.ws.call(requests.GetInputPropertiesListPropertyItems(
-                inputName=source_name, propertyName="display_uuid"
-            )).datain
-            displays = []
-            for item in response.get("propertyItems", []):
-                display_uuid = str(item.get("itemValue") or "").strip()
-                if display_uuid:
-                    displays.append(CaptureDisplay(display_uuid, str(item.get("itemName") or "Display")))
-            return displays
+            # OBS 32.2.2 crashes serializing the NULL placeholder in this
+            # source's display_uuid property list (obs-studio issue #13905).
+            # macOS supplies the same UUIDs without touching that OBS path.
+            return [CaptureDisplay(value, label) for value, label in active_displays()]
         except Exception as exc:
             logger.warning("Could not list OBS capture displays: %s", exc)
             return []
