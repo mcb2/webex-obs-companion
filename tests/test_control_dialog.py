@@ -1,25 +1,28 @@
-from webex_obs.control_dialog import control_dialog, startup_dialog
+from webex_obs.control_dialog import manual_consent_dialog, recording_menu_choices, startup_dialog
 
 
-def test_idle_choices_and_consent_notice():
-    dialog = control_dialog(False, "Architecture Review")
-    assert [choice for _, choice in dialog.choices] == ["start_audio", "start_video", "close"]
+def test_menu_only_offers_actions_available_in_each_state():
+    def actions(*args, **kwargs):
+        return [choice for _, choice in recording_menu_choices(*args, **kwargs)]
+    assert actions(False) == ["start_audio", "start_video"]
+    assert actions(False, True) == ["start_audio", "start_video"]  # stale video scene
+    assert actions(True) == ["switch_video", "stop_transcribe", "stop_discard"]
+    assert actions(True, True) == ["select_window", "stop_transcribe", "stop_discard"]
+    assert actions(True, True, source_picker_open=True) == ["stop_transcribe", "stop_discard"]
+    assert actions(False, transitioning=True) == []
+    assert actions(True, transitioning=True) == []
+
+
+def test_manual_consent_defaults_to_ok_with_ten_second_notice():
+    dialog = manual_consent_dialog("Architecture Review")
+    assert dialog.choices == (("OK", "ok"), ("Cancel & Discard", "cancel"))
+    assert dialog.default_choice == "ok"
     assert "Architecture Review" in dialog.detail
+    assert "Two-party / all-party consent" in dialog.detail
     assert "Obtain permission from all participants" in dialog.detail
+    assert "10 seconds" in dialog.detail
 
 
-def test_active_choices_offer_confirmed_discard_but_not_new_recording():
-    dialog = control_dialog(True, "Architecture Review")
-    assert [choice for _, choice in dialog.choices] == [
-        "switch_video", "stop_transcribe", "stop_discard", "close"
-    ]
-    assert not dialog.disabled_choices
-
-
-def test_video_recording_disables_switch_to_video():
-    dialog = control_dialog(True, "Architecture Review", is_video_recording=True)
-    assert dialog.disabled_choices == frozenset({"switch_video"})
-    assert ("Select Video Source…", "select_window") in dialog.choices
 
 
 def test_startup_prompt_keeps_consent_and_audio_timeout_choice():

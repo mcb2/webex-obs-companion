@@ -1,5 +1,7 @@
 import subprocess
 
+from .control_dialog import CONSENT_NOTICE
+
 
 def _escape_applescript_string(value: str) -> str:
     """Escape dynamic text before embedding it in an AppleScript string."""
@@ -12,6 +14,48 @@ def _escape_applescript_string(value: str) -> str:
 
 
 class UIBanner:
+    @staticmethod
+    def show_recording_menu() -> None:
+        UIBanner.show_notification("Webex OBS Companion", "Use the recording actions in the macOS menu bar.")
+
+    @staticmethod
+    def show_manual_consent_prompt(meeting_title: str = "Webex Session") -> str:
+        text = _escape_applescript_string(
+            f"Recording started: {meeting_title}\n\nTwo-party / all-party consent\n"
+            f"{CONSENT_NOTICE}\n\nThis notice closes after 10 seconds; recording continues."
+        )
+        script = f'''display dialog "{text}" ¬
+            with title "Webex OBS Companion" ¬
+            with icon caution ¬
+            buttons {{"Cancel & Discard", "OK"}} ¬
+            default button "OK" ¬
+            cancel button "Cancel & Discard" ¬
+            giving up after 10'''
+        try:
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            if "gave up:true" in result.stdout or "button returned:OK" in result.stdout:
+                return "ok"
+            # AppleScript represents an explicit cancel/Escape with error -128.
+            if "button returned:Cancel & Discard" in result.stdout or "(-128)" in result.stderr:
+                return "cancel"
+        except Exception:
+            pass
+        return "ok"
+
+    @staticmethod
+    def confirm_discard() -> bool:
+        script = '''display dialog "Stop and permanently delete this recording?" ¬
+            with title "Webex OBS Companion" ¬
+            with icon caution ¬
+            buttons {"No, keep recording", "Yes, stop and delete"} ¬
+            default button "No, keep recording" ¬
+            cancel button "No, keep recording"'''
+        try:
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            return result.returncode == 0 and "button returned:Yes, stop and delete" in result.stdout
+        except Exception:
+            return False
+
     @staticmethod
     def choose_webex_window(
         windows, suggested_window_id=None, displays=(), selected_display_uuid=None
@@ -83,90 +127,6 @@ class UIBanner:
         except Exception:
             return "keep_audio"
 
-    @staticmethod
-    def show_control_prompt(
-        is_recording: bool = True,
-        meeting_title: str = "Webex Session",
-        is_video_recording: bool = False,
-    ) -> str:
-        if is_recording:
-            meeting_title = _escape_applescript_string(meeting_title)
-            prompt_text = (
-                "🎛️ RECORDING CONTROLS — ACTIVE\\n\\n"
-                f"MEETING\\n{meeting_title}\\n\\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\\n\\n"
-                "KEYBOARD SHORTCUTS\\n"
-                "• Direct Video: ⌘ + Shift + V\\n"
-                "• Stop & Transcribe: ⌘ + Shift + S\\n"
-                "• Reopen Menu: ⌘ + Shift + R\\n\\n"
-                "Choose an action:"
-            )
-            buttons_str = (
-                '{"Stop & Discard", "Stop & Transcribe", "Close Menu"}'
-                if is_video_recording else
-                '{"Stop & Discard", "Stop & Transcribe", "Switch to Video"}'
-            )
-            default_btn = "Stop & Transcribe"
-        else:
-            prompt_text = (
-                "🎛️ RECORDING CONTROLS — IDLE\\n\\n"
-                "RECORDING OPTIONS\\n"
-                "• Start Recording (Audio): Click below\\n"
-                "• Start Recording (Video): Click below\\n\\n"
-                "Choose an action:"
-            )
-            buttons_str = '{"Close Menu", "Start Video Rec", "Start Audio Rec"}'
-            default_btn = "Start Audio Rec"
-
-        apple_script = f"""
-        display dialog "{prompt_text}" ¬
-            with title "Webex OBS Companion" ¬
-            with icon note ¬
-            buttons {buttons_str} ¬
-            default button "{default_btn}" ¬
-            giving up after 25
-        """
-        if not is_recording:
-            apple_script = apple_script.replace(
-                'giving up after 25',
-                'cancel button "Close Menu" ¬\n            giving up after 25',
-            )
-
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", apple_script],
-                capture_output=True,
-                text=True,
-            )
-            output = result.stdout.strip()
-            if "Stop & Transcribe" in output or "button returned:Stop & Transcribe" in output:
-                return "stop_transcribe"
-            elif "Switch to Video" in output or "button returned:Switch to Video" in output:
-                return "switch_video"
-            elif "Start Audio Rec" in output or "button returned:Start Audio Rec" in output:
-                return "start_audio"
-            elif "Start Video Rec" in output or "button returned:Start Video Rec" in output:
-                return "start_video"
-            elif "Stop & Discard" in output or "button returned:Stop & Discard" in output:
-                confirmation = subprocess.run(
-                    ["osascript", "-e", '''display dialog "Stop and permanently delete this recording?" ¬
-                        with title "Webex OBS Companion" ¬
-                        with icon caution ¬
-                        buttons {"No, keep recording", "Yes, stop and delete"} ¬
-                        default button "No, keep recording" ¬
-                        cancel button "No, keep recording"'''],
-                    capture_output=True,
-                    text=True,
-                )
-                return (
-                    "stop_discard" if confirmation.returncode == 0
-                    and "button returned:Yes, stop and delete" in confirmation.stdout
-                    else "close"
-                )
-            else:
-                return "close"
-        except Exception:
-            return "close"
 
     @staticmethod
     def show_notification(title: str, message: str) -> None:

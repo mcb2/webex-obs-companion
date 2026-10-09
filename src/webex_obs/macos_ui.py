@@ -13,7 +13,7 @@ import Foundation
 import objc
 
 from .config import DEFAULT_ENV_FILE
-from .control_dialog import control_dialog, startup_dialog
+from .control_dialog import manual_consent_dialog, recording_menu_choices, startup_dialog
 from .settings_store import save_settings
 from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
@@ -23,25 +23,14 @@ class _MenuTarget(Foundation.NSObject):
     def configure(self, ui):
         self.ui = ui
 
-    def controls_(self, sender):
-        is_recording, title = self.ui.daemon.control_prompt_state()
-        choice = self.ui.show_control_prompt(
-            is_recording=is_recording,
-            meeting_title=title,
-            is_video_recording=self.ui.daemon.recorder.is_video_recording is True,
-        )
-        if choice != "close":
-            threading.Thread(
-                target=self.ui.daemon._handle_control_choice, args=(choice,), daemon=True
-            ).start()
-
-    def stop_(self, sender):
-        self.ui.daemon._handle_stop_transcribe_request()
-
-    def selectWindow_(self, sender):
+    def recordingAction_(self, sender):
         threading.Thread(
-            target=self.ui.daemon.request_window_selection, name="select-webex-window", daemon=True
+            target=self.ui.perform_recording_action,
+            args=(str(sender.representedObject()),), name="recording-menu-action", daemon=True,
         ).start()
+
+    def menuNeedsUpdate_(self, menu):
+        self.ui._update_recording_menu()
 
     def settings_(self, sender):
         self.ui.show_settings()
@@ -69,7 +58,8 @@ class _MenuTarget(Foundation.NSObject):
         self.ui._tick()
 
     def controlTimeout_(self, timer):
-        AppKit.NSApp.stopModalWithCode_(1)
+        if AppKit.NSApp.modalWindow() == timer.userInfo():
+            AppKit.NSApp.stopModalWithCode_(1)
 
 
 class _SettingsSidebar(Foundation.NSObject):
@@ -98,6 +88,7 @@ class MacOSUI:
         self.item = None
         self._status_images = {}
         self._icon_state = None
+        self._control_modal_active = False
 
     @staticmethod
     def _status_image(badge_symbol=None):
@@ -169,13 +160,18 @@ class MacOSUI:
         }
         self._update_status_icon(False, False)
         menu = AppKit.NSMenu.alloc().init()
-        self.controls_item = self._add(menu, "Recording controls…", "controls:")
-        self.select_window_item = self._add(menu, "Select Webex window or screen…", "selectWindow:")
-        self.stop_item = self._add(menu, "Stop & Transcribe", "stop:")
+        menu.setAutoenablesItems_(False)
+        menu.setDelegate_(self.target)
+        self.recording_items = {}
+        for label, choice in (recording_menu_choices(False)
+                              + recording_menu_choices(True)
+                              + (("Select Video Source…", "select_window"),)):
+            item = self._add(menu, label, "recordingAction:")
+            item.setRepresentedObject_(choice)
+            self.recording_items[choice] = item
         self._add(menu, "Settings…", "settings:")
         self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
-        self.stop_item.setHidden_(True)
-        self.select_window_item.setHidden_(True)
+        self._update_recording_menu()
         self.item.setMenu_(menu)
         self.timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.15, self.target, "tick:", None, True
@@ -192,7 +188,8 @@ class MacOSUI:
 
     def _tick(self):
         try:
-            while True:
+            # Avoid nested prompts stealing the consent notice's modal timeout.
+            while not self._control_modal_active:
                 func, result, done = self.requests.get_nowait()
                 try:
                     result.append(func())
@@ -205,12 +202,44 @@ class MacOSUI:
         recording, title = self.daemon.status()
         video = self.daemon.recorder.is_video_recording is True
         self._update_status_icon(recording, video)
-        self.stop_item.setHidden_(not recording)
-        self.select_window_item.setHidden_(not video)
-        self.quit_item.setHidden_(recording)
+        self._update_recording_menu()
         if self.item.button():
             mode = "Recording video" if video else "Recording audio"
             self.item.button().setToolTip_(mode + " • " + title if recording else "Ready for calls")
+
+    def _available_recording_choices(self):
+        recording = self.daemon.recorder.is_recording
+        transitioning = (
+            self.daemon._manual_start_event.is_set()
+            or self.daemon._manual_stop_event.is_set()
+            or (self.daemon._active_session is not None and not recording)
+        )
+        return recording_menu_choices(
+            recording, self.daemon.recorder.is_video_recording is True,
+            transitioning, self.daemon._window_prompt_pending.is_set(),
+        ), transitioning
+
+    def _update_recording_menu(self):
+        choices, transitioning = self._available_recording_choices()
+        available = {choice for _, choice in choices}
+        for choice, item in self.recording_items.items():
+            item.setHidden_(choice not in available)
+        self.quit_item.setHidden_(self.daemon.recorder.is_recording or transitioning)
+
+    def perform_recording_action(self, choice):
+        choices, _ = self._available_recording_choices()
+        if choice not in {action for _, action in choices}:
+            return
+        if choice == "stop_discard":
+            self.daemon.request_discard_confirmation()
+        else:
+            self.daemon._handle_control_choice(choice)
+
+    def show_recording_menu(self):
+        def show():
+            self._update_recording_menu()
+            self.item.button().performClick_(None)
+        return self._on_main(show)
 
     def _on_main(self, func):
         if threading.current_thread() is threading.main_thread():
@@ -238,18 +267,12 @@ class MacOSUI:
         spec = startup_dialog(meeting_title)
         return self._on_main(lambda: self._control_window(spec, timeout=15))
 
-    def show_control_prompt(
-        self, is_recording=True, meeting_title="Webex Session", is_video_recording=False
-    ):
-        spec = control_dialog(is_recording, meeting_title, is_video_recording)
+    def show_manual_consent_prompt(self, meeting_title="Webex Session"):
+        spec = manual_consent_dialog(meeting_title)
+        return self._on_main(lambda: self._control_window(spec, timeout=10))
 
-        def show():
-            choice = self._control_window(spec)
-            if choice == "stop_discard" and not self._confirm_discard():
-                return "close"
-            return choice
-
-        return self._on_main(show)
+    def confirm_discard(self):
+        return self._on_main(self._confirm_discard)
 
     @staticmethod
     def _confirm_discard():
@@ -262,6 +285,7 @@ class MacOSUI:
         alert.setAlertStyle_(AppKit.NSAlertStyleWarning)
         no_button = alert.addButtonWithTitle_("No, keep recording")
         no_button.setKeyEquivalent_("\x1b")
+        alert.window().setDefaultButtonCell_(no_button.cell())
         alert.addButtonWithTitle_("Yes, stop and delete")
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         return alert.runModal() == AppKit.NSAlertSecondButtonReturn
@@ -345,20 +369,28 @@ class MacOSUI:
             button.setTag_(index + 1)
             button.setTarget_(self.target)
             button.setAction_("controlChoice:")
-            button.setEnabled_(choice not in spec.disabled_choices)
             if choice in ("close", "cancel"):
                 button.setKeyEquivalent_("\x1b")
+            if choice == spec.default_choice:
+                button.setKeyEquivalent_("\r")
             content.addSubview_(button)
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
         timer = None
         if timeout:
             timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                timeout, self.target, "controlTimeout:", None, False
+                timeout, self.target, "controlTimeout:", window, False
+            )
+            # Scheduled timers use the default mode; explicitly include the
+            # modal-panel mode so the notice really expires during runModal.
+            Foundation.NSRunLoop.currentRunLoop().addTimer_forMode_(
+                timer, AppKit.NSModalPanelRunLoopMode
             )
         try:
+            self._control_modal_active = True
             selected = AppKit.NSApp.runModalForWindow_(window) - 1
         finally:
+            self._control_modal_active = False
             if timer:
                 timer.invalidate()
             window.orderOut_(None)

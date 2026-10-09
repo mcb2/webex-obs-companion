@@ -121,6 +121,14 @@ take effect after the current recording finishes. Keep the OBS recording
 output path aligned with the recordings folder you select here. LaunchAgent
 stdout/stderr log paths are fixed by the installed service definition.
 
+Recording actions now live directly in the status menu; the Menu hotkey opens
+that menu too. Only actions available in the current state appear. Video source
+selection still opens a separate picker, and **Stop & Discard…** opens a separate
+confirmation with **No** as the default. Manual audio/video starts show a consent
+notice while recording is already running: **OK** (default) or waiting 10 seconds
+continues recording; **Cancel & Discard** stops and deletes the session without
+transcription. The automatic call-detection prompt retains its existing behavior.
+
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
 ```bash
