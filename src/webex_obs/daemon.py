@@ -317,7 +317,7 @@ class WebexOBSDaemon:
         self.monitor.on_idle = lambda: self.recorder.maintain_idle(
             lambda: self._manual_start_event.is_set() or self.monitor.is_in_meeting
         )
-        # Keep OBS warm unless the user explicitly selected exit-after-recording.
+        # Startup always leaves OBS warm; exit-after-recording applies only to stop.
         if self.recorder.initialize():
             logger.info("Verified OBS Studio WebSocket (%s:%s).", self.config.obs_address, self.config.obs_port)
         else:

@@ -93,29 +93,12 @@ class OBSController:
         return False
 
     def initialize(self) -> bool:
-        """Verify OBS and keep it warm unless exit-after-recording is selected."""
-        try:
-            was_running = self.obs_is_running()
-        except Exception as e:
-            logger.warning("Could not check whether OBS is running: %s", e)
-            return False
-        if not self.connect():
-            return False
-        if not was_running and self.exit_on_stop:
-            for attempt in range(10):
-                active = self._recording_active_status()
-                if active is False:
-                    if not self.quit_obs():
-                        logger.warning("Startup OBS check succeeded, but OBS could not be closed.")
-                    break
-                if active is True:
-                    logger.warning("OBS is recording after startup; leaving it open.")
-                    break
-                if attempt < 9:
-                    time.sleep(0.5)
-            else:
-                logger.warning("OBS recording status remained unavailable; leaving it open.")
-        return True
+        """Launch/connect OBS at service startup and always leave it running.
+
+        exit_on_stop applies only to a completed recording, not this readiness
+        check. Idle maintenance owns preventative restarts in keep-open mode.
+        """
+        return self.connect()
 
     def outputs_confirmed_idle(self) -> bool:
         """Fail closed: recording, streaming and replay must all report idle."""

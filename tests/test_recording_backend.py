@@ -6,6 +6,20 @@ from webex_obs.recording_backend import create_recording_backend
 
 
 class BackendTests(unittest.TestCase):
+    def test_startup_resets_idle_restart_age_instead_of_immediately_restarting(self):
+        from unittest.mock import Mock
+        from webex_obs.recording_backend import OBSRecordingBackend
+        controller = Mock(exit_on_stop=False, address="localhost", is_recording=False)
+        controller.initialize.return_value = True
+        backend = OBSRecordingBackend(controller)
+        backend._maintenance.last_refresh = 0
+        backend._maintenance.last_busy = 0
+        with patch("webex_obs.recording_backend.time.monotonic", return_value=5000):
+            self.assertTrue(backend.initialize())
+            self.assertFalse(backend.maintain_idle(lambda: False))
+        self.assertEqual(backend._maintenance.last_refresh, 5000)
+        controller.quit_obs.assert_not_called()
+
     def test_idle_interval_reaches_backend_and_can_be_disabled_live(self):
         from unittest.mock import Mock
         from webex_obs.recording_backend import OBSRecordingBackend
