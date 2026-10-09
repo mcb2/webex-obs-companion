@@ -64,44 +64,30 @@ class OBSControllerTests(unittest.TestCase):
         with patch.object(controller, "check_connection", return_value=True):
             self.assertFalse(controller.outputs_confirmed_idle())
 
-    def test_startup_closes_new_obs_only_after_confirming_idle(self):
-        controller = OBSController()
-        with patch.object(controller, "obs_is_running", return_value=False), \
-             patch.object(controller, "connect", return_value=True), \
-             patch.object(controller, "_recording_active_status", return_value=False), \
+    def test_startup_never_quits_or_waits_on_status_with_either_stop_preference(self):
+        for exit_on_stop in (False, True):
+            for running in (False, True):
+                controller = OBSController(exit_on_stop=exit_on_stop)
+                with patch.object(controller, "obs_is_running", return_value=running), \
+                     patch("webex_obs.obs_controller.subprocess.run") as run, \
+                     patch("webex_obs.obs_controller.obsws") as websocket, \
+                     patch.object(controller, "_recording_active_status") as status, \
+                     patch.object(controller, "quit_obs") as quit_obs, \
+                     patch("webex_obs.obs_controller.time.sleep") as sleep:
+                    self.assertTrue(controller.initialize())
+                self.assertEqual(run.call_count, int(not running))
+                if not running:
+                    run.assert_called_once_with(["open", "-g", "-a", "OBS"], check=True)
+                websocket.return_value.connect.assert_called_once()
+                status.assert_not_called()
+                quit_obs.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_startup_reports_connection_failure_without_quitting(self):
+        controller = OBSController(exit_on_stop=True)
+        with patch.object(controller, "connect", return_value=False), \
              patch.object(controller, "quit_obs") as quit_obs:
-            self.assertTrue(controller.initialize())
-        quit_obs.assert_called_once()
-
-    def test_startup_keeps_existing_obs_or_unverified_recording(self):
-        for running, active in ((True, False), (False, True)):
-            controller = OBSController()
-            with patch.object(controller, "obs_is_running", return_value=running), \
-                 patch.object(controller, "connect", return_value=True), \
-                 patch.object(controller, "_recording_active_status", return_value=active), \
-                 patch.object(controller, "quit_obs") as quit_obs:
-                self.assertTrue(controller.initialize())
-            quit_obs.assert_not_called()
-
-    def test_startup_retries_transient_unknown_status_before_quitting(self):
-        controller = OBSController()
-        with patch.object(controller, "obs_is_running", return_value=False), \
-             patch.object(controller, "connect", return_value=True), \
-             patch.object(controller, "_recording_active_status", side_effect=[None, None, False]) as status, \
-             patch.object(controller, "quit_obs") as quit_obs, \
-             patch("webex_obs.obs_controller.time.sleep"):
-            self.assertTrue(controller.initialize())
-        self.assertEqual(status.call_count, 3)
-        quit_obs.assert_called_once()
-
-    def test_startup_never_quits_after_repeated_unavailable_status(self):
-        controller = OBSController()
-        with patch.object(controller, "obs_is_running", return_value=False), \
-             patch.object(controller, "connect", return_value=True), \
-             patch.object(controller, "_recording_active_status", return_value=None), \
-             patch.object(controller, "quit_obs") as quit_obs, \
-             patch("webex_obs.obs_controller.time.sleep"):
-            self.assertTrue(controller.initialize())
+            self.assertFalse(controller.initialize())
         quit_obs.assert_not_called()
 
     def test_quit_retries_when_obs_ignores_first_request(self):
