@@ -403,16 +403,9 @@ class MacOSUI:
         for position, pane in enumerate(self._settings_panes):
             pane.setHidden_(position != index)
 
-    def show_settings(self):
-        config = self.daemon.config
-        sections = [
-            ("Webex delivery", [
-                ("Deliver transcripts to Webex", "webex_delivery_enabled", "bool"),
-                ("Bot access token", "webex_access_token", "secret"),
-                ("Recipient email", "webex_recipient_email", "text"),
-                ("My Agent email", "my_agent_email", "text"),
-                ("Space / room ID", "webex_room_id", "text"),
-            ]),
+    @staticmethod
+    def _settings_sections():
+        return [
             ("OBS recording", [
                 ("WebSocket host", "obs_ws_host", "text"),
                 ("WebSocket port", "obs_ws_port", "text"),
@@ -434,11 +427,23 @@ class MacOSUI:
                 ("Call-end grace (seconds)", "call_end_grace_seconds", "text"),
             ]),
             ("Keyboard shortcuts", [
-                ("Video shortcut", "hotkey_video", "text"),
-                ("Controls shortcut", "hotkey_menu", "text"),
-                ("Stop shortcut", "hotkey_stop_transcribe", "text"),
+                ("Start audio recording", "hotkey_audio", "text"),
+                ("Start / switch to video", "hotkey_video", "text"),
+                ("Select video source", "hotkey_video_source", "text"),
+                ("Stop recording", "hotkey_stop_transcribe", "text"),
+            ]),
+            ("Webex delivery", [
+                ("Deliver transcripts to Webex", "webex_delivery_enabled", "bool"),
+                ("Bot access token", "webex_access_token", "secret"),
+                ("Recipient email", "webex_recipient_email", "text"),
+                ("My Agent email", "my_agent_email", "text"),
+                ("Space / room ID", "webex_room_id", "text"),
             ]),
         ]
+
+    def show_settings(self):
+        config = self.daemon.config
+        sections = self._settings_sections()
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0, 0), (800, 490)), AppKit.NSWindowStyleMaskTitled,
             AppKit.NSBackingStoreBuffered, False,

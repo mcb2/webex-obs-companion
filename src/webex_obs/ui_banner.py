@@ -99,7 +99,7 @@ class UIBanner:
             "KEYBOARD SHORTCUTS\\n"
             "• Direct Video: ⌘ + Shift + V\\n"
             "• Stop & Transcribe: ⌘ + Shift + S\\n"
-            "• Reopen Menu: ⌘ + Shift + R\\n\\n"
+            "• Select Video Source: ⌘ + Shift + R (video only)\\n\\n"
             "Choose an action (auto-keeps Audio in 15s):"
         )
         apple_script = f"""
