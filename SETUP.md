@@ -109,9 +109,14 @@ When neural diarization is enabled, the wizard requires a Hugging Face read
 token. It displays the token and model-access links above, masks newly entered
 tokens, and can retain an existing token without displaying it.
 
-The wizard also configures the three global keyboard shortcuts. They use `pynput`
+The wizard also configures four global keyboard shortcuts. They use `pynput`
 syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
-them so the new shortcuts are registered.
+them through the wizard so the new shortcuts are registered. Settings-dialog
+changes apply immediately. Defaults: Start Audio Cmd+Shift+A (`HOTKEY_AUDIO`),
+Start / Switch Video Cmd+Shift+V (`HOTKEY_VIDEO`), Select Video Source Cmd+Shift+R
+(`HOTKEY_VIDEO_SOURCE`), and Stop Recording / Transcribe Cmd+Shift+S
+(`HOTKEY_STOP_TRANSCRIBE`). The old `HOTKEY_MENU` value is accepted as a legacy
+source-selection shortcut until the new setting is saved; there is no Menu hotkey.
 
 The macOS menu-bar icon shows recording status and offers controls and a
 **Settings…** dialog for the configuration offered by setup, including masked
@@ -121,13 +126,15 @@ take effect after the current recording finishes. Keep the OBS recording
 output path aligned with the recordings folder you select here. LaunchAgent
 stdout/stderr log paths are fixed by the installed service definition.
 
-Recording actions now live directly in the status menu; the Menu hotkey opens
-that menu too. Only actions available in the current state appear. Video source
+Recording actions now live directly in the status menu. Only actions available
+in the current state appear. Video source
 selection still opens a separate picker, and **Stop & Discard…** opens a separate
 confirmation with **No** as the default. Manual audio/video starts show a consent
 notice while recording is already running: **OK** (default) or waiting 10 seconds
 continues recording; **Cancel & Discard** stops and deletes the session without
 transcription. The automatic call-detection prompt retains its existing behavior.
+The Settings sections are OBS recording, Transcription, Files and detection,
+Keyboard shortcuts, and finally Webex delivery.
 
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:

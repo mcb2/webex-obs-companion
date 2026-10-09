@@ -26,7 +26,8 @@ def test_new_session_never_waits_for_title_lookup_before_recording():
     daemon.monitor.get_active_call_title.assert_not_called()
 
 
-def test_applies_settings_to_running_components_without_restarting_service():
+@pytest.mark.parametrize("shortcut", ["hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe"])
+def test_applies_settings_to_running_components_without_restarting_service(shortcut):
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock()
@@ -36,7 +37,7 @@ def test_applies_settings_to_running_components_without_restarting_service():
     updated = daemon.config.model_copy(update={
         "poll_interval": 1.0, "call_end_grace_seconds": 7.0,
         "webex_recipient_email": "updated@example.com", "whisper_model": "new-model",
-        "hotkey_video": "<cmd>+<shift>+x",
+        shortcut: "<cmd>+<shift>+x",
     })
 
     with patch("webex_obs.daemon.Transcriber") as transcriber, \
@@ -47,6 +48,10 @@ def test_applies_settings_to_running_components_without_restarting_service():
     daemon.recorder.configure.assert_called_once_with(updated)
     daemon.hotkeys.stop.assert_not_called()
     hotkeys.return_value.start.assert_called_once()
+    assert hotkeys.call_args.kwargs["audio_hotkey"] == updated.hotkey_audio
+    assert hotkeys.call_args.kwargs["video_source_hotkey"] == updated.hotkey_video_source
+    assert hotkeys.call_args.kwargs["on_audio_start"] == daemon._handle_audio_start_request
+    assert hotkeys.call_args.kwargs["on_video_source"] == daemon.request_window_selection
     transcriber.assert_called_once_with(
         model_name="new-model", transcripts_dir=updated.transcripts_dir,
         enable_diarization=False, hf_token=updated.hf_token,
@@ -120,18 +125,20 @@ def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_promp
     assert daemon.monitor.is_in_meeting is False
 
 
-def test_controls_hotkey_opens_status_menu_without_window_probe_or_dialog():
+def test_audio_hotkey_requests_manual_audio_without_window_probe_or_dialog():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
-    daemon.recorder = Mock(is_recording=True)
+    daemon.recorder = Mock(is_recording=False)
     daemon.monitor = Mock(current_call_title="Cached title", default_call_title="Webex Session")
     daemon._active_session = Mock(display_title="Recording title")
     daemon.ui = Mock()
 
-    daemon._handle_dialog_request()
+    with patch.object(daemon, "_request_manual_start") as request:
+        daemon._handle_audio_start_request()
+    request.assert_called_once_with("audio")
 
     daemon.monitor.get_active_call_title.assert_not_called()
     daemon.ui.show_control_prompt.assert_not_called()
-    daemon.ui.show_recording_menu.assert_called_once_with()
+    daemon.ui.show_recording_menu.assert_not_called()
 
 
 @pytest.mark.parametrize("mode", ["audio", "video"])
@@ -240,6 +247,31 @@ def test_idle_video_hotkey_uses_manual_lifecycle_including_consent_notice():
     daemon.recorder.switch_to_video_mode.assert_not_called()
 
 
+def test_audio_hotkey_does_not_restart_an_active_recording():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=True)
+    daemon._manual_start_event = threading.Event()
+    daemon._handle_audio_start_request()
+    assert not daemon._manual_start_event.is_set()
+    daemon.recorder.prepare_recording.assert_not_called()
+    daemon.recorder.start_recording.assert_not_called()
+
+
+def test_video_hotkey_does_not_split_an_existing_video_recording():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=True, is_video_recording=True)
+    daemon._switch_to_video_mode()
+    daemon.recorder.switch_to_video_mode.assert_not_called()
+
+
+def test_video_source_hotkey_does_nothing_during_audio_recording():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.recorder = Mock(is_recording=True, is_video_recording=False)
+    daemon.request_window_selection()
+    daemon.recorder.list_webex_windows.assert_not_called()
+    daemon.recorder.list_capture_displays.assert_not_called()
+
+
 def test_confirmed_discard_stops_and_deletes_without_post_processing():
     with tempfile.TemporaryDirectory() as folder:
         recording = Path(folder) / "recording.mkv"
@@ -308,7 +340,8 @@ def test_new_webex_window_follows_configured_behavior():
 def test_video_switch_offers_existing_windows_in_prompt_mode():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, shared_window_behavior="prompt")
-    daemon.recorder = Mock(is_video_recording=True)
+    daemon.recorder = Mock(is_recording=True, is_video_recording=False)
+    daemon.recorder.switch_to_video_mode.side_effect = lambda: setattr(daemon.recorder, "is_video_recording", True)
     daemon.recorder.list_webex_windows.return_value = [
         WebexWindow(101, "Meeting", "Webex", 1200, 800),
         WebexWindow(202, "Shared content", "Webex", 1400, 900),

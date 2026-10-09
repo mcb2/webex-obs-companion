@@ -8,6 +8,16 @@ pytest.importorskip("AppKit")
 from webex_obs.macos_ui import MacOSUI, _MenuTarget
 
 
+def test_settings_order_ends_with_delivery_and_exposes_four_action_shortcuts():
+    sections = MacOSUI._settings_sections()
+    assert [heading for heading, _ in sections] == [
+        "OBS recording", "Transcription", "Files and detection", "Keyboard shortcuts", "Webex delivery"
+    ]
+    assert [key for _, key, _ in dict(sections)["Keyboard shortcuts"]] == [
+        "hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe"
+    ]
+
+
 def menu_ui(recording=False, video=False):
     daemon = Mock()
     daemon.recorder.is_recording = recording

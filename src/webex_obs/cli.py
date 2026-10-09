@@ -252,8 +252,9 @@ def setup():
     existing_transcripts_dir = str(Path.home() / "Documents" / "WebexTranscripts")
     existing_retention_days = "14"
     existing_call_end_grace_seconds = "15.0"
+    existing_hotkey_audio = "<cmd>+<shift>+a"
     existing_hotkey_video = "<cmd>+<shift>+v"
-    existing_hotkey_menu = "<cmd>+<shift>+r"
+    existing_hotkey_source = "<cmd>+<shift>+r"
     existing_hotkey_stop = "<cmd>+<shift>+s"
 
     if env_file.exists():
@@ -289,8 +290,9 @@ def setup():
             if current.retention_days:
                 existing_retention_days = str(current.retention_days)
             existing_call_end_grace_seconds = str(current.call_end_grace_seconds)
+            existing_hotkey_audio = current.hotkey_audio
             existing_hotkey_video = current.hotkey_video
-            existing_hotkey_menu = current.hotkey_menu
+            existing_hotkey_source = current.hotkey_video_source
             existing_hotkey_stop = current.hotkey_stop_transcribe
         except Exception:
             pass
@@ -373,14 +375,15 @@ def setup():
 
     console.print("\n[bold]5. Global Keyboard Shortcuts[/bold]")
     console.print("[dim]Use pynput format, for example <cmd>+<shift>+v or <ctrl>+<alt>+v.[/dim]")
-    hotkey_video = Prompt.ask("Switch recording to Video", default=existing_hotkey_video)
-    hotkey_menu = Prompt.ask("Show recording Menu", default=existing_hotkey_menu)
+    hotkey_audio = Prompt.ask("Start Audio recording", default=existing_hotkey_audio)
+    hotkey_video = Prompt.ask("Start / switch to Video recording", default=existing_hotkey_video)
+    hotkey_source = Prompt.ask("Select Video source", default=existing_hotkey_source)
     hotkey_stop = Prompt.ask("Stop recording & Transcribe", default=existing_hotkey_stop)
 
     from webex_obs.hotkey_listener import validate_hotkeys
 
     try:
-        validate_hotkeys(hotkey_video, hotkey_menu, hotkey_stop)
+        validate_hotkeys(hotkey_audio, hotkey_video, hotkey_source, hotkey_stop)
     except ValueError as exc:
         console.print(f"[bold red]Hotkey configuration not saved:[/bold red] {exc}")
         console.print("Run [bold]uv run webex-obs setup[/bold] again and choose different shortcuts.")
@@ -414,8 +417,9 @@ POLL_INTERVAL=3.0
 CALL_END_GRACE_SECONDS={call_end_grace_seconds}
 
 # Global Keyboard Shortcuts (pynput syntax)
+HOTKEY_AUDIO={hotkey_audio}
 HOTKEY_VIDEO={hotkey_video}
-HOTKEY_MENU={hotkey_menu}
+HOTKEY_VIDEO_SOURCE={hotkey_source}
 HOTKEY_STOP_TRANSCRIBE={hotkey_stop}
 """
     with open(env_file, "w") as f:

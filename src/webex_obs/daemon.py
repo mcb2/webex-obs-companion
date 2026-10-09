@@ -52,11 +52,13 @@ class WebexOBSDaemon:
             my_agent_email=self.config.my_agent_email,
         )
         self.hotkeys = HotkeyListener(
+            on_audio_start=self._handle_audio_start_request,
             on_video_switch=self._switch_to_video_mode,
-            on_show_dialog=self._handle_dialog_request,
+            on_video_source=self.request_window_selection,
             on_stop_transcribe=self._handle_stop_transcribe_request,
+            audio_hotkey=self.config.hotkey_audio,
             video_hotkey=self.config.hotkey_video,
-            menu_hotkey=self.config.hotkey_menu,
+            video_source_hotkey=self.config.hotkey_video_source,
             stop_transcribe_hotkey=self.config.hotkey_stop_transcribe,
         )
         self._manual_stop_event = threading.Event()
@@ -89,14 +91,16 @@ class WebexOBSDaemon:
             my_agent_email=config.my_agent_email,
         )
         if any(getattr(old, key) != getattr(config, key) for key in (
-            "hotkey_video", "hotkey_menu", "hotkey_stop_transcribe"
+            "hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe"
         )):
             replacement = HotkeyListener(
+                on_audio_start=self._handle_audio_start_request,
                 on_video_switch=self._switch_to_video_mode,
-                on_show_dialog=self._handle_dialog_request,
+                on_video_source=self.request_window_selection,
                 on_stop_transcribe=self._handle_stop_transcribe_request,
+                audio_hotkey=config.hotkey_audio,
                 video_hotkey=config.hotkey_video,
-                menu_hotkey=config.hotkey_menu,
+                video_source_hotkey=config.hotkey_video_source,
                 stop_transcribe_hotkey=config.hotkey_stop_transcribe,
             )
             self.hotkeys.stop()
@@ -186,9 +190,8 @@ class WebexOBSDaemon:
         self.ui.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
         self._manual_stop_event.set()
 
-    def _handle_dialog_request(self):
-        """The existing menu hotkey now opens the status menu, not a dialog."""
-        self.ui.show_recording_menu()
+    def _handle_audio_start_request(self):
+        self._request_manual_start("audio")
 
     def request_discard_confirmation(self):
         session = self._active_session
@@ -201,6 +204,8 @@ class WebexOBSDaemon:
     def _switch_to_video_mode(self) -> None:
         if not self.recorder.is_recording:
             self._request_manual_start("video")
+            return
+        if self.recorder.is_video_recording is True:
             return
         self.recorder.switch_to_video_mode()
         if (self.recorder.is_video_recording is True
@@ -417,8 +422,9 @@ class WebexOBSDaemon:
                         "Webex OBS Companion",
                         f"Recording active ({'Video' if mode == 'video' or choice == 'switch_video' else 'Audio'}). "
                         f"{display_hotkey(self.config.hotkey_video)} Video, "
+                        f"{display_hotkey(self.config.hotkey_video_source)} Source, "
                         f"{display_hotkey(self.config.hotkey_stop_transcribe)} Transcribe, "
-                        f"{display_hotkey(self.config.hotkey_menu)} Menu."
+                        "Menu-bar icon for all controls."
                     )
 
                 # Wait for meeting process termination OR manual stop hotkey
