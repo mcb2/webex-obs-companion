@@ -17,6 +17,14 @@ from webex_obs.post_processing import PostProcessingJob
 from webex_obs.obs_controller import CaptureDisplay, WebexWindow
 
 
+def test_new_session_never_waits_for_title_lookup_before_recording():
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.monitor = Mock(current_call_title=None, default_call_title="Webex Session")
+    session = daemon._new_recording_session()
+    assert session.display_title == "Webex Session"
+    daemon.monitor.get_active_call_title.assert_not_called()
+
+
 def test_applies_settings_to_running_components_without_restarting_service():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
