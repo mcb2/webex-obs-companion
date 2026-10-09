@@ -45,10 +45,26 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 4. Set Server Port to `4455`.
 5. Check **Enable Authentication** and set a password (or copy the generated password).
 6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
+7. In the `Webex-Video` scene, add a **macOS Screen Capture** source named `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
+
+In the companion's **Settings… ➔ OBS recording**, set **New Webex window (video only)** to
+**Prompt me (recommended)** (the default) or **Always switch**. When a new Webex window
+appears during video recording, the companion offers or switches only when it
+looks like a persistent meeting or shared-content window. Brief chat previews
+and small pop-ups are ignored while the selected window remains available. The
+**Select Webex window or screen…** menu-bar command is visible only during video
+recording. It lets you select a Webex window or an entire screen without stopping
+the recording. Entire-screen capture pauses automatic Webex-window switching and
+prompts until you select a window again. The screen choices come from macOS and
+require a macOS Screen Capture source; the legacy Window Capture source supports
+window choices only. Window titles and IDs depend on what
+Webex exposes to macOS; content rendered inside the meeting window stays
+part of that window.
 
 ### OBS Lifecycle & Auto-Reconnection
 - **Startup check**: The service opens OBS and verifies WebSocket connectivity. If OBS was already running, it leaves it open; otherwise it closes the instance it launched after confirming recording is idle.
-- **Recording**: The service opens OBS when needed and keeps it running throughout the recording. By default, `EXIT_OBS_ON_RECORDING_STOP=true` closes OBS after a confirmed stop. Turn off **Exit OBS on recording stop** to leave OBS open between recordings. An existing `RELAUNCH_OBS_PER_CALL` value is accepted as a legacy setting until the new option is saved.
+- **Recording**: Service startup always launches/connects OBS and leaves it running; there is no startup shutdown cycle, even with a legacy exit-after-recording preference enabled. By default, OBS also stays open and connected between calls (`EXIT_OBS_ON_RECORDING_STOP=false`). Existing explicit true values and legacy `RELAUNCH_OBS_PER_CALL` values apply only after a recording stops: turn off **Exit OBS on recording stop** in Settings to enable keep-open behavior and idle maintenance between calls. OBS is prepared immediately on a manual recording request or strong audio/network call evidence, before slow window validation. Automatic recordings still require the existing window/attachment checks and two positive polls; meeting-title enrichment happens after recording starts.
+- **Idle maintenance**: **Idle restart interval (minutes; 0 = off)** / `OBS_IDLE_RESTART_MINUTES` defaults to 60. This is a minimum OBS uptime, not a fixed wall-clock schedule. Maintenance waits for at least two minutes without potential call evidence and runs only during minutes 05–24 or 35–54 of the local hour, avoiding five minutes either side of :00 and :30. Recording, streaming, replay-buffer activity, unknown output status, or a pending recording request defer the restart. OBS is gracefully restarted and immediately reconnected; failures back off for two minutes. Maintenance applies only to local OBS in keep-open mode, and never runs from the active recording lifecycle. A request arriving during shutdown is handled after OBS reconnects. The timer is preventative, not an audio-health check.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
@@ -93,9 +109,14 @@ When neural diarization is enabled, the wizard requires a Hugging Face read
 token. It displays the token and model-access links above, masks newly entered
 tokens, and can retain an existing token without displaying it.
 
-The wizard also configures the three global keyboard shortcuts. They use `pynput`
+The wizard also configures four global keyboard shortcuts. They use `pynput`
 syntax, such as `<cmd>+<shift>+v`. Restart the background service after changing
-them so the new shortcuts are registered.
+them through the wizard so the new shortcuts are registered. Settings-dialog
+changes apply immediately. Defaults: Start Audio Cmd+Shift+A (`HOTKEY_AUDIO`),
+Start / Switch Video Cmd+Shift+V (`HOTKEY_VIDEO`), Select Video Source Cmd+Shift+R
+(`HOTKEY_VIDEO_SOURCE`), and Stop Recording / Transcribe Cmd+Shift+S
+(`HOTKEY_STOP_TRANSCRIBE`). The old `HOTKEY_MENU` value is accepted as a legacy
+source-selection shortcut until the new setting is saved; there is no Menu hotkey.
 
 The macOS menu-bar icon shows recording status and offers controls and a
 **Settings…** dialog for the configuration offered by setup, including masked
@@ -104,6 +125,16 @@ saves and applies changes without a service restart. OBS connection changes
 take effect after the current recording finishes. Keep the OBS recording
 output path aligned with the recordings folder you select here. LaunchAgent
 stdout/stderr log paths are fixed by the installed service definition.
+
+Recording actions now live directly in the status menu. Only actions available
+in the current state appear. Video source
+selection still opens a separate picker, and **Stop & Discard…** opens a separate
+confirmation with **No** as the default. Manual audio/video starts show a consent
+notice while recording is already running: **OK** (default) or waiting 10 seconds
+continues recording; **Cancel & Discard** stops and deletes the session without
+transcription. The automatic call-detection prompt retains its existing behavior.
+The Settings sections are OBS recording, Transcription, Files and detection,
+Keyboard shortcuts, and finally Webex delivery.
 
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:

@@ -7,6 +7,16 @@ from webex_obs.settings_store import save_settings
 
 
 class SettingsStoreTests(unittest.TestCase):
+    def test_new_source_setting_overrides_legacy_menu_and_audio_round_trips(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / ".env"
+            path.write_text("HOTKEY_MENU=<ctrl>+m\n")
+            self.assertEqual(Config(_env_file=path).hotkey_video_source, "<ctrl>+m")
+            save_settings({"hotkey_audio": "<ctrl>+a", "hotkey_video_source": "<ctrl>+r"}, path)
+            updated = Config(_env_file=path)
+            self.assertEqual(updated.hotkey_audio, "<ctrl>+a")
+            self.assertEqual(updated.hotkey_video_source, "<ctrl>+r")
+
     def test_updates_preserve_credentials_comments_and_spaces(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / ".env"

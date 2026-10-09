@@ -90,6 +90,9 @@ class ProcessMonitor:
         self._suppress_untitled_call = False
         self._suppression_inactive_since: float | None = None
         self.audio_monitor = audio_monitor or CoreAudioProcessMonitor()
+        self.on_strong_evidence = None
+        self.on_possible_evidence = None
+        self.on_idle = None
 
     @property
     def current_platform_name(self) -> str | None:
@@ -327,12 +330,24 @@ class ProcessMonitor:
         """Return True only during a supported active voice/video call."""
         for platform in SUPPORTED_PLATFORMS:
             streams = self._active_media_streams(platform)
+            # Start OBS before accessibility/window probes. This is preparation
+            # only: all existing validation and two-poll confirmation still apply.
+            early_audio = self._audio_activity(platform) if streams else None
+            if (streams and (early_audio.active or not early_audio.available)
+                    and self.on_possible_evidence):
+                self.on_possible_evidence()
+            if (streams and early_audio.input_pids and self.on_strong_evidence
+                    and not self.is_in_meeting):
+                self.on_strong_evidence()
             call_window = self._active_call_window_for_platform(platform)
-            audio_activity = (
-                self._audio_activity(platform)
-                if streams or call_window
-                else AudioActivity(available=self.audio_monitor.available)
-            )
+            if call_window and self.on_possible_evidence:
+                self.on_possible_evidence()
+            if early_audio is not None:
+                audio_activity = early_audio
+            elif call_window:
+                audio_activity = self._audio_activity(platform)
+            else:
+                audio_activity = AudioActivity(available=self.audio_monitor.available)
 
             # Avoid walking Webex's full accessibility tree here. Modern Webex
             # controls are icon-based, and enumerating the tree can block long
@@ -514,6 +529,8 @@ class ProcessMonitor:
             if wake_event is not None and wake_event.is_set():
                 return True
             self._track_prompt_suppression(running)
+            if not running and not self.is_in_meeting and self.on_idle:
+                self.on_idle()
             if running and not self.is_in_meeting:
                 self._active_poll_count += 1
                 if self._active_poll_count >= 2:

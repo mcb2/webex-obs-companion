@@ -51,6 +51,30 @@ class _AudioMonitor:
 
 
 class ProcessMonitorTests(unittest.TestCase):
+    def test_strong_evidence_prepares_obs_before_window_validation(self):
+        audio = _AudioMonitor(AudioActivity(available=True, input_pids=(123,)))
+        monitor = ProcessMonitor(audio_monitor=audio)
+        events = []
+        monitor.on_strong_evidence = lambda: events.append("prepare")
+        def window():
+            events.append("window")
+            return "quarterly-results.pdf"
+        with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
+             patch.object(monitor, "_active_call_window_name", side_effect=window), \
+             patch.object(monitor, "_active_window_name", return_value=None):
+            # Warming OBS must not bypass the existing attachment rejection.
+            self.assertFalse(monitor.is_call_active())
+        self.assertEqual(events, ["prepare", "window"])
+
+    def test_idle_hook_is_not_called_for_unconfirmed_positive_evidence(self):
+        monitor = ProcessMonitor()
+        from unittest.mock import Mock
+        monitor.on_idle = Mock()
+        with patch.object(monitor, "is_call_active", return_value=True), \
+             patch("webex_obs.process_monitor.time.sleep"):
+            self.assertTrue(monitor.wait_for_state_change())
+        monitor.on_idle.assert_not_called()
+
     def test_manual_start_wakes_detection_without_call_evidence(self):
         monitor = ProcessMonitor()
         requested = threading.Event()

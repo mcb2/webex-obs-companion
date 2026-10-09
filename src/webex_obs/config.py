@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -76,9 +76,19 @@ class Settings(BaseSettings):
         description="OBS WebSocket password"
     )
     exit_obs_on_recording_stop: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("EXIT_OBS_ON_RECORDING_STOP", "exit_obs_on_recording_stop", "RELAUNCH_OBS_PER_CALL"),
         description="Gracefully exit OBS Studio after recording stops and its stopped status is verified"
+    )
+    obs_idle_restart_minutes: int = Field(
+        default=60, ge=0, le=1440,
+        validation_alias=AliasChoices("OBS_IDLE_RESTART_MINUTES", "obs_idle_restart_minutes"),
+        description="Restart warm OBS after this many minutes when safely idle; 0 disables maintenance",
+    )
+    shared_window_behavior: Literal["always_switch", "prompt"] = Field(
+        default="prompt",
+        validation_alias=AliasChoices("SHARED_WINDOW_BEHAVIOR", "shared_window_behavior"),
+        description="Switch to a new Webex window automatically or ask which window to record",
     )
 
     # Transcription & Diarization settings
@@ -138,15 +148,20 @@ class Settings(BaseSettings):
     )
 
     # Global hotkeys (pynput GlobalHotKeys syntax)
+    hotkey_audio: str = Field(
+        default="<cmd>+<shift>+a",
+        validation_alias=AliasChoices("HOTKEY_AUDIO", "hotkey_audio"),
+        description="Start an audio recording when idle",
+    )
     hotkey_video: str = Field(
         default="<cmd>+<shift>+v",
         validation_alias=AliasChoices("HOTKEY_VIDEO", "hotkey_video"),
-        description="Switch an active recording to video mode",
+        description="Start video recording when idle or switch an audio recording to video",
     )
-    hotkey_menu: str = Field(
+    hotkey_video_source: str = Field(
         default="<cmd>+<shift>+r",
-        validation_alias=AliasChoices("HOTKEY_MENU", "hotkey_menu"),
-        description="Show the recording control menu",
+        validation_alias=AliasChoices("HOTKEY_VIDEO_SOURCE", "hotkey_video_source", "HOTKEY_MENU", "hotkey_menu"),
+        description="Select a video source while recording video; accepts the legacy menu shortcut",
     )
     hotkey_stop_transcribe: str = Field(
         default="<cmd>+<shift>+s",
@@ -156,7 +171,7 @@ class Settings(BaseSettings):
         description="Stop recording and begin transcription",
     )
 
-    @field_validator("hotkey_video", "hotkey_menu", "hotkey_stop_transcribe")
+    @field_validator("hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe")
     @classmethod
     def normalize_hotkey(cls, value: str) -> str:
         value = value.strip().lower()
@@ -166,10 +181,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_distinct_hotkeys(self):
-        hotkeys = (self.hotkey_video, self.hotkey_menu, self.hotkey_stop_transcribe)
+        hotkeys = (self.hotkey_audio, self.hotkey_video, self.hotkey_video_source, self.hotkey_stop_transcribe)
         if len(set(hotkeys)) != len(hotkeys):
             raise ValueError(
-                "HOTKEY_VIDEO, HOTKEY_MENU, and HOTKEY_STOP_TRANSCRIBE must be different"
+                "HOTKEY_AUDIO, HOTKEY_VIDEO, HOTKEY_VIDEO_SOURCE, and HOTKEY_STOP_TRANSCRIBE must be different"
             )
         return self
 

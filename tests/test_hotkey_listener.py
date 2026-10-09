@@ -1,5 +1,6 @@
 import sys
 import types
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -40,20 +41,31 @@ from webex_obs.hotkey_listener import (  # noqa: E402
 
 def test_listener_registers_configured_hotkeys():
     listener = HotkeyListener(
-        lambda: None,
+        on_audio_start=Mock(), on_video_switch=Mock(), on_video_source=Mock(), on_stop_transcribe=Mock(),
+        audio_hotkey="<ctrl>+<alt>+a",
         video_hotkey="<ctrl>+<alt>+v",
-        menu_hotkey="<ctrl>+<alt>+m",
+        video_source_hotkey="<ctrl>+<alt>+r",
         stop_transcribe_hotkey="<ctrl>+<alt>+t",
     )
 
-    listener.start()
+    with patch("webex_obs.hotkey_listener.keyboard.GlobalHotKeys", _GlobalHotKeys):
+        listener.start()
 
     assert set(listener.listener.hotkeys) == {
+        "<ctrl>+<alt>+a",
         "<ctrl>+<alt>+v",
-        "<ctrl>+<alt>+m",
+        "<ctrl>+<alt>+r",
         "<ctrl>+<alt>+t",
     }
     assert listener.listener.started
+    for callback in listener.listener.hotkeys.values():
+        callback()
+    listener.on_audio_start.assert_called_once_with()
+    listener.on_video_switch.assert_called_once_with()
+    listener.on_video_source.assert_called_once_with()
+    listener.on_stop_transcribe.assert_called_once_with()
+    listener.stop()
+    assert not listener.listener.started
 
 
 def test_duplicate_hotkeys_are_rejected_before_registration():
