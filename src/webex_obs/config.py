@@ -76,9 +76,14 @@ class Settings(BaseSettings):
         description="OBS WebSocket password"
     )
     exit_obs_on_recording_stop: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("EXIT_OBS_ON_RECORDING_STOP", "exit_obs_on_recording_stop", "RELAUNCH_OBS_PER_CALL"),
         description="Gracefully exit OBS Studio after recording stops and its stopped status is verified"
+    )
+    obs_idle_restart_minutes: int = Field(
+        default=60, ge=0, le=1440,
+        validation_alias=AliasChoices("OBS_IDLE_RESTART_MINUTES", "obs_idle_restart_minutes"),
+        description="Restart warm OBS after this many minutes when safely idle; 0 disables maintenance",
     )
     shared_window_behavior: Literal["always_switch", "prompt"] = Field(
         default="prompt",

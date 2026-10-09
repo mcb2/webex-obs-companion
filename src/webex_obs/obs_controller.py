@@ -58,13 +58,16 @@ class OBSController:
     def obs_is_running(self) -> bool:
         return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0
 
-    def quit_obs(self) -> bool:
+    def quit_obs(self, idle_guard=None) -> bool:
         """Ask OBS to finish shutting down; never force-kill a recording."""
         for attempt in range(2):
             try:
                 if not self.obs_is_running():
                     self.disconnect()
                     return True
+                if idle_guard is not None and not idle_guard():
+                    logger.info("OBS idle shutdown cancelled: recording request or output activity.")
+                    return False
                 result = subprocess.run(
                     ["osascript", "-e", 'quit app "OBS"'],
                     capture_output=True, text=True, timeout=10,
@@ -90,7 +93,7 @@ class OBSController:
         return False
 
     def initialize(self) -> bool:
-        """Check OBS at service start, closing only an instance started for this check."""
+        """Verify OBS and keep it warm unless exit-after-recording is selected."""
         try:
             was_running = self.obs_is_running()
         except Exception as e:
@@ -98,7 +101,7 @@ class OBSController:
             return False
         if not self.connect():
             return False
-        if not was_running:
+        if not was_running and self.exit_on_stop:
             for attempt in range(10):
                 active = self._recording_active_status()
                 if active is False:
@@ -113,6 +116,21 @@ class OBSController:
             else:
                 logger.warning("OBS recording status remained unavailable; leaving it open.")
         return True
+
+    def outputs_confirmed_idle(self) -> bool:
+        """Fail closed: recording, streaming and replay must all report idle."""
+        if self.is_recording or not self.check_connection():
+            return False
+        try:
+            for request in (requests.GetRecordStatus, requests.GetStreamStatus,
+                            requests.GetReplayBufferStatus):
+                data = self.ws.call(request()).datain
+                if data.get("outputActive") is not False:
+                    return False
+            return True
+        except Exception:
+            logger.debug("Could not verify all OBS outputs idle; maintenance deferred.", exc_info=True)
+            return False
 
     def connect(self) -> bool:
         """Establish connection to OBS WebSocket server."""
