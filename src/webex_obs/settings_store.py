@@ -21,6 +21,8 @@ EDITABLE = {
     "obs_ws_port": "OBS_WS_PORT",
     "obs_ws_password": "OBS_WS_PASSWORD",
     "exit_obs_on_recording_stop": "EXIT_OBS_ON_RECORDING_STOP",
+    "obs_idle_restart_minutes": "OBS_IDLE_RESTART_MINUTES",
+    "shared_window_behavior": "SHARED_WINDOW_BEHAVIOR",
     "recordings_dir": "RECORDINGS_DIR",
     "transcripts_dir": "TRANSCRIPTS_DIR",
     "retention_days": "RETENTION_DAYS",
@@ -29,8 +31,9 @@ EDITABLE = {
     "whisper_model": "WHISPER_MODEL",
     "hf_token": "HF_TOKEN",
     "poll_interval": "POLL_INTERVAL",
+    "hotkey_audio": "HOTKEY_AUDIO",
     "hotkey_video": "HOTKEY_VIDEO",
-    "hotkey_menu": "HOTKEY_MENU",
+    "hotkey_video_source": "HOTKEY_VIDEO_SOURCE",
     "hotkey_stop_transcribe": "HOTKEY_STOP_TRANSCRIBE",
 }
 
@@ -44,7 +47,7 @@ def validate_settings(values: dict[str, str | bool], current: Config) -> Config:
     proposed.update(values)
     validated = Config.model_validate(proposed)
     validate_hotkeys(
-        validated.hotkey_video, validated.hotkey_menu, validated.hotkey_stop_transcribe
+        validated.hotkey_audio, validated.hotkey_video, validated.hotkey_video_source, validated.hotkey_stop_transcribe
     )
     if validated.enable_diarization and not validated.hf_token and (
         not current.enable_diarization or ("hf_token" in values and not values["hf_token"])

@@ -13,9 +13,11 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Neural & Acoustic Speaker Diarization**: Identifies speaker turns and labels participants chronologically.
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
-- **Configurable Global Hotkeys**: Customize the Video, Menu, and Stop & Transcribe shortcuts in the setup wizard to avoid conflicts with other apps.
-- **macOS Status Menu**: Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
-- When idle, the menu shows Recording controls, Settings, and Quit. Recording controls opens an icon-free dialog with audio/video start choices and a recording-consent reminder. During a recording, Stop & Transcribe appears in the menu and controls offer video switching or stop and transcribe.
+- **Configurable Global Hotkeys**: Customize Start Audio (Cmd+Shift+A), Start / Switch Video (Cmd+Shift+V), Select Video Source (Cmd+Shift+R), and Stop Recording / Transcribe (Cmd+Shift+S) in Settings or the setup wizard. Source selection is available only while recording video; starting audio while already recording and switching to video while already recording video do nothing. Existing `HOTKEY_MENU` values are used as the source shortcut until `HOTKEY_VIDEO_SOURCE` is saved.
+- **Live Video Source Selection**: Choose whether a newly opened Webex window is selected automatically or offered in a picker during video recording. The video-only menu command lets you select a Webex window or an entire screen at any time; screen capture pauses automatic window following.
+- **macOS Status Menu**: The menu icon shows no badge while idle, a microphone badge for audio recording, and a camera badge for video recording. Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the recording mode and current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
+- Recording controls are directly in the status menu. Idle: Start Audio Recording, Start Video Recording, Settings, and Quit. Recording audio: Switch to Video, Stop & Transcribe, Stop & Discard, and Settings. Recording video: Select Video Source, Stop & Transcribe, Stop & Discard, and Settings. Unavailable actions are hidden, never grayed out. Source selection remains a separate window-or-screen picker; Stop & Discard requires a separate confirmation defaulting to No.
+- Manual audio/video starts (including the Video hotkey while idle) show a two-party/all-party consent reminder after recording begins. **OK** is the default; the notice dismisses after 10 seconds and keeps recording. **Cancel & Discard** stops the session and deletes its segments only after OBS confirms recording has stopped, without transcription. The existing automatically detected-call prompt remains unchanged.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
 Automatic detection currently targets the native macOS desktop clients. It
@@ -24,6 +26,9 @@ This works independently of whether the call uses UDP, dynamic peer-to-peer
 ports, or TCP-only media. Known UDP media sockets provide an additional signal
 and a fallback on macOS versions without per-process audio state. Dynamic OBS
 video-window binding remains Webex-specific.
+The `Webex-Video` scene needs a macOS Screen Capture source named
+`Webex-Meeting-Window` configured for Window Capture. Switching its window
+while recording keeps the same OBS recording active.
 
 ---
 
