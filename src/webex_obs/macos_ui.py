@@ -386,6 +386,7 @@ class MacOSUI:
                 ("WebSocket port", "obs_ws_port", "text"),
                 ("WebSocket password", "obs_ws_password", "secret"),
                 ("Exit OBS on recording stop", "exit_obs_on_recording_stop", "bool"),
+                ("Idle restart (min; 0 = off)", "obs_idle_restart_minutes", "text"),
                 ("New Webex window (video only)", "shared_window_behavior", "window_behavior"),
             ]),
             ("Transcription", [
@@ -472,7 +473,8 @@ class MacOSUI:
                     pane.addSubview_(caption)
                     cls = AppKit.NSSecureTextField if kind == "secret" else AppKit.NSTextField
                     field = cls.alloc().initWithFrame_(((215, y), (330, 24)))
-                    field.setStringValue_(str(getattr(config, key) or ""))
+                    value = getattr(config, key)
+                    field.setStringValue_("" if value is None else str(value))
                 pane.addSubview_(field)
                 inputs[key] = (field, kind)
 

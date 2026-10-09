@@ -6,6 +6,8 @@ from unittest.mock import Mock, patch
 
 fake_requests = types.SimpleNamespace(
     GetRecordStatus=lambda: "get-status",
+    GetStreamStatus=lambda: "get-stream-status",
+    GetReplayBufferStatus=lambda: "get-replay-status",
     StartRecord=lambda: "start",
     StopRecord=lambda: "stop",
     SetCurrentProgramScene=lambda **kwargs: ("scene", kwargs),
@@ -28,6 +30,40 @@ class _Response:
 
 
 class OBSControllerTests(unittest.TestCase):
+    def test_keep_open_startup_does_not_quit_new_obs(self):
+        controller = OBSController(exit_on_stop=False)
+        with patch.object(controller, "obs_is_running", return_value=False), \
+             patch.object(controller, "connect", return_value=True), \
+             patch.object(controller, "quit_obs") as quit_obs:
+            self.assertTrue(controller.initialize())
+        quit_obs.assert_not_called()
+
+    def test_idle_quit_guard_can_cancel_before_sending_quit(self):
+        controller = OBSController()
+        with patch.object(controller, "obs_is_running", return_value=True), \
+             patch("webex_obs.obs_controller.subprocess.run") as run:
+            self.assertFalse(controller.quit_obs(idle_guard=lambda: False))
+        run.assert_not_called()
+
+    def test_maintenance_requires_all_outputs_explicitly_idle(self):
+        for statuses, expected in (([False, False, False], True),
+                                   ([True, False, False], False),
+                                   ([False, True, False], False),
+                                   ([False, False, True], False),
+                                   ([False, None, False], False)):
+            controller = OBSController()
+            controller.ws = Mock()
+            controller.ws.call.side_effect = [_Response(outputActive=s) for s in statuses]
+            with patch.object(controller, "check_connection", return_value=True):
+                self.assertEqual(controller.outputs_confirmed_idle(), expected)
+
+    def test_maintenance_status_error_is_not_idle(self):
+        controller = OBSController()
+        controller.ws = Mock()
+        controller.ws.call.side_effect = RuntimeError("unavailable")
+        with patch.object(controller, "check_connection", return_value=True):
+            self.assertFalse(controller.outputs_confirmed_idle())
+
     def test_startup_closes_new_obs_only_after_confirming_idle(self):
         controller = OBSController()
         with patch.object(controller, "obs_is_running", return_value=False), \
