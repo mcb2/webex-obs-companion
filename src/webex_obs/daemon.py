@@ -166,7 +166,8 @@ class WebexOBSDaemon:
             )
 
     def _new_recording_session(self) -> RecordingSession:
-        title = self.monitor.current_call_title or self.monitor.get_active_call_title()
+        # Metadata must not delay OBS startup, particularly for manual requests.
+        title = self.monitor.current_call_title
         title = title or self.monitor.default_call_title
         session = RecordingSession.create(title)
         logger.info("Recording session title: '%s'.", session.display_title)
@@ -235,6 +236,10 @@ class WebexOBSDaemon:
         self._manual_start_mode = mode
         self._manual_start_event.set()
         logger.info("Manual %s recording requested from controls.", mode)
+        # The lifecycle may still be validating an automatic candidate. Warm OBS
+        # immediately without doing WebSocket work on the UI/hotkey thread.
+        threading.Thread(target=self.recorder.prepare_recording,
+                         name="obs-prepare", daemon=True).start()
 
     def request_window_selection(self, suggested_window_id: int | None = None) -> None:
         """Show the picker without holding up the recording lifecycle worker."""
@@ -307,8 +312,12 @@ class WebexOBSDaemon:
         self.hotkeys.start()
         self._post_processing_worker.start()
 
-        # Launch and verify OBS once at service start; a newly launched instance
-        # is closed by initialize after its idle status is confirmed.
+        self.monitor.on_strong_evidence = self.recorder.prepare_recording
+        self.monitor.on_possible_evidence = self.recorder.mark_call_evidence
+        self.monitor.on_idle = lambda: self.recorder.maintain_idle(
+            lambda: self._manual_start_event.is_set() or self.monitor.is_in_meeting
+        )
+        # Keep OBS warm unless the user explicitly selected exit-after-recording.
         if self.recorder.initialize():
             logger.info("Verified OBS Studio WebSocket (%s:%s).", self.config.obs_address, self.config.obs_port)
         else:
