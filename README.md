@@ -7,10 +7,10 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 ## Key Features
 
 - **Automated Meeting Detection**: Detects Webex, Zoom, and Microsoft Teams calls from sustained, app-specific media activity and macOS window state before recording.
-- **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. Optional per-call restart prevents macOS CoreAudio buffer stalls during prolonged uptime.
+- **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. OBS stays open between calls by default. Guarded idle restarts refresh long-running OBS instances; optional exit after recording is also available.
 - **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and restarts/resumes in a new segment if OBS exits or capture stops.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
-- **Neural & Acoustic Speaker Diarization**: Identifies speaker turns and labels participants chronologically.
+- **Neural & Acoustic Speaker Diarization**: Assigns anonymous speaker labels to speech turns. Neural diarization falls back to a rough two-group acoustic classification when unavailable; labels do not identify participant names.
 - **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize Start Audio (Cmd+Shift+A), Start / Switch Video (Cmd+Shift+V), Select Video Source (Cmd+Shift+R), and Stop Recording / Transcribe (Cmd+Shift+S) in Settings or the setup wizard. Source selection is available only while recording video; starting audio while already recording and switching to video while already recording video do nothing. Existing `HOTKEY_MENU` values are used as the source shortcut until `HOTKEY_VIDEO_SOURCE` is saved.
@@ -35,8 +35,13 @@ while recording keeps the same OBS recording active.
 ## Quick Start
 
 ### 1. Installation
+
+Requires macOS on Apple Silicon, Python 3.11+, OBS Studio 28+ with WebSocket
+enabled, and `uv`. The current MLX transcription backend requires Apple Silicon.
+Configure the OBS scenes and audio sources described in [SETUP.md](SETUP.md).
+
 ```bash
-git clone <repo_url> webex_obs_companion
+git clone https://github.com/mcb2/webex-obs-companion.git webex_obs_companion
 cd webex_obs_companion
 uv venv
 source .venv/bin/activate
@@ -77,6 +82,18 @@ sending them to the bot; recording and transcription continue as usual.
 **Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays
 closed for the current login session. Start it again with `uv run webex-obs start`;
 the installed LaunchAgent also starts at the next login.
+
+OBS idle maintenance defaults to a minimum uptime of 60 minutes
+(`OBS_IDLE_RESTART_MINUTES`; 0 disables it). Restarts require at least two quiet
+minutes and a safe time window away from :00 and :30, with no active recording,
+stream, or replay buffer. `EXIT_OBS_ON_RECORDING_STOP=true` instead exits OBS
+after a verified recording stop and disables idle maintenance.
+
+Delivery can also target a Webex space using `WEBEX_ROOM_ID`, which takes
+precedence over the recipient email; the bot must belong to that space.
+Transcripts shorter than 6,000 characters are included in the message; longer
+transcripts are attached as text files. My Agent summaries require manually
+forwarding or pasting the transcript; the app does not generate summaries.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash

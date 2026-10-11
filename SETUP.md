@@ -6,7 +6,8 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 
 ## 1. Prerequisites
 
-1. **macOS on Apple Silicon (M1/M2/M3/M4)** or Intel.
+1. **macOS on Apple Silicon**. The current MLX transcription backend requires Apple Silicon; Intel Macs are not supported by this backend.
+   **Python 3.11+** is required.
 2. **OBS Studio** (v28+ with OBS WebSocket enabled).
 3. **ffmpeg**: Required for audio extraction & decoding.
    ```bash
@@ -45,7 +46,9 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 4. Set Server Port to `4455`.
 5. Check **Enable Authentication** and set a password (or copy the generated password).
 6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
-7. In the `Webex-Video` scene, add a **macOS Screen Capture** source named `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
+7. Create scenes named exactly **Webex-Audio** and **Webex-Video**. The companion switches between these names and does not create the scenes for you.
+8. Configure microphone and meeting/system-audio capture in both scenes, using OBS audio sources appropriate to your macOS version. Verify both sides of a test conversation are audible in an OBS recording; the companion controls recording but does not configure audio routing.
+9. In `Webex-Video`, add a **macOS Screen Capture** source named exactly `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
 
 In the companion's **Settings… ➔ OBS recording**, set **New Webex window (video only)** to
 **Prompt me (recommended)** (the default) or **Always switch**. When a new Webex window
@@ -62,7 +65,7 @@ Webex exposes to macOS; content rendered inside the meeting window stays
 part of that window.
 
 ### OBS Lifecycle & Auto-Reconnection
-- **Startup check**: The service opens OBS and verifies WebSocket connectivity. If OBS was already running, it leaves it open; otherwise it closes the instance it launched after confirming recording is idle.
+- **Startup check**: The service launches/connects OBS, verifies WebSocket connectivity, and leaves OBS running, including when exit-after-recording is enabled. If startup connectivity cannot be verified, a recording request retries the connection.
 - **Recording**: Service startup always launches/connects OBS and leaves it running; there is no startup shutdown cycle, even with a legacy exit-after-recording preference enabled. By default, OBS also stays open and connected between calls (`EXIT_OBS_ON_RECORDING_STOP=false`). Existing explicit true values and legacy `RELAUNCH_OBS_PER_CALL` values apply only after a recording stops: turn off **Exit OBS on recording stop** in Settings to enable keep-open behavior and idle maintenance between calls. OBS is prepared immediately on a manual recording request or strong audio/network call evidence, before slow window validation. Automatic recordings still require the existing window/attachment checks and two positive polls; meeting-title enrichment happens after recording starts.
 - **Idle maintenance**: **Idle restart interval (minutes; 0 = off)** / `OBS_IDLE_RESTART_MINUTES` defaults to 60. This is a minimum OBS uptime, not a fixed wall-clock schedule. Maintenance waits for at least two minutes without potential call evidence and runs only during minutes 05–24 or 35–54 of the local hour, avoiding five minutes either side of :00 and :30. Recording, streaming, replay-buffer activity, unknown output status, or a pending recording request defer the restart. OBS is gracefully restarted and immediately reconnected; failures back off for two minutes. Maintenance applies only to local OBS in keep-open mode, and never runs from the active recording lifecycle. A request arriving during shutdown is handled after OBS reconnects. The timer is preventative, not an audio-health check.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
@@ -82,7 +85,7 @@ Webex Bots provide **permanent access tokens** that never expire (unlike persona
 3. Copy the generated **Bot Access Token**.
 
 ### Direct 1:1 Delivery Configuration
-In `~/Projects/webex_obs_companion/.env`:
+In the repository’s `.env` file:
 ```ini
 WEBEX_DELIVERY_ENABLED=true
 WEBEX_ACCESS_TOKEN=your_bot_token_here
@@ -93,7 +96,15 @@ WEBEX_ROOM_ID=
 - Set `WEBEX_DELIVERY_ENABLED=false`, or turn off **Deliver transcripts to Webex**
   in Settings, to save transcripts locally without automatically sending them.
 - **How it Works**: When a meeting ends, your bot sends the full transcript directly to your personal 1:1 Webex chat.
-- **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` for instant executive summaries and action items.
+- **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` to request executive summaries and action items. The companion does not automatically forward transcripts to My Agent or generate summaries.
+
+### Space Delivery (Option 2)
+
+Add the bot to the intended Webex space, run `uv run webex-obs list-rooms`, and
+save its ID as `WEBEX_ROOM_ID` in `.env` or Settings. A nonempty room ID takes
+precedence over `WEBEX_RECIPIENT_EMAIL`; clear it to return to personal delivery.
+Transcripts shorter than 6,000 characters are sent inline; longer transcripts
+are attached as `.txt` files.
 
 ---
 
@@ -155,7 +166,7 @@ uv run webex-obs test-webex
 Install the companion daemon as a background macOS LaunchAgent (`com.cisco.webex-obs`):
 
 ```bash
-# Install and auto-start on boot
+# Install, start now, and auto-start at login
 uv run webex-obs install-service
 
 # Check service status
@@ -177,7 +188,16 @@ resume it; the installed service starts again on the next login.
 
 ## 6. Directory Structure & Files
 
-- **Text Transcripts**: `~/Documents/WebexTranscripts/meeting_YYYY-MM-DD_HH-MM-SS.txt`
+- **Text Transcripts**: `~/Documents/WebexTranscripts/YYYY-MM-DD_HH-MM-SS - Meeting Title.txt`
 - **OBS Media Recordings**: `~/Movies/` or `~/Movies/WebexRecordings/`
 - **Background Service Logs**: `~/Library/Logs/WebexOBS/stdout.log`
 - **Local Model Cache**: `~/.cache/webex_obs/models/`
+
+Session filenames use the call-start date/time and a filesystem-safe meeting
+title. Multi-segment recordings receive `part-01`, `part-02`, and subsequent
+suffixes; the original title is retained inside the transcript.
+
+Speaker labels are anonymous. If neural diarization cannot load or run, the app
+uses a rough two-group acoustic fallback; it does not identify participant names.
+Completed sessions are transcribed and delivered by a background queue so call
+monitoring can continue while processing the previous meeting.
