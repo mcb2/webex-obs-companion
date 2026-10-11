@@ -16,7 +16,8 @@ an `OBSRecordingBackend` adapter around `OBSController`. A native recorder can
 implement the same contract and handle its own permissions, audio/video devices,
 recovery and output files. The adapter maps audio/video modes to OBS scene names.
 OBS start verifies output status and retries transient startup failures against
-the same OBS instance before attempting another per-call restart.
+the same OBS instance. Service startup leaves OBS running; recording stop can
+optionally exit it after verifying that recording has stopped.
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
 
@@ -38,39 +39,57 @@ Capture source to a macOS-listed full display; window polling is suspended until
 a Webex window is selected again. This selection applies to the current
 session only because macOS window IDs change when Webex recreates windows.
 
-```
-+-------------------------------------------------------------+
-|                     macOS User Session                      |
-|                                                             |
-|  +---------------------+      +--------------------------+  |
-|  | Meeting Clients     |      |        OBS Studio        |  |
-|  | Webex/Zoom/Teams    |      |  - WebSocket Server 4455 |  |
-|  +----------+----------+      |  - Scene: Webex-Audio    |  |
-|             |                 |  - Scene: Webex-Video    |  |
-|             v                 +-------------+------------+  |
-|     [ Process Polling ]                     ^               |
-|             |                               | WebSocket v5  |
-|             v                               v               |
-|  +-------------------------------------------------------+  |
-|  |            webex_obs Background Daemon                |  |
-|  |                                                       |  |
-|  |  - ProcessMonitor: Tracks Webex/Zoom/Teams lifecycles |  |
-|  |  - OBSController: Starts/stops audio & video captures |  |
-|  |  - WindowBinder: Quartz dynamic Webex window binding  |  |
-|  |  - HotkeyListener: Cmd+Shift+V for instant video swap |  |
-|  |  - Transcriber: Local Apple MLX Whisper pipeline     |  |
-|  |  - WebexClient: Posts transcripts to My Agent space   |  |
-|  |  - MediaCleaner: 14-day rolling media retention       |  |
-|  +--------------------------+----------------------------+  |
-|                             |                               |
-|                             v                               |
-|              +------------------------------+               |
-|              | Apple MLX Whisper (Local GPU)|               |
-|              +--------------+---------------+               |
-+-----------------------------|-------------------------------+
-                              v HTTPS API
-               +------------------------------+
-               |     Cisco Webex Platform     |
-               |      (My Agent 1:1 Bot)      |
-               +------------------------------+
+## Detection, maintenance, and post-processing
+
+`ProcessMonitor` combines native Webex/Zoom/Teams window evidence with
+per-process Core Audio input/output state and known UDP media sockets. Core
+Audio permits detection independently of media transport; UDP is an additional
+signal and fallback. Automatic start requires sustained evidence across two
+positive polls, and call end uses a configurable grace period (15 seconds by
+default). OBS preparation precedes slow window validation and title enrichment.
+
+`OBSRecordingBackend` delegates guarded idle restarts to `OBSMaintenance`.
+OBS stays open between recordings by default. The default 60-minute minimum
+uptime, two quiet minutes, safe local-hour windows, output-idle checks, and
+pending-request checks gate maintenance. Exit-after-recording mode disables
+idle maintenance. Window binding is implemented within `OBSController`, rather
+than a separate WindowBinder component.
+
+Four configurable hotkeys request audio start, video start/switch, video source
+selection, and stop/transcribe. The status menu exposes actions appropriate to
+the recording mode. Manual starts display a timed consent notice after capture
+begins; discard requires a verified recording stop before deleting segments.
+
+Completed sessions enter `PostProcessingWorker`, a FIFO queue on a separate
+background thread. Each job retains its transcription, delivery, and retention
+configuration while call monitoring continues. `Transcriber` uses MLX Whisper
+and optionally `NeuralDiarizer` (pyannote, with a rough acoustic fallback).
+Speaker labels are anonymous. `WebexClient` sends transcripts to a configured
+room or personal recipient, with room ID taking precedence. Long transcripts
+are attached as text files. My Agent forwarding is a manual user action.
+`MediaCleaner` prunes old media after each job using the configured retention
+period (14 days by default).
+
+```text
+Native Webex / Zoom / Teams
+           |
+           v
+ProcessMonitor (windows + Core Audio + UDP)
+           |
+           v
+WebexOBSDaemon lifecycle worker <--- AppKit status menu / hotkeys / Settings
+           |
+           +--> OBSRecordingBackend --> OBSController <--WebSocket--> OBS
+           |            |                  |
+           |            v                  +--> Webex window / display binding
+           |       OBSMaintenance               Webex-Audio / Webex-Video scenes
+           |
+           +--> finalized RecordingSession
+                        |
+                        v
+                PostProcessingWorker (FIFO background queue)
+                        |
+                        +--> Transcriber --> MLX Whisper + optional diarization
+                        +--> WebexClient --> personal recipient or Webex room
+                        +--> MediaCleaner (configured media retention)
 ```
