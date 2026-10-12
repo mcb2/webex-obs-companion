@@ -165,7 +165,8 @@ class OBSRecordingBackend:
         with self._lifecycle_lock:
             files = self.controller.stop_recording()
             self.mark_call_evidence()
-            self._apply_connection()
+            if not self.controller.is_recording:
+                self._apply_connection()
             return files
 
 

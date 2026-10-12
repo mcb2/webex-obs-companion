@@ -66,8 +66,9 @@ class WebexClient:
                 res = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
             else:
                 payload["markdown"] = prompt + "*(Full transcript attached below due to Webex message length limits)*"
-                files = {"files": (transcript_path.name, open(transcript_path, "rb"), "text/plain")}
-                res = requests.post(self.api_url, headers=headers, data=payload, files=files, timeout=60)
+                with transcript_path.open("rb") as attachment:
+                    files = {"files": (transcript_path.name, attachment, "text/plain")}
+                    res = requests.post(self.api_url, headers=headers, data=payload, files=files, timeout=60)
 
             if res.status_code in (200, 201):
                 logger.info(f"Successfully posted transcript to Webex: {target_desc}")

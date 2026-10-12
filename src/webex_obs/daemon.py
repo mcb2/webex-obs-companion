@@ -398,12 +398,19 @@ class WebexOBSDaemon:
                         else None
                     )
                     discarded = self.recorder.stop_recording()
-                    for f in discarded:
-                        if os.path.exists(f):
-                            try:
-                                os.remove(f)
-                            except Exception:
-                                pass
+                    if self.recorder.is_recording:
+                        logger.error("OBS stop could not be verified; keeping recording files.")
+                        self.ui.show_notification(
+                            "Webex OBS Companion",
+                            "Could not verify recording stopped; it may still be active. Files were kept.",
+                        )
+                    else:
+                        for f in discarded:
+                            if os.path.exists(f):
+                                try:
+                                    os.remove(f)
+                                except OSError:
+                                    logger.exception("Could not delete discarded recording: %s", f)
                     self.monitor.is_in_meeting = False
                     self._active_session = None
                     continue
@@ -480,6 +487,14 @@ class WebexOBSDaemon:
                 if manual or self._manual_stop_event.is_set():
                     self.monitor.is_in_meeting = False
                 recorded_files = self.recorder.stop_recording()
+                if self.recorder.is_recording:
+                    logger.error("OBS stop could not be verified; leaving media untouched for recovery.")
+                    self.ui.show_notification(
+                        "Webex OBS Companion",
+                        "Could not verify recording stopped; it may still be active. Files were kept.",
+                    )
+                    self._manual_stop_event.clear()
+                    continue
                 logger.info(f"Recording session stopped. Captured segments: {recorded_files}")
 
                 if not recorded_files:

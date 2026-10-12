@@ -1,32 +1,25 @@
-import sys
-import types
 import unittest
 from unittest.mock import Mock, patch
 
+import pytest
+from obswebsocket import requests
 
-fake_requests = types.SimpleNamespace(
-    GetRecordStatus=lambda: "get-status",
-    GetStreamStatus=lambda: "get-stream-status",
-    GetReplayBufferStatus=lambda: "get-replay-status",
-    StartRecord=lambda: "start",
-    StopRecord=lambda: "stop",
-    SetCurrentProgramScene=lambda **kwargs: ("scene", kwargs),
-    GetInputSettings=lambda **kwargs: ("get-input-settings", kwargs),
-    SetInputSettings=lambda **kwargs: ("set-input-settings", kwargs),
-    GetInputPropertiesListPropertyItems=lambda **kwargs: ("get-window-list", kwargs),
-    GetVersion=lambda: "version",
-)
-fake_obs_module = types.ModuleType("obswebsocket")
-fake_obs_module.obsws = Mock
-fake_obs_module.requests = fake_requests
-sys.modules.setdefault("obswebsocket", fake_obs_module)
 
 from webex_obs.obs_controller import CaptureDisplay, OBSController, WebexWindow
 
 
-class _Response:
-    def __init__(self, **data):
-        self.datain = data
+def _Response(**data):
+    response = requests.GetRecordStatus()
+    response.input(data, True)
+    return response
+
+
+@pytest.fixture(autouse=True)
+def isolated_obs_process(monkeypatch):
+    monkeypatch.setattr(OBSController, "obs_is_running", lambda self: True)
+    def unexpected_command(*args, **kwargs):
+        pytest.fail("OBS tests must explicitly mock every process command")
+    monkeypatch.setattr("webex_obs.obs_controller.subprocess.run", unexpected_command)
 
 
 class OBSControllerTests(unittest.TestCase):
@@ -124,19 +117,6 @@ class OBSControllerTests(unittest.TestCase):
         quit_obs.assert_not_called()
         self.assertTrue(controller.is_recording)
 
-    def test_recording_status_is_verified_and_path_is_remembered(self):
-        controller = OBSController(exit_on_stop=False)
-        controller.ws = Mock()
-        controller.is_connected = True
-        controller.ws.call.return_value = _Response(
-            outputActive=True,
-            outputPath="/tmp/segment.mkv",
-        )
-        with patch.object(controller, "check_connection", return_value=True):
-            self.assertTrue(controller._refresh_recording_status())
-        self.assertTrue(controller.is_recording)
-        self.assertEqual(controller.recorded_files, ["/tmp/segment.mkv"])
-
     def test_recovery_resumes_the_current_scene(self):
         controller = OBSController()
         controller.current_scene = "Webex-Video"
@@ -178,10 +158,8 @@ class OBSControllerTests(unittest.TestCase):
              patch.object(controller, "check_connection", return_value=True):
             self.assertTrue(controller.bind_webex_video_window(202))
         request = controller.ws.call.call_args_list[1].args[0]
-        name, data = (request[0], request[1]) if isinstance(request, tuple) else (
-            request.name, request.dataout
-        )
-        self.assertIn(name, ("SetInputSettings", "set-input-settings"))
+        name, data = request.name, request.dataout
+        self.assertEqual(name, "SetInputSettings")
         self.assertEqual(data, {
             "inputName": "Webex-Meeting-Window",
             "inputSettings": {"type": 1, "window": 202}, "overlay": True,
@@ -217,10 +195,8 @@ class OBSControllerTests(unittest.TestCase):
             self.assertEqual(controller.poll_webex_window_change(), [])
         windows.assert_not_called()
         request = controller.ws.call.call_args.args[0]
-        name, data = (request[0], request[1]) if isinstance(request, tuple) else (
-            request.name, request.dataout
-        )
-        self.assertIn(name, ("SetInputSettings", "set-input-settings"))
+        name, data = request.name, request.dataout
+        self.assertEqual(name, "SetInputSettings")
         self.assertEqual(data["inputSettings"], {"type": 0, "display_uuid": "display-uuid"})
         self.assertTrue(controller.is_screen_recording)
         self.assertIsNone(controller.selected_window_id)
@@ -332,3 +308,57 @@ class OBSControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("failure", ["disconnected", "status-error", "missing-status", "active"])
+def test_unverified_stop_preserves_segments_and_selection_for_retry(failure, tmp_path):
+    segment = tmp_path / "segment.mkv"
+    segment.write_bytes(b"synthetic recording")
+    controller = OBSController(exit_on_stop=False)
+    # Test the conservative path even when a prior failed probe cleared the flag.
+    controller.is_recording = False
+    controller.recorded_files = [str(segment)]
+    controller.selected_window_id = 123
+    controller.ws = Mock()
+    if failure == "status-error":
+        controller.ws.call.side_effect = RuntimeError("synthetic failure")
+    elif failure == "active":
+        controller.ws.call.return_value = _Response(outputActive=True)
+    else:
+        controller.ws.call.return_value = _Response()
+    with patch.object(controller, "check_connection", return_value=failure != "disconnected"), \
+         patch.object(controller, "quit_obs") as quit_obs, \
+         patch("webex_obs.obs_controller.time.sleep"):
+        assert controller.stop_recording() == [str(segment)]
+    assert controller.is_recording
+    assert controller.recorded_files == [str(segment)]
+    assert controller.selected_window_id == 123
+    assert segment.exists()
+    quit_obs.assert_not_called()
+
+    controller.ws.call.side_effect = None
+    controller.ws.call.return_value = _Response(outputActive=False)
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.stop_recording() == [str(segment)]
+    assert not controller.is_recording
+    assert controller.recorded_files == []
+    assert controller.selected_window_id is None
+
+
+def test_status_then_stop_remembers_output_path_from_stop_response(tmp_path):
+    segment = tmp_path / "segment.mkv"
+    segment.write_bytes(b"synthetic recording")
+    controller = OBSController(exit_on_stop=False)
+    controller.ws = Mock()
+    # GetRecordStatus has no outputPath; StopRecord supplies the finalized path.
+    controller.ws.call.side_effect = [
+        _Response(outputActive=True, outputPaused=False, outputTimecode="00:00:01.000",
+                  outputDuration=1000, outputBytes=128),
+        _Response(outputPath=str(segment)),
+        _Response(outputActive=False),
+    ]
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller._refresh_recording_status()
+        assert controller.recorded_files == []
+        assert controller.stop_recording() == [str(segment)]
+    assert not controller.is_recording

@@ -1,21 +1,20 @@
-import sys
 import queue
 import threading
 import tempfile
-import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import pytest
 
-fake_mlx_whisper = types.ModuleType("mlx_whisper")
-fake_mlx_whisper.transcribe = lambda *args, **kwargs: {"text": "Discussed the roadmap.", "segments": []}
-sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
 
 from webex_obs.config import Config
-from webex_obs.daemon import WebexOBSDaemon
-from webex_obs.post_processing import PostProcessingJob
 from webex_obs.obs_controller import CaptureDisplay, WebexWindow
+
+
+@pytest.fixture(autouse=True)
+def speech_components(speech_modules, monkeypatch):
+    monkeypatch.setitem(globals(), "WebexOBSDaemon", speech_modules["WebexOBSDaemon"])
+    monkeypatch.setitem(globals(), "PostProcessingJob", speech_modules["PostProcessingJob"])
 
 
 def test_new_session_never_waits_for_title_lookup_before_recording():
@@ -176,7 +175,7 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
             daemon._manual_stop_event.set()
         return response
     def stop():
-        daemon.recorder.is_recording = response == "cancel" and not stop_verified
+        daemon.recorder.is_recording = not stop_verified
         return [str(file) for file in files]
     daemon.recorder.start_recording.side_effect = start
     daemon.ui.show_manual_consent_prompt.side_effect = consent
@@ -196,7 +195,11 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
         daemon.monitor.suppress_current_call_prompt.assert_called_once()
     else:
         assert all(file.exists() for file in files)
-        daemon._post_processing_worker.submit.assert_called_once()
+        if stop_verified:
+            daemon._post_processing_worker.submit.assert_called_once()
+        else:
+            daemon._post_processing_worker.submit.assert_not_called()
+            session.rename_recordings.assert_not_called()
 
 
 @pytest.mark.parametrize("confirmed", [False, True])
@@ -485,3 +488,34 @@ def test_post_processing_job_uses_snapshotted_workers_and_settings():
         webex=webex,
     )
     prune.assert_called_once_with(Path("/tmp/recordings"), 30)
+
+
+@pytest.mark.parametrize("stop_verified", [False, True])
+def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_verified):
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, enable_diarization=False)
+    daemon.recorder = Mock(is_recording=False)
+    daemon.monitor = Mock(is_in_meeting=True, current_call_title="Synthetic call", default_call_title="Webex Session")
+    daemon.monitor.should_suppress_automatic_prompt.return_value = False
+    daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
+    daemon.hotkeys, daemon.ui, daemon._post_processing_worker = Mock(), Mock(), Mock()
+    daemon._manual_start_event, daemon._manual_stop_event = threading.Event(), threading.Event()
+    daemon._settings_lock = threading.Lock()
+    daemon._active_session = None
+    daemon.ui.show_startup_prompt.return_value = "cancel"
+    files = [tmp_path / "first.mkv", tmp_path / "recovered.mkv"]
+    for file in files:
+        file.write_bytes(b"synthetic recording")
+
+    def stop():
+        daemon.recorder.is_recording = not stop_verified
+        return [str(file) for file in files]
+
+    daemon.recorder.stop_recording.side_effect = stop
+    with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
+        daemon.start()
+    assert all(file.exists() != stop_verified for file in files)
+    daemon.recorder.stop_recording.assert_called_once()
+    daemon._post_processing_worker.submit.assert_not_called()
+    daemon.monitor.suppress_current_call_prompt.assert_called_once()

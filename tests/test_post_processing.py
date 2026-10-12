@@ -1,13 +1,15 @@
-import sys
-import types
+from __future__ import annotations
+
 from pathlib import Path
 from unittest.mock import Mock
 
-fake_mlx_whisper = types.ModuleType("mlx_whisper")
-fake_mlx_whisper.transcribe = lambda *args, **kwargs: {"text": "", "segments": []}
-sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
+import pytest
 
-from webex_obs.post_processing import PostProcessingJob, PostProcessingWorker
+
+@pytest.fixture(autouse=True)
+def speech_components(speech_modules, monkeypatch):
+    monkeypatch.setitem(globals(), "PostProcessingJob", speech_modules["PostProcessingJob"])
+    monkeypatch.setitem(globals(), "PostProcessingWorker", speech_modules["PostProcessingWorker"])
 
 
 def make_job(title: str) -> PostProcessingJob:

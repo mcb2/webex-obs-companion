@@ -1,19 +1,14 @@
-import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
-fake_mlx_whisper = types.ModuleType("mlx_whisper")
-fake_mlx_whisper.transcribe = lambda *args, **kwargs: {
-    "text": "Discussed the roadmap.",
-    "segments": [],
-}
-sys.modules.setdefault("mlx_whisper", fake_mlx_whisper)
 
-from webex_obs.transcriber import Transcriber
+@pytest.fixture(autouse=True)
+def speech_components(speech_modules, monkeypatch):
+    monkeypatch.setitem(globals(), "Transcriber", speech_modules["Transcriber"])
 
 
 class TranscriberNamingTests(unittest.TestCase):
@@ -49,3 +44,19 @@ class TranscriberNamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("failure", ["missing-ffmpeg", "inference-error"])
+def test_transcription_failure_preserves_media_without_empty_transcript(tmp_path, speech_modules, monkeypatch, failure):
+    media = tmp_path / "synthetic.mkv"
+    media.write_bytes(b"synthetic media")
+    output = tmp_path / "transcripts"
+    transcriber = Transcriber("test-model", output, enable_diarization=False)
+    monkeypatch.setattr("webex_obs.transcriber.shutil.which",
+                        lambda name: None if failure == "missing-ffmpeg" else "/synthetic/ffmpeg")
+    inference = speech_modules["inference"]
+    inference.side_effect = RuntimeError("synthetic inference failure")
+    assert transcriber.transcribe_files([str(media)]) is None
+    assert media.read_bytes() == b"synthetic media"
+    assert not list(output.glob("*.txt"))
+    assert inference.call_count == (failure == "inference-error")

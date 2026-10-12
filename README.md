@@ -148,3 +148,13 @@ multiple recording segments, the media files receive `part-01`, `part-02`,
 and subsequent suffixes. Characters that do not work reliably in filenames
 are replaced, while the original meeting title is retained inside the transcript
 and Webex delivery message.
+
+## Development checks
+
+With the existing development environment, run `uv run --locked --no-sync pytest`.
+`--no-sync` prevents test execution from installing or updating dependencies.
+The tests replace inference, audio/process/window probes, network requests, and
+service commands with scoped doubles; they do not require model weights or a
+running OBS instance. AppKit tests require macOS and skip when AppKit is absent.
+Real capture, permissions, audio routing, and model inference still require
+separate checks on a suitable Mac.

@@ -73,7 +73,10 @@ class BackendTests(unittest.TestCase):
         from unittest.mock import Mock
         from webex_obs.recording_backend import OBSRecordingBackend
         controller = Mock(address="old", port=4455, password="old", is_recording=True)
-        controller.stop_recording.return_value = ["recording.mkv"]
+        def stop():
+            controller.is_recording = False
+            return ["recording.mkv"]
+        controller.stop_recording.side_effect = stop
         backend = OBSRecordingBackend(controller)
         config = Config(_env_file=None, obs_ws_host="new", obs_ws_port=4466,
                         obs_ws_password="new", exit_obs_on_recording_stop=False)
@@ -88,3 +91,22 @@ class BackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_unverified_stop_keeps_pending_connection_until_later_verified_stop():
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(address="old", port=4455, password="old", is_recording=True)
+    controller.stop_recording.return_value = ["synthetic.mkv"]
+    backend = OBSRecordingBackend(controller)
+    backend.configure(Config(_env_file=None, obs_ws_host="new", obs_ws_password="new"))
+
+    assert backend.stop_recording() == ["synthetic.mkv"]
+    controller.disconnect.assert_not_called()
+    assert controller.address == "old"
+
+    controller.is_recording = False
+    assert backend.stop_recording() == ["synthetic.mkv"]
+    controller.disconnect.assert_called_once()
+    assert controller.address == "new"
