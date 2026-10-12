@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import wave
 from dataclasses import dataclass
 from typing import List
 
@@ -59,9 +60,11 @@ class NeuralDiarizer:
             logger.info("Initializing pyannote.audio speaker diarization pipeline...")
             
             pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=token,
+                "pyannote/speaker-diarization-community-1",
+                token=token,
             )
+            if pipeline is None:
+                raise RuntimeError("Pretrained diarization pipeline was not loaded")
             device = torch.device(self._get_device())
             pipeline.to(device)
             self._pyannote_pipeline = pipeline
@@ -70,7 +73,7 @@ class NeuralDiarizer:
         except ModuleNotFoundError as e:
             logger.warning(
                 "Neural diarization dependency '%s' is not installed. "
-                "Run 'uv sync --extra neural-diarization' from the repository, "
+                "Run 'uv sync --locked --extra neural-diarization' from the repository, "
                 "then restart the service. Using acoustic speaker-label fallback.",
                 e.name,
             )
@@ -78,10 +81,10 @@ class NeuralDiarizer:
         except Exception as e:
             logger.warning(
                 "pyannote.audio could not be initialized (%s). Verify HF_TOKEN and "
-                "that the Hugging Face conditions for pyannote/segmentation-3.0 and "
-                "pyannote/speaker-diarization-3.1 were accepted. Using acoustic "
+                "that the Hugging Face conditions for "
+                "pyannote/speaker-diarization-community-1 were accepted. Using acoustic "
                 "speaker-label fallback.",
-                e,
+                type(e).__name__,
             )
             return False
 
@@ -109,13 +112,31 @@ class NeuralDiarizer:
         # Method 1: pyannote.audio pipeline
         if self._init_pyannote() and self._pyannote_pipeline is not None:
             try:
-                diarization = self._pyannote_pipeline(wav_path)
+                import numpy as np
+                import torch
+
+                # ffmpeg already produced PCM. In-memory input avoids pyannote 4's
+                # TorchCodec/FFmpeg shared-library decoding requirement on macOS.
+                with wave.open(wav_path, "rb") as wf:
+                    if (wf.getnchannels(), wf.getsampwidth(), wf.getframerate()) != (1, 2, 16000):
+                        raise ValueError("Diarization requires 16 kHz mono PCM16 WAV")
+                    audio_bytes = wf.readframes(wf.getnframes())
+                if not audio_bytes:
+                    raise ValueError("Diarization WAV is empty")
+                samples = np.frombuffer(audio_bytes, dtype="<i2").astype(np.float32) / 32768.0
+                audio = {"waveform": torch.from_numpy(samples).unsqueeze(0), "sample_rate": 16000}
+                output = self._pyannote_pipeline(audio)
+                # pyannote 4 returns DiarizeOutput; legacy pipelines return Annotation.
+                diarization = getattr(output, "speaker_diarization", output)
                 segments = []
                 for turn, _, speaker in diarization.itertracks(yield_label=True):
                     segments.append(DiarizationSegment(start=turn.start, end=turn.end, speaker=speaker))
                 return segments
             except Exception as e:
-                logger.error(f"pyannote diarization run failed: {e}. Falling back to acoustic clustering.")
+                logger.error(
+                    "pyannote diarization run failed (%s). Falling back to acoustic clustering.",
+                    type(e).__name__,
+                )
 
         # Method 2: Energy & Pitch Acoustic Clustering Fallback
         return self._acoustic_fallback_diarization(wav_path)

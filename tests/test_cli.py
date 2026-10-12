@@ -95,6 +95,10 @@ def test_setup_hides_secrets_and_saves_private_file(
     monkeypatch.setattr(cli.os, "replace", replace)
     cli.setup()
 
+    if diarization:
+        assert "https://huggingface.co/pyannote/speaker-diarization-community-1" in output.getvalue()
+        assert "https://huggingface.co/pyannote/speaker-diarization-3.1" not in output.getvalue()
+
     loaded = Config(_env_file=env_file)
     for field in old:
         changed = replace_secrets and (delivery if field == "webex_access_token" else
