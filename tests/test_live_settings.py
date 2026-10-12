@@ -17,8 +17,18 @@ def speech_components(speech_modules, monkeypatch):
     monkeypatch.setitem(globals(), "PostProcessingJob", speech_modules["PostProcessingJob"])
 
 
-def test_new_session_never_waits_for_title_lookup_before_recording():
+def _daemon():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon._recording_request_lock = threading.RLock()
+    daemon._video_switch_generation = None
+    daemon._window_session_generation = 0
+    daemon._manual_stop_event = threading.Event()
+    daemon._stop_pending = False
+    return daemon
+
+
+def test_new_session_never_waits_for_title_lookup_before_recording():
+    daemon = _daemon()
     daemon.monitor = Mock(current_call_title=None, default_call_title="Webex Session")
     session = daemon._new_recording_session()
     assert session.display_title == "Webex Session"
@@ -27,7 +37,7 @@ def test_new_session_never_waits_for_title_lookup_before_recording():
 
 @pytest.mark.parametrize("shortcut", ["hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe"])
 def test_applies_settings_to_running_components_without_restarting_service(shortcut):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock()
     daemon.monitor = SimpleNamespace(poll_interval=3.0, call_end_grace_seconds=15.0)
@@ -62,7 +72,7 @@ def test_applies_settings_to_running_components_without_restarting_service(short
 
 
 def test_disabled_delivery_keeps_transcript_local():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, webex_delivery_enabled=False)
     daemon.webex = Mock()
     daemon.ui = Mock()
@@ -77,7 +87,7 @@ def test_disabled_delivery_keeps_transcript_local():
 
 
 def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thread():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon._manual_start_event = threading.Event()
     daemon._manual_start_mode = "audio"
@@ -89,7 +99,7 @@ def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thr
 
 
 def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_prompt():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.recorder.initialize.return_value = True
@@ -126,7 +136,7 @@ def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_promp
 
 
 def test_audio_hotkey_requests_manual_audio_without_window_probe_or_dialog():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.monitor = Mock(current_call_title="Cached title", default_call_title="Webex Session")
     daemon._active_session = Mock(display_title="Recording title")
@@ -145,7 +155,7 @@ def test_audio_hotkey_requests_manual_audio_without_window_probe_or_dialog():
 @pytest.mark.parametrize("response", ["ok", "cancel"])
 @pytest.mark.parametrize("stop_verified", [False, True])
 def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_path, mode, response, stop_verified):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock(is_recording=False, stop_verified=True, is_video_recording=mode == "video", is_screen_recording=False)
     daemon.monitor = Mock(is_in_meeting=False, current_call_title=None, default_call_title="Webex Session")
@@ -207,7 +217,7 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
 
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_menu_discard_requires_confirmation(confirmed):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True)
     daemon.ui = Mock()
     daemon.ui.confirm_discard.return_value = confirmed
@@ -221,7 +231,7 @@ def test_menu_discard_requires_confirmation(confirmed):
 
 
 def test_stale_discard_confirmation_cannot_discard_a_later_session():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True)
     daemon.ui = Mock()
     daemon._active_session = object()
@@ -232,7 +242,7 @@ def test_stale_discard_confirmation_cannot_discard_a_later_session():
 
 
 def test_confirmed_discard_is_queued_for_recording_worker():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True)
     daemon._manual_stop_event = threading.Event()
     daemon._discard_requested = False
@@ -245,7 +255,7 @@ def test_confirmed_discard_is_queued_for_recording_worker():
 
 
 def test_idle_video_hotkey_uses_manual_lifecycle_including_consent_notice():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     with patch.object(daemon, "_request_manual_start") as request:
         daemon._switch_to_video_mode()
@@ -254,7 +264,7 @@ def test_idle_video_hotkey_uses_manual_lifecycle_including_consent_notice():
 
 
 def test_audio_hotkey_does_not_restart_an_active_recording():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True)
     daemon._manual_start_event = threading.Event()
     daemon._handle_audio_start_request()
@@ -264,14 +274,14 @@ def test_audio_hotkey_does_not_restart_an_active_recording():
 
 
 def test_video_hotkey_does_not_split_an_existing_video_recording():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True, is_video_recording=True)
     daemon._switch_to_video_mode()
     daemon.recorder.switch_to_video_mode.assert_not_called()
 
 
 def test_video_source_hotkey_does_nothing_during_audio_recording():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_recording=True, is_video_recording=False)
     daemon.request_window_selection()
     daemon.recorder.list_webex_windows.assert_not_called()
@@ -282,7 +292,7 @@ def test_confirmed_discard_stops_and_deletes_without_post_processing():
     with tempfile.TemporaryDirectory() as folder:
         recording = Path(folder) / "recording.mkv"
         recording.write_bytes(b"test recording")
-        daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+        daemon = _daemon()
         daemon.config = Config(_env_file=None, enable_diarization=False)
         daemon.recorder = Mock(is_recording=False, stop_verified=True, is_video_recording=False)
         daemon.recorder.initialize.return_value = True
@@ -325,7 +335,7 @@ def test_confirmed_discard_stops_and_deletes_without_post_processing():
 def test_new_webex_window_follows_configured_behavior():
     candidate = WebexWindow(202, "Shared content", "Webex", 1440, 900)
     for behavior in ("always_switch", "prompt"):
-        daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+        daemon = _daemon()
         daemon.config = Config(_env_file=None, shared_window_behavior=behavior)
         daemon.recorder = Mock(is_video_recording=True)
         daemon.recorder.poll_webex_window_change.return_value = [candidate]
@@ -344,22 +354,25 @@ def test_new_webex_window_follows_configured_behavior():
 
 
 def test_video_switch_offers_existing_windows_in_prompt_mode():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, shared_window_behavior="prompt")
     daemon.recorder = Mock(is_recording=True, is_video_recording=False)
-    daemon.recorder.switch_to_video_mode.side_effect = lambda: setattr(daemon.recorder, "is_video_recording", True)
+    daemon.recorder.switch_to_video_mode.side_effect = lambda: setattr(daemon.recorder, "is_video_recording", True) or True
     daemon.recorder.list_webex_windows.return_value = [
         WebexWindow(101, "Meeting", "Webex", 1200, 800),
         WebexWindow(202, "Shared content", "Webex", 1400, 900),
     ]
     daemon.request_window_selection = Mock()
+    daemon.ui = Mock()
     daemon._switch_to_video_mode()
+    daemon.recorder.switch_to_video_mode.assert_not_called()
+    daemon._apply_video_switch()
     daemon.recorder.switch_to_video_mode.assert_called_once()
     daemon.request_window_selection.assert_called_once_with()
 
 
 def test_window_choice_from_previous_session_is_ignored():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, shared_window_behavior="prompt")
     daemon.recorder = Mock(is_video_recording=True)
     daemon.recorder.poll_webex_window_change.return_value = []
@@ -373,7 +386,7 @@ def test_window_choice_from_previous_session_is_ignored():
 
 
 def test_manual_picker_offers_entire_screen_without_webex_windows():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_video_recording=True, selected_display_uuid=None)
     daemon.recorder.list_webex_windows.return_value = []
     displays = [CaptureDisplay("display-uuid", "Main Display")]
@@ -393,7 +406,7 @@ def test_manual_picker_offers_entire_screen_without_webex_windows():
 
 
 def test_entire_screen_choice_disables_automatic_window_following():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.recorder = Mock(is_video_recording=True, is_screen_recording=False)
     daemon.recorder.select_capture_display.side_effect = lambda _uuid: setattr(
         daemon.recorder, "is_screen_recording", True
@@ -410,7 +423,7 @@ def test_entire_screen_choice_disables_automatic_window_following():
 
 
 def test_completed_recording_is_queued_before_lifecycle_rearms():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.recorder.initialize.return_value = True
@@ -458,7 +471,7 @@ def test_completed_recording_is_queued_before_lifecycle_rearms():
 
 
 def test_post_processing_job_uses_snapshotted_workers_and_settings():
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.ui = Mock()
     daemon.deliver_transcript = Mock(return_value=True)
     transcriber = Mock()
@@ -495,7 +508,7 @@ def test_post_processing_job_uses_snapshotted_workers_and_settings():
 
 @pytest.mark.parametrize("stop_verified", [False, True])
 def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_verified):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, enable_diarization=False)
     daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.monitor = Mock(is_in_meeting=True, current_call_title="Synthetic call", default_call_title="Webex Session")
@@ -534,7 +547,7 @@ def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_
 @pytest.mark.parametrize("discard", [False, True])
 @pytest.mark.parametrize("status", [True, False, None])
 def test_unverified_completion_retains_session_and_action_until_explicit_verified_retry(tmp_path, discard, status):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, recordings_dir=tmp_path, enable_diarization=False)
     media = tmp_path / "owned.mkv"
     media.write_bytes(b"synthetic")
@@ -578,7 +591,7 @@ def test_unverified_completion_retains_session_and_action_until_explicit_verifie
 def test_failed_processing_never_becomes_retention_eligible_even_after_other_jobs(tmp_path, failure):
     from webex_obs.cleaner import MediaCleaner
 
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.ui = Mock()
     daemon.deliver_transcript = Mock(return_value=True)
     failed_media = tmp_path / "failed.mkv"
@@ -622,7 +635,7 @@ def test_failed_processing_never_becomes_retention_eligible_even_after_other_job
 
 
 def test_pending_stop_resumes_same_session_only_on_explicit_retry(tmp_path):
-    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon = _daemon()
     daemon.config = Config(_env_file=None, recordings_dir=tmp_path, enable_diarization=False)
     daemon.recorder = Mock(is_recording=True, stop_verified=False)
     daemon.recorder.stop_recording.return_value = []
@@ -658,3 +671,93 @@ def test_pending_stop_resumes_same_session_only_on_explicit_retry(tmp_path):
     assert not media.exists()
     assert daemon._active_session is None
     assert not daemon._stop_pending
+
+
+@pytest.mark.parametrize("cancel", ["stop", "discard", "completed-session", "none"])
+def test_queued_video_switches_coalesce_and_cannot_outlive_stop_or_session(cancel):
+    daemon = _daemon()
+    daemon.recorder = Mock(is_recording=True, is_video_recording=False, is_screen_recording=False)
+    daemon.recorder.switch_to_video_mode.return_value = True
+    daemon.config = Config(_env_file=None, shared_window_behavior="always_switch")
+    daemon.ui = Mock()
+    daemon._active_session = Mock()
+    daemon._discard_requested = False
+
+    # Force simultaneous callbacks to finish before the lifecycle consumes them.
+    barrier = threading.Barrier(3)
+    def request():
+        barrier.wait(timeout=3)
+        daemon._handle_control_choice("switch_video")
+    threads = [threading.Thread(target=request) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=3)
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive()
+    daemon.recorder.switch_to_video_mode.assert_not_called()
+    daemon.ui.show_notification.assert_not_called()
+    if cancel == "stop":
+        daemon._handle_stop_transcribe_request()
+    elif cancel == "discard":
+        daemon._handle_control_choice("stop_discard")
+    elif cancel == "completed-session":
+        daemon._window_session_generation += 1
+    daemon._apply_video_switch()
+    daemon._apply_video_switch()
+    if cancel == "none":
+        daemon.recorder.switch_to_video_mode.assert_called_once()
+        daemon.ui.show_notification.assert_called_once_with("Webex OBS Companion", "Switched to Video recording mode.")
+    else:
+        daemon.recorder.switch_to_video_mode.assert_not_called()
+
+
+def test_rejected_video_switch_never_announces_video_success():
+    daemon = _daemon()
+    daemon.config = Config(_env_file=None)
+    daemon.recorder = Mock(is_recording=True, is_video_recording=False)
+    daemon.recorder.switch_to_video_mode.return_value = False
+    daemon.ui = Mock()
+    daemon._handle_control_choice("switch_video")
+    daemon._apply_video_switch()
+    daemon.ui.show_notification.assert_called_once_with("Webex OBS Companion", "Could not switch to Video recording mode.")
+    daemon.recorder.list_webex_windows.assert_not_called()
+
+
+def test_picker_enumeration_runs_off_main_thread_and_ignores_completion_during_probe():
+    daemon = _daemon()
+    daemon.recorder = Mock(is_recording=True, is_video_recording=True)
+    daemon._window_prompt_pending = threading.Event()
+    daemon._window_selection_queue = queue.Queue()
+    daemon.ui = Mock()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+
+    def list_windows():
+        try:
+            assert threading.current_thread() is not threading.main_thread()
+            entered.set()
+            assert release.wait(3)
+            return [WebexWindow(101, "Synthetic meeting", "Webex", 1200, 800)]
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+
+    daemon.recorder.list_webex_windows.side_effect = list_windows
+    daemon.recorder.list_capture_displays.side_effect = lambda: finished.set() or []
+    daemon.request_window_selection()
+    try:
+        assert entered.wait(3)
+        daemon._window_session_generation += 1
+    finally:
+        release.set()
+    assert finished.wait(3)
+    # Join the picker so its final stale-session check has completed.
+    for thread in threading.enumerate():
+        if thread.name == "webex-window-picker":
+            thread.join(3)
+            assert not thread.is_alive()
+    assert not errors
+    daemon.ui.choose_webex_window.assert_not_called()
+    assert daemon._window_selection_queue.empty()
+    assert not daemon._window_prompt_pending.is_set()

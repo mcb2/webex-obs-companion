@@ -36,7 +36,7 @@ class RecordingBackend(Protocol):
     def start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def retry_start_recording(self, mode: RecordingMode = "audio") -> bool: ...
     def ensure_recording(self) -> bool: ...
-    def switch_to_video_mode(self) -> None: ...
+    def switch_to_video_mode(self) -> bool: ...
     def list_webex_windows(self) -> list[WebexWindow]: ...
     def select_webex_window(self, window_id: int) -> bool: ...
     def list_capture_displays(self) -> list[CaptureDisplay]: ...
@@ -59,27 +59,32 @@ class OBSRecordingBackend:
         self.controller = controller
         self._pending_connection: tuple[str, int, str] | None = None
         self._lifecycle_lock = threading.RLock()
+        self._configuration_lock = threading.Lock()
+        self._pending_exit_on_stop: bool | None = None
         self._maintenance = OBSMaintenance()
         self.idle_restart_minutes = 60
 
     def configure(self, config: Config) -> None:
-        """Keep the live OBS socket until the current recording has stopped."""
-        with self._lifecycle_lock:
-            self._configure(config)
+        """Queue settings without waiting for OBS work on AppKit's main thread."""
+        with self._configuration_lock:
+            self._pending_exit_on_stop = config.exit_obs_on_recording_stop
+            self.idle_restart_minutes = config.obs_idle_restart_minutes
+            self._pending_connection = (config.obs_address, config.obs_port, config.obs_password)
 
-    def _configure(self, config: Config) -> None:
-        self.controller.exit_on_stop = config.exit_obs_on_recording_stop
-        self.idle_restart_minutes = config.obs_idle_restart_minutes
-        connection = (config.obs_address, config.obs_port, config.obs_password)
-        # Settings runs on the UI thread. Verification and reconnection belong
-        # to the lifecycle worker, even when the last cached state was idle.
-        self._pending_connection = connection
+    def _apply_configuration(self) -> None:
+        # Called under the lifecycle lock. Never hold the small configuration
+        # lock across a socket operation or a process launch/shutdown.
+        with self._configuration_lock:
+            if self._pending_exit_on_stop is not None:
+                self.controller.exit_on_stop = self._pending_exit_on_stop
+                self._pending_exit_on_stop = None
 
     def _apply_connection(self) -> None:
-        if self._pending_connection is None:
-            return
-        address, port, password = self._pending_connection
-        self._pending_connection = None
+        with self._configuration_lock:
+            if self._pending_connection is None:
+                return
+            address, port, password = self._pending_connection
+            self._pending_connection = None
         if (self.controller.address, self.controller.port, self.controller.password) != (address, port, password):
             self.controller.disconnect()
             self.controller.address, self.controller.port, self.controller.password = address, port, password
@@ -109,10 +114,12 @@ class OBSRecordingBackend:
         return self.controller.selected_display_uuid
 
     def connect(self) -> bool:
-        return self.controller.connect()
+        with self._lifecycle_lock:
+            return self.controller.connect()
 
     def initialize(self) -> bool:
         with self._lifecycle_lock:
+            self._apply_configuration()
             result = self.controller.initialize()
             self._maintenance.last_refresh = time.monotonic()
             return result
@@ -121,6 +128,7 @@ class OBSRecordingBackend:
         """Warm OBS before title/window validation; never start a recording here."""
         self.mark_call_evidence()
         with self._lifecycle_lock:
+            self._apply_configuration()
             was_running = self.controller.obs_is_running()
             result = self.controller.check_connection()
             if (result and self._pending_connection is not None
@@ -137,6 +145,7 @@ class OBSRecordingBackend:
 
     def maintain_idle(self, start_pending: Callable[[], bool]) -> bool:
         with self._lifecycle_lock:
+            self._apply_configuration()
             return self._maintenance.maintain(
                 self.controller, self.idle_restart_minutes, start_pending,
             )
@@ -149,6 +158,7 @@ class OBSRecordingBackend:
         if mode not in ("audio", "video"):
             raise ValueError(f"Unknown recording mode: {mode}")
         with self._lifecycle_lock:
+            self._apply_configuration()
             self.mark_call_evidence()
             if (self._pending_connection is not None and not self.controller.is_recording
                     and self.controller._recording_active_status() is False):
@@ -163,29 +173,39 @@ class OBSRecordingBackend:
 
     def ensure_recording(self) -> bool:
         with self._lifecycle_lock:
+            if not self.controller.is_recording:
+                return False
             return self.controller.ensure_recording()
 
-    def switch_to_video_mode(self) -> None:
+    def switch_to_video_mode(self) -> bool:
         with self._lifecycle_lock:
-            self.controller.switch_to_video_mode()
+            if not self.controller.is_recording:
+                return False
+            return self.controller.switch_to_video_mode()
 
     def list_webex_windows(self) -> list[WebexWindow]:
-        return self.controller.list_webex_windows()
+        with self._lifecycle_lock:
+            return self.controller.list_webex_windows()
 
     def select_webex_window(self, window_id: int) -> bool:
-        return self.controller.bind_webex_video_window(window_id)
+        with self._lifecycle_lock:
+            return self.is_video_recording and self.controller.bind_webex_video_window(window_id)
 
     def list_capture_displays(self) -> list[CaptureDisplay]:
-        return self.controller.list_capture_displays()
+        with self._lifecycle_lock:
+            return self.controller.list_capture_displays()
 
     def select_capture_display(self, display_uuid: str) -> bool:
-        return self.controller.select_capture_display(display_uuid)
+        with self._lifecycle_lock:
+            return self.is_video_recording and self.controller.select_capture_display(display_uuid)
 
     def poll_webex_window_change(self) -> list[WebexWindow]:
-        return self.controller.poll_webex_window_change()
+        with self._lifecycle_lock:
+            return self.controller.poll_webex_window_change()
 
     def stop_recording(self) -> list[str]:
         with self._lifecycle_lock:
+            self._apply_configuration()
             files = self.controller.stop_recording()
             self.mark_call_evidence()
             if self.controller.stop_verified is True:

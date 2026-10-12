@@ -30,6 +30,18 @@ The `Webex-Video` scene needs a macOS Screen Capture source named
 `Webex-Meeting-Window` configured for Window Capture. Switching its window
 while recording keeps the same OBS recording active.
 
+Recording changes are serialized through the lifecycle worker. Repeated video
+switch requests coalesce, and a pending stop cancels queued switches. OBS must
+accept a scene or source change before the app reports it as successful.
+Source enumeration and OBS calls run off the AppKit main thread; Settings queues
+OBS updates without waiting for capture operations.
+
+Window and screen choices apply only to the current session. After OBS confirms
+the recording has stopped, the companion resets a selected full-screen source
+to window capture. If that reset fails, the next video start or audio-to-video
+switch requires an accepted reset or a successful Webex-window binding. Recovery
+segments within an unfinished session retain its source selection.
+
 ---
 
 ## Quick Start

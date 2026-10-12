@@ -225,3 +225,257 @@ def test_real_backend_retains_old_connection_and_segments_after_failed_stop(tmp_
         assert backend.stop_verified
         assert controller.recorded_files == []
         assert path.exists()
+
+
+class _ObservedLock:
+    """Expose a contender reaching acquire, without timing-based sleeps."""
+
+    def __init__(self, contender_name):
+        import threading
+        self.lock = threading.RLock()
+        self.contender_name = contender_name
+        self.attempted = threading.Event()
+
+    def __enter__(self):
+        import threading
+        if threading.current_thread().name == self.contender_name:
+            self.attempted.set()
+        self.lock.acquire()
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
+@pytest.mark.parametrize("operation", [
+    "stop", "recover", "switch", "window", "display", "windows", "displays", "poll",
+    "connect", "initialize", "prepare", "disconnect", "maintain",
+])
+def test_all_obs_operations_wait_for_inflight_switch(operation):
+    import threading
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(is_recording=True, current_scene="Webex-Video")
+    backend = OBSRecordingBackend(controller)
+    backend._lifecycle_lock = _ObservedLock("contender")
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+
+    def switch():
+        entered.set()
+        if not release.wait(3):
+            raise AssertionError("test did not release switch")
+        return True
+
+    controller.switch_to_video_mode.side_effect = switch
+    operations = {
+        "stop": backend.stop_recording, "recover": backend.ensure_recording,
+        "switch": backend.switch_to_video_mode,
+        "window": lambda: backend.select_webex_window(101),
+        "display": lambda: backend.select_capture_display("synthetic-display"),
+        "windows": backend.list_webex_windows, "displays": backend.list_capture_displays,
+        "poll": backend.poll_webex_window_change, "connect": backend.connect,
+        "initialize": backend.initialize, "prepare": backend.prepare_recording,
+        "disconnect": backend.disconnect, "maintain": lambda: backend.maintain_idle(lambda: True),
+    }
+
+    def run(action, completed=None):
+        try:
+            action()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if completed:
+                completed.set()
+
+    owner = threading.Thread(target=run, args=(backend.switch_to_video_mode,), name="owner")
+    contender = threading.Thread(target=run, args=(operations[operation], done), name="contender")
+    owner.start()
+    try:
+        assert entered.wait(3)
+        contender.start()
+        assert backend._lifecycle_lock.attempted.wait(3)
+        assert not done.is_set()
+        assert [call[0] for call in controller.mock_calls] == ["switch_to_video_mode"]
+    finally:
+        release.set()
+        owner.join(3)
+        if contender.ident:
+            contender.join(3)
+    assert not owner.is_alive() and not contender.is_alive()
+    assert not errors
+    assert done.is_set()
+
+
+def test_settings_queue_does_not_wait_for_obs_and_applies_after_verified_stop():
+    import threading
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(address="old", port=4455, password="synthetic", is_recording=True)
+    backend = OBSRecordingBackend(controller)
+    entered, release, configured = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+
+    def stop():
+        entered.set()
+        assert release.wait(3)
+        controller.is_recording = False
+        controller.stop_verified = True
+        return []
+
+    controller.stop_recording.side_effect = stop
+
+    def run_stop():
+        try:
+            backend.stop_recording()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def configure():
+        try:
+            backend.configure(Config(_env_file=None, obs_ws_host="new", exit_obs_on_recording_stop=False))
+            configured.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run_stop)
+    settings = threading.Thread(target=configure)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        settings.start()
+        assert configured.wait(3), "Settings waited for blocking OBS work"
+        assert controller.address == "old"
+        controller.disconnect.assert_not_called()
+    finally:
+        release.set()
+        worker.join(3)
+        if settings.ident:
+            settings.join(3)
+    assert not errors
+    assert not worker.is_alive() and not settings.is_alive()
+    assert controller.address == "new"
+    controller.disconnect.assert_called_once()
+
+
+@pytest.mark.parametrize("contending_operation", ["switch", "recover", "window", "display"])
+def test_completed_stop_prevents_waiting_mutations_from_restarting_or_rebinding(
+    obs_v5_client, contending_operation
+):
+    import threading
+    from webex_obs.obs_controller import OBSController
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    entered, release = threading.Event(), threading.Event()
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.is_connected = True
+    controller.current_scene = "Webex-Video" if contending_operation in ("window", "display") else "Webex-Audio"
+    active = True
+    calls, errors, results = [], [], []
+
+    def respond(name, data):
+        nonlocal active
+        calls.append(name)
+        if name == "StopRecord":
+            entered.set()
+            assert release.wait(3)
+            active = False
+            return True, {"outputPath": ""}
+        if name == "GetRecordStatus":
+            return True, {"outputActive": active}
+        return True, None
+
+    controller.ws = obs_v5_client(respond)
+    backend = OBSRecordingBackend(controller)
+    backend._lifecycle_lock = _ObservedLock("contender")
+    operations = {
+        "switch": backend.switch_to_video_mode, "recover": backend.ensure_recording,
+        "window": lambda: backend.select_webex_window(101),
+        "display": lambda: backend.select_capture_display("synthetic-display"),
+    }
+
+    def run(action):
+        try:
+            results.append(action())
+        except BaseException as exc:
+            errors.append(exc)
+
+    stopper = threading.Thread(target=run, args=(backend.stop_recording,))
+    contender = threading.Thread(target=run, args=(operations[contending_operation],), name="contender")
+    stopper.start()
+    try:
+        assert entered.wait(3)
+        contender.start()
+        assert backend._lifecycle_lock.attempted.wait(3)
+    finally:
+        release.set()
+        stopper.join(3)
+        if contender.ident:
+            contender.join(3)
+    assert not errors
+    assert not stopper.is_alive() and not contender.is_alive()
+    assert controller.stop_verified and not controller.is_recording
+    assert False in results
+    assert not {"StartRecord", "SetCurrentProgramScene", "SetInputSettings"}.intersection(calls)
+
+
+@pytest.mark.parametrize("owner_operation", ["switch", "recover"])
+def test_switch_and_recovery_share_one_output_and_repeated_switch_is_idempotent(obs_v5_client, owner_operation):
+    import threading
+    from webex_obs.obs_controller import OBSController
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = controller.is_connected = True
+    controller.recorded_files = ["synthetic-prior-segment.mkv"]
+    active = owner_operation == "switch"
+    entered, release = threading.Event(), threading.Event()
+    calls, errors = [], []
+    blocked_request = "SetCurrentProgramScene" if owner_operation == "switch" else "StartRecord"
+
+    def respond(name, data):
+        nonlocal active
+        calls.append((name, data))
+        if name == blocked_request and not entered.is_set():
+            entered.set()
+            assert release.wait(3)
+        if name == "StartRecord":
+            active = True
+        return True, {"outputActive": active} if name == "GetRecordStatus" else None
+
+    controller.ws = obs_v5_client(respond)
+    backend = OBSRecordingBackend(controller)
+    backend._lifecycle_lock = _ObservedLock("contender")
+
+    def run(action):
+        try:
+            assert action() is True
+        except BaseException as exc:
+            errors.append(exc)
+
+    first_action = backend.switch_to_video_mode if owner_operation == "switch" else backend.ensure_recording
+    second_action = backend.ensure_recording if owner_operation == "switch" else backend.switch_to_video_mode
+    owner = threading.Thread(target=run, args=(first_action,))
+    contender = threading.Thread(target=run, args=(second_action,), name="contender")
+    with patch.object(controller, "bind_webex_video_window", return_value=True):
+        owner.start()
+        try:
+            assert entered.wait(3)
+            contender.start()
+            assert backend._lifecycle_lock.attempted.wait(3)
+        finally:
+            release.set()
+            owner.join(3)
+            if contender.ident:
+                contender.join(3)
+        assert not backend.switch_to_video_mode()
+    assert not errors
+    assert not owner.is_alive() and not contender.is_alive()
+    assert controller.is_recording and controller._owns_recording
+    assert controller.current_scene == "Webex-Video"
+    assert controller.recorded_files == ["synthetic-prior-segment.mkv"]
+    assert sum(name == "StartRecord" for name, _ in calls) == (owner_operation == "recover")
+    assert sum(name == "SetCurrentProgramScene" and data["sceneName"] == "Webex-Video" for name, data in calls) == 1
+    assert not any(name == "StopRecord" for name, _ in calls)

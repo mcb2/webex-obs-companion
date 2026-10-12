@@ -1,6 +1,7 @@
 """Scoped integration doubles; collection must not replace installed modules."""
 
 import importlib
+import json
 import os
 import sys
 import types
@@ -9,6 +10,43 @@ from unittest.mock import Mock
 import pytest
 
 from webex_obs.config import Config
+
+
+@pytest.fixture
+def obs_v5_client():
+    """Exercise the installed client's call decoder with synthetic v5 replies.
+
+    handler(request_type, request_data) returns (accepted, response_data).
+    Rejections deliberately omit responseData, as OBS normally does. No socket,
+    receiver thread, OBS process, or authentication is used.
+    """
+    from obswebsocket import obsws
+
+    def make(handler):
+        client = obsws(port=4455, legacy=False, timeout=1)
+
+        def send(payload):
+            envelope = json.loads(payload)
+            assert envelope["op"] == 6
+            request = envelope["d"]
+            accepted, data = handler(request["requestType"], request["requestData"])
+            reply = {
+                "op": 7,
+                "d": {
+                    "requestType": request["requestType"],
+                    "requestId": request["requestId"],
+                    "requestStatus": {"result": accepted, "code": 100 if accepted else 600},
+                },
+            }
+            if data is not None:
+                reply["d"]["responseData"] = data
+            client.answers[request["requestId"]] = reply["d"]
+            client.events[request["requestId"]].set()
+
+        client.ws = Mock(send=send)
+        return client
+
+    return make
 
 
 @pytest.fixture(autouse=True)

@@ -40,8 +40,9 @@ retrying the app's Stop action to finalize known segments.
 
 Settings updates validate values, atomically change the existing `.env`, and
 replace the running detector, transcription, delivery, and hotkey configuration.
-The OBS adapter stores connection changes on the UI thread. The lifecycle
-worker applies them after a verified stop or during idle preparation/start once
+The OBS adapter queues settings behind a short configuration lock on the UI thread,
+without waiting for its OBS lifecycle lock. The lifecycle worker applies connection
+changes after a verified stop or during idle preparation/start once
 the old output reports stopped; no socket probe runs in Settings on the UI thread.
 LaunchAgent stdout/stderr paths and OBS's recording output path are managed by
 their respective applications.
@@ -57,6 +58,19 @@ the selected video window changes. The same picker can switch the macOS Screen
 Capture source to a macOS-listed full display; window polling is suspended until
 a Webex window is selected again. This selection applies to the current
 session only because macOS window IDs change when Webex recreates windows.
+Verified completion also resets full-display capture in OBS to window capture;
+a failed reset guards the next video start/switch until a reset or window binding
+is accepted. Source caches clear at completion, while this reset guard survives
+until confirmed success. Recovery within an unresolved session retains selection.
+
+Menu and hotkey video switches queue the current session generation for the
+lifecycle worker. Repeated requests coalesce and stop requests cancel queued
+switches. The backend lifecycle lock covers start, stop, recovery, connection,
+maintenance, source enumeration and source changes. No OBS lock is held while
+waiting for an AppKit dialog. Picker results are checked against the session
+generation before applying them. The locked obs-websocket-py 1.0 client returns
+rejected v5 requests with `status=False` (often empty `datain`) rather than raising;
+the controller checks acceptance before using data or updating confirmed state.
 
 ## Detection, maintenance, and post-processing
 

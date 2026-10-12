@@ -598,3 +598,174 @@ def test_rejected_status_response_cannot_confirm_stop():
     assert controller.recording_status is None
     assert controller.is_recording
     assert not controller.stop_verified
+
+
+def test_locked_client_returns_empty_success_and_rejection_without_raising(obs_v5_client):
+    client = obs_v5_client(lambda name, data: (name == "StartRecord", None))
+    accepted = client.call(requests.StartRecord())
+    rejected = client.call(requests.SetCurrentProgramScene(sceneName="missing"))
+    assert accepted.status is True and accepted.datain == {}
+    assert rejected.status is False and rejected.datain == {}
+
+
+@pytest.mark.parametrize("operation", ["scene", "window", "display", "settings", "window-list"])
+def test_rejected_obs_changes_do_not_update_cached_source_or_scene(obs_v5_client, operation):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_connected = True
+    controller.selected_window_id = 99
+    controller._seen_window_ids = {99}
+    controller._candidate_polls = {202: 1}
+    controller.ws = obs_v5_client(lambda name, data: (
+        (True, {"inputKind": "screen_capture"}) if name == "GetInputSettings" and operation != "settings"
+        else (False, None)
+    ))
+    window = WebexWindow(202, "Synthetic meeting", "Webex", 1200, 800)
+    with patch.object(controller, "check_connection", return_value=True):
+        if operation == "scene":
+            assert not controller.switch_scene("Webex-Video")
+        elif operation == "window":
+            with patch.object(controller, "list_webex_windows", return_value=[window]):
+                assert not controller.bind_webex_video_window(202)
+        elif operation == "display":
+            with patch.object(controller, "list_capture_displays", return_value=[CaptureDisplay("display", "Synthetic")]):
+                assert not controller.select_capture_display("display")
+        elif operation == "settings":
+            with patch("webex_obs.obs_controller.active_displays") as displays:
+                assert controller.list_capture_displays() == []
+            displays.assert_not_called()
+        else:
+            with patch("webex_obs.obs_controller.HAS_QUARTZ", False):
+                assert controller.list_webex_windows() == []
+    assert controller.current_scene == "Webex-Audio"
+    assert controller.selected_window_id == 99
+    assert controller.selected_display_uuid is None
+    assert controller._seen_window_ids == {99}
+    assert controller._candidate_polls == {202: 1}
+
+
+@pytest.mark.parametrize("rejected_request", ["GetRecordStatus", "GetStreamStatus", "GetReplayBufferStatus"])
+def test_rejected_output_probe_never_authorizes_idle_maintenance(obs_v5_client, rejected_request):
+    controller = OBSController(exit_on_stop=False)
+    # Include a misleading outputActive to prove status takes precedence.
+    controller.ws = obs_v5_client(lambda name, data: (name != rejected_request, {"outputActive": False}))
+    with patch.object(controller, "check_connection", return_value=True):
+        assert not controller.outputs_confirmed_idle()
+
+
+def test_rejected_heartbeat_is_not_a_healthy_connection(obs_v5_client):
+    controller = OBSController(exit_on_stop=False)
+    controller.ws = obs_v5_client(lambda name, data: (False, None))
+    controller.is_connected = controller.is_recording = True
+    with patch.object(controller, "connect", return_value=False) as reconnect:
+        assert not controller.check_connection()
+    reconnect.assert_called_once()
+    assert controller._ownership_lost
+
+
+@pytest.mark.parametrize("request_name", ["StartRecord", "StopRecord"])
+def test_rejected_recording_request_preserves_ownership_boundaries(obs_v5_client, request_name):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = request_name == "StopRecord"
+    controller.ws = obs_v5_client(lambda name, data: (
+        (False, None) if name == request_name else
+        (True, {"outputActive": request_name == "StopRecord"}) if name == "GetRecordStatus" else (True, None)
+    ))
+    with patch.object(controller, "check_connection", return_value=True), patch("webex_obs.obs_controller.time.sleep"):
+        if request_name == "StartRecord":
+            assert not controller.start_recording()
+            assert not controller.is_recording and not controller._owns_recording
+        else:
+            assert controller.stop_recording() == []
+            assert controller.is_recording and controller._owns_recording
+            assert not controller.stop_verified
+
+
+@pytest.mark.parametrize("stop_verified,reset_accepted", [(False, True), (True, True), (True, False)])
+def test_screen_selection_reset_requires_verified_completion_and_accepted_request(
+    obs_v5_client, stop_verified, reset_accepted
+):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.selected_display_uuid = "synthetic-display"
+    controller._capture_reset_pending = True
+    calls = []
+    active = not stop_verified
+
+    def respond(name, data):
+        nonlocal active
+        calls.append((name, data))
+        if name == "GetRecordStatus":
+            return True, {"outputActive": active}
+        if name == "StartRecord":
+            active = True
+            return True, None
+        if name == "SetInputSettings":
+            return reset_accepted, None
+        return name != "StopRecord", None
+
+    controller.ws = obs_v5_client(respond)
+    with patch.object(controller, "check_connection", return_value=True), patch("webex_obs.obs_controller.time.sleep"):
+        controller.stop_recording()
+        resets = [data for name, data in calls if name == "SetInputSettings"]
+        if not stop_verified:
+            assert not resets
+            assert controller.selected_display_uuid == "synthetic-display"
+        else:
+            assert resets == [{"inputName": "Webex-Meeting-Window", "inputSettings": {"type": 1, "window": 0}, "overlay": True}]
+            assert controller.selected_display_uuid is None
+            assert controller._capture_reset_pending is (not reset_accepted)
+            # Without a Webex window, a rejected reset cannot reuse the screen.
+            with patch.object(controller, "list_webex_windows", return_value=[]):
+                assert controller.start_recording("Webex-Video") is reset_accepted
+            if not reset_accepted:
+                assert not any(name == "StartRecord" for name, _ in calls)
+
+
+def test_lost_screen_selection_response_still_requires_reset_on_completion(obs_v5_client):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.selected_window_id = 101
+
+    def lose_response(name, data):
+        raise ConnectionError("synthetic lost source response")
+
+    controller.ws = obs_v5_client(lose_response)
+    with patch.object(controller, "list_capture_displays", return_value=[CaptureDisplay("display", "Synthetic")]):
+        assert not controller.select_capture_display("display")
+    assert controller.selected_display_uuid is None
+    assert controller.selected_window_id == 101
+    assert controller._capture_reset_pending
+    calls = []
+
+    def reply(name, data):
+        calls.append((name, data))
+        return True, {"outputActive": False} if name == "GetRecordStatus" else None
+
+    controller.ws = obs_v5_client(reply)
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.stop_recording() == []
+    assert controller.stop_verified
+    assert not controller._capture_reset_pending
+    assert any(name == "SetInputSettings" and data["inputSettings"] == {"type": 1, "window": 0} for name, data in calls)
+
+
+@pytest.mark.parametrize("operation", ["start", "switch"])
+def test_rejected_scene_never_starts_output_or_reports_video_mode(obs_v5_client, operation):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = operation == "switch"
+    calls = []
+
+    def reply(name, data):
+        calls.append(name)
+        if name == "GetRecordStatus":
+            return True, {"outputActive": operation == "switch"}
+        return False, None
+
+    controller.ws = obs_v5_client(reply)
+    with patch.object(controller, "check_connection", return_value=True), patch("webex_obs.obs_controller.time.sleep"):
+        if operation == "start":
+            assert not controller.start_recording("Webex-Video")
+        else:
+            assert not controller.switch_to_video_mode()
+    assert controller.current_scene == "Webex-Audio"
+    assert not any(name in {"StartRecord", "StopRecord"} for name in calls)

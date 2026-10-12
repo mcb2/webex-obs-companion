@@ -68,6 +68,9 @@ class WebexOBSDaemon:
         self._stop_pending = False
         self._active_session: RecordingSession | None = None
         self._settings_lock = threading.Lock()
+        # Protect request flags only; never hold this across OBS or AppKit work.
+        self._recording_request_lock = threading.RLock()
+        self._video_switch_generation: int | None = None
         self._window_selection_queue: queue.Queue[tuple[int, int | str]] = queue.Queue()
         self._window_prompt_pending = threading.Event()
         self._window_session_generation = 0
@@ -176,6 +179,9 @@ class WebexOBSDaemon:
 
     def _finish_recording(self) -> bool:
         """Finalize only on positive stop evidence; retain the pending action otherwise."""
+        with self._recording_request_lock:
+            self._stop_pending = True
+            self._video_switch_generation = None
         recorded_files = self.recorder.stop_recording()
         self._manual_stop_event.clear()
         if self.recorder.stop_verified is not True:
@@ -186,7 +192,6 @@ class WebexOBSDaemon:
                 "Could not verify recording stopped. Files kept. Check OBS, then retry Stop from the menu.",
             )
             return False
-        self._stop_pending = False
         if self._discard_requested:
             failed = []
             for filename in recorded_files:
@@ -219,8 +224,11 @@ class WebexOBSDaemon:
                 )
             self._post_processing_worker.submit(job)
             logger.info("Queued recording session for background post-processing: '%s'.", session.display_title)
-        self._discard_requested = False
-        self._active_session = None
+        with self._recording_request_lock:
+            self._discard_requested = False
+            self._active_session = None
+            self._stop_pending = False
+            self._window_session_generation += 1
         return True
 
     def _new_recording_session(self) -> RecordingSession:
@@ -233,7 +241,12 @@ class WebexOBSDaemon:
 
     def _handle_stop_transcribe_request(self):
         """Handle Cmd+Shift+S hotkey to immediately stop recording and start transcription."""
-        if not self.recorder.is_recording:
+        with self._recording_request_lock:
+            recording = self.recorder.is_recording
+            if recording:
+                self._manual_stop_event.set()
+                self._video_switch_generation = None
+        if not recording:
             self.ui.show_notification("Webex OBS Companion", "No active meeting recording currently running.")
             return
 
@@ -242,7 +255,6 @@ class WebexOBSDaemon:
             display_hotkey(self.config.hotkey_stop_transcribe),
         )
         self.ui.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
-        self._manual_stop_event.set()
 
     def _handle_audio_start_request(self):
         self._request_manual_start("audio")
@@ -251,17 +263,36 @@ class WebexOBSDaemon:
         session = self._active_session
         if not self.recorder.is_recording:
             return
-        if (self.ui.confirm_discard() and self.recorder.is_recording
-                and self._active_session is session):
-            self._handle_control_choice("stop_discard")
+        if self.ui.confirm_discard():
+            with self._recording_request_lock:
+                if self.recorder.is_recording and self._active_session is session:
+                    self._handle_control_choice("stop_discard")
 
     def _switch_to_video_mode(self) -> None:
-        if not self.recorder.is_recording:
-            self._request_manual_start("video")
+        """Menu/hotkey callbacks enqueue; only the lifecycle worker touches OBS."""
+        with self._recording_request_lock:
+            if self._stop_pending or self._manual_stop_event.is_set():
+                return
+            if not self.recorder.is_recording:
+                self._request_manual_start("video")
+                return
+            if self.recorder.is_video_recording is True:
+                return
+            self._video_switch_generation = self._window_session_generation
+
+    def _apply_video_switch(self) -> None:
+        with self._recording_request_lock:
+            generation = self._video_switch_generation
+            self._video_switch_generation = None
+            if (generation is None or generation != self._window_session_generation
+                    or self._stop_pending or self._manual_stop_event.is_set()):
+                return
+        if self.recorder.is_video_recording is True or not self.recorder.is_recording:
             return
-        if self.recorder.is_video_recording is True:
+        if self.recorder.switch_to_video_mode() is not True:
+            self.ui.show_notification("Webex OBS Companion", "Could not switch to Video recording mode.")
             return
-        self.recorder.switch_to_video_mode()
+        self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
         if (self.recorder.is_video_recording is True
                 and self.recorder.is_screen_recording is not True
                 and self.config.shared_window_behavior == "prompt"
@@ -274,23 +305,28 @@ class WebexOBSDaemon:
         elif (choice == "switch_video" and self.recorder.is_recording
               and self.recorder.is_video_recording is not True):
             self._switch_to_video_mode()
-            self.ui.show_notification("Webex OBS Companion", "Switched to Video recording mode.")
         elif choice == "select_window":
             self.request_window_selection()
         elif choice == "start_audio":
             self._request_manual_start("audio")
         elif choice == "start_video":
             self._request_manual_start("video")
-        elif choice == "stop_discard" and self.recorder.is_recording:
-            logger.info("User confirmed Stop & Discard via recording controls.")
-            self._discard_requested = True
-            self._manual_stop_event.set()
+        elif choice == "stop_discard":
+            with self._recording_request_lock:
+                if not self.recorder.is_recording:
+                    return
+                logger.info("User confirmed Stop & Discard via recording controls.")
+                self._discard_requested = True
+                self._manual_stop_event.set()
+                self._video_switch_generation = None
 
     def _request_manual_start(self, mode: str) -> None:
-        if self.recorder.is_recording or self._active_session is not None or self._manual_start_event.is_set():
-            return
-        self._manual_start_mode = mode
-        self._manual_start_event.set()
+        with self._recording_request_lock:
+            if (self.recorder.is_recording or self._active_session is not None
+                    or self._manual_start_event.is_set() or self._stop_pending):
+                return
+            self._manual_start_mode = mode
+            self._manual_start_event.set()
         logger.info("Manual %s recording requested from controls.", mode)
         # The lifecycle may still be validating an automatic candidate. Warm OBS
         # immediately without doing WebSocket work on the UI/hotkey thread.
@@ -299,18 +335,23 @@ class WebexOBSDaemon:
 
     def request_window_selection(self, suggested_window_id: int | None = None) -> None:
         """Show the picker without holding up the recording lifecycle worker."""
-        if self.recorder.is_video_recording is not True or self._window_prompt_pending.is_set():
-            return
-        windows = self.recorder.list_webex_windows()
-        displays = self.recorder.list_capture_displays()
-        if not windows and not displays:
-            self.ui.show_notification("Webex OBS Companion", "No recording windows or screens are available.")
-            return
-        self._window_prompt_pending.set()
-        generation = self._window_session_generation
+        with self._recording_request_lock:
+            if (self.recorder.is_video_recording is not True or self._window_prompt_pending.is_set()
+                    or self._stop_pending or self._manual_stop_event.is_set()):
+                return
+            self._window_prompt_pending.set()
+            generation = self._window_session_generation
 
         def choose() -> None:
             try:
+                windows = self.recorder.list_webex_windows()
+                displays = self.recorder.list_capture_displays()
+                if (generation != self._window_session_generation
+                        or self._stop_pending or self._manual_stop_event.is_set()):
+                    return
+                if not windows and not displays:
+                    self.ui.show_notification("Webex OBS Companion", "No recording windows or screens are available.")
+                    return
                 selection = self.ui.choose_webex_window(
                     windows, suggested_window_id, displays, self.recorder.selected_display_uuid
                 )
@@ -324,7 +365,8 @@ class WebexOBSDaemon:
         threading.Thread(target=choose, name="webex-window-picker", daemon=True).start()
 
     def _update_video_window(self) -> None:
-        if self.recorder.is_video_recording is not True:
+        if (self.recorder.is_video_recording is not True
+                or self._stop_pending or self._manual_stop_event.is_set()):
             return
         try:
             while True:
@@ -394,23 +436,24 @@ class WebexOBSDaemon:
                 meeting_active = self.monitor.wait_for_state_change(self._manual_start_event)
                 if not meeting_active:
                     continue
-                manual = self._manual_start_event.is_set()
-                mode = self._manual_start_mode if manual else "audio"
-                self._manual_start_event.clear()
+                with self._recording_request_lock:
+                    manual = self._manual_start_event.is_set()
+                    mode = self._manual_start_mode if manual else "audio"
+                    self._manual_start_event.clear()
 
-                if not manual and self.monitor.should_suppress_automatic_prompt():
-                    logger.info(
-                        "Skipping automatic recording prompt for a call already declined by the user."
-                    )
-                    self.monitor.is_in_meeting = False
-                    continue
+                    if not manual and self.monitor.should_suppress_automatic_prompt():
+                        logger.info(
+                            "Skipping automatic recording prompt for a call already declined by the user."
+                        )
+                        self.monitor.is_in_meeting = False
+                        continue
 
-                self._discard_requested = False
-                self._manual_stop_event.clear()
-                self._window_session_generation = getattr(self, "_window_session_generation", 0) + 1
-                self._active_session = self._new_recording_session()
-                if manual:
-                    self.monitor.is_in_meeting = True
+                    self._discard_requested = False
+                    self._manual_stop_event.clear()
+                    self._window_session_generation += 1
+                    self._active_session = self._new_recording_session()
+                    if manual:
+                        self.monitor.is_in_meeting = True
 
                 started = self.recorder.start_recording(mode=mode)
                 if not started:
@@ -477,6 +520,8 @@ class WebexOBSDaemon:
                 elif choice == "switch_video":
                     self._switch_to_video_mode()
 
+                self._apply_video_switch()
+
                 if (not self._manual_stop_event.is_set()
                         and mode == "video" and self.recorder.is_video_recording is True
                         and self.recorder.is_screen_recording is not True
@@ -487,7 +532,7 @@ class WebexOBSDaemon:
                 if not self._manual_stop_event.is_set():
                     self.ui.show_notification(
                         "Webex OBS Companion",
-                        f"Recording active ({'Video' if mode == 'video' or choice == 'switch_video' else 'Audio'}). "
+                        f"Recording active ({'Video' if self.recorder.is_video_recording is True else 'Audio'}). "
                         f"{display_hotkey(self.config.hotkey_video)} Video, "
                         f"{display_hotkey(self.config.hotkey_video_source)} Source, "
                         f"{display_hotkey(self.config.hotkey_stop_transcribe)} Transcribe, "
@@ -503,6 +548,9 @@ class WebexOBSDaemon:
                         break
                     if not manual and self.monitor.has_call_ended():
                         self.monitor.is_in_meeting = False
+                        break
+                    self._apply_video_switch()
+                    if self._manual_stop_event.is_set():
                         break
                     if not self.recorder.ensure_recording():
                         logger.error("OBS recovery failed; another recovery attempt will be made on the next poll.")
