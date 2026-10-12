@@ -65,6 +65,7 @@ class WebexOBSDaemon:
         self._manual_start_event = threading.Event()
         self._manual_start_mode = "audio"
         self._discard_requested = False
+        self._stop_pending = False
         self._active_session: RecordingSession | None = None
         self._settings_lock = threading.Lock()
         self._window_selection_queue: queue.Queue[tuple[int, int | str]] = queue.Queue()
@@ -130,12 +131,12 @@ class WebexOBSDaemon:
         *,
         delivery_enabled: bool | None = None,
         webex: WebexClient | None = None,
-    ) -> None:
+    ) -> bool:
         if delivery_enabled is None:
             delivery_enabled = self.config.webex_delivery_enabled
         if not delivery_enabled:
             logger.info("Webex delivery disabled; transcript saved locally: %s", transcript_file)
-            return
+            return True
         client = webex if webex is not None else self.webex
         self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
         sent = client.send_transcript(transcript_file, meeting_title=meeting_title)
@@ -143,31 +144,84 @@ class WebexOBSDaemon:
             self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
         else:
             self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+        return bool(sent)
 
     def _process_post_processing_job(self, job: PostProcessingJob) -> None:
         """Transcribe, deliver, and clean up one finalized meeting."""
-        try:
+        files = list(job.media_files)
+        MediaCleaner.protect_recordings(files)
+        identities = MediaCleaner.recording_identities(files)
+        self.ui.show_notification(
+            "Webex OBS Companion",
+            f"Transcribing and diarizing {job.meeting_title}...",
+        )
+        transcript_file = job.transcriber.transcribe_files(
+            files,
+            meeting_title=job.meeting_title,
+            output_stem=job.output_stem,
+        )
+        if not transcript_file:
+            logger.warning("Processing incomplete; media remains protected for recovery.")
+            return
+        if not self.deliver_transcript(
+            transcript_file,
+            job.meeting_title,
+            delivery_enabled=job.delivery_enabled,
+            webex=job.webex,
+        ):
+            logger.warning("Delivery failed; media remains protected for recovery.")
+            return
+        MediaCleaner.mark_processed(files, job.recordings_dir, identities=identities)
+        MediaCleaner.prune_old_recordings(job.recordings_dir, job.retention_days)
+
+    def _finish_recording(self) -> bool:
+        """Finalize only on positive stop evidence; retain the pending action otherwise."""
+        recorded_files = self.recorder.stop_recording()
+        self._manual_stop_event.clear()
+        if self.recorder.stop_verified is not True:
+            self._stop_pending = True
+            logger.error("OBS stop could not be verified; retaining session, files and pending action.")
             self.ui.show_notification(
                 "Webex OBS Companion",
-                f"Transcribing and diarizing {job.meeting_title}...",
+                "Could not verify recording stopped. Files kept. Check OBS, then retry Stop from the menu.",
             )
-            transcript_file = job.transcriber.transcribe_files(
-                list(job.media_files),
-                meeting_title=job.meeting_title,
-                output_stem=job.output_stem,
+            return False
+        self._stop_pending = False
+        if self._discard_requested:
+            failed = []
+            for filename in recorded_files:
+                try:
+                    os.remove(filename)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.exception("Could not delete discarded recording: %s", filename)
+                    failed.append(filename)
+            self.ui.show_notification(
+                "Webex OBS Companion",
+                "Recording stopped, but some files could not be deleted." if failed else "Recording discarded.",
             )
-            if transcript_file:
-                self.deliver_transcript(
-                    transcript_file,
-                    job.meeting_title,
-                    delivery_enabled=job.delivery_enabled,
-                    webex=job.webex,
+        elif recorded_files:
+            session = self._active_session or self._new_recording_session()
+            session.use_title_if_missing(self.monitor.current_call_title)
+            recorded_files = session.rename_recordings(recorded_files)
+            MediaCleaner.protect_recordings(recorded_files)
+            with self._settings_lock:
+                job = PostProcessingJob(
+                    media_files=tuple(recorded_files),
+                    meeting_title=session.display_title,
+                    output_stem=session.filename_stem,
+                    transcriber=self.transcriber,
+                    webex=self.webex,
+                    delivery_enabled=self.config.webex_delivery_enabled,
+                    recordings_dir=self.config.recordings_dir,
+                    retention_days=self.config.retention_days,
                 )
-        finally:
-            MediaCleaner.prune_old_recordings(
-                job.recordings_dir,
-                job.retention_days,
-            )
+            self._post_processing_worker.submit(job)
+            logger.info("Queued recording session for background post-processing: '%s'.", session.display_title)
+        self._discard_requested = False
+        self._active_session = None
+        return True
 
     def _new_recording_session(self) -> RecordingSession:
         # Metadata must not delay OBS startup, particularly for manual requests.
@@ -233,7 +287,7 @@ class WebexOBSDaemon:
             self._manual_stop_event.set()
 
     def _request_manual_start(self, mode: str) -> None:
-        if self.recorder.is_recording or self._manual_start_event.is_set():
+        if self.recorder.is_recording or self._active_session is not None or self._manual_start_event.is_set():
             return
         self._manual_start_mode = mode
         self._manual_start_event.set()
@@ -329,6 +383,14 @@ class WebexOBSDaemon:
 
         try:
             while True:
+                if getattr(self, "_stop_pending", False):
+                    # Explicit retries only: no repeated stop commands, new
+                    # session, or automatic recovery while stop is unresolved.
+                    if self._manual_stop_event.is_set():
+                        self._finish_recording()
+                    else:
+                        time.sleep(self.config.poll_interval)
+                    continue
                 meeting_active = self.monitor.wait_for_state_change(self._manual_start_event)
                 if not meeting_active:
                     continue
@@ -354,14 +416,25 @@ class WebexOBSDaemon:
                 if not started:
                     logger.warning("OBS did not start recording; retrying with the running OBS instance.")
                     for _ in range(2):
+                        if self.recorder.is_recording:
+                            break
                         time.sleep(1.0)
                         started = self.recorder.retry_start_recording(mode=mode)
                         if started:
                             break
-                    while not manual and self.monitor.is_call_active() and not started:
+                    while (not manual and not self.recorder.is_recording
+                           and self.monitor.is_call_active() and not started):
                         time.sleep(5)
                         started = self.recorder.start_recording(mode=mode)
                     if not started:
+                        if self.recorder.is_recording:
+                            self._stop_pending = True
+                            self.monitor.is_in_meeting = False
+                            self.ui.show_notification(
+                                "Webex OBS Companion",
+                                "Recording start could not be verified. Check OBS, then choose Stop to resolve it.",
+                            )
+                            continue
                         if manual:
                             self.ui.show_notification(
                                 "Webex OBS Companion", "Recording could not start. Check OBS and the service log."
@@ -397,22 +470,9 @@ class WebexOBSDaemon:
                         if session and session.display_title != self.monitor.default_call_title
                         else None
                     )
-                    discarded = self.recorder.stop_recording()
-                    if self.recorder.is_recording:
-                        logger.error("OBS stop could not be verified; keeping recording files.")
-                        self.ui.show_notification(
-                            "Webex OBS Companion",
-                            "Could not verify recording stopped; it may still be active. Files were kept.",
-                        )
-                    else:
-                        for f in discarded:
-                            if os.path.exists(f):
-                                try:
-                                    os.remove(f)
-                                except OSError:
-                                    logger.exception("Could not delete discarded recording: %s", f)
+                    self._discard_requested = True
                     self.monitor.is_in_meeting = False
-                    self._active_session = None
+                    self._finish_recording()
                     continue
                 elif choice == "switch_video":
                     self._switch_to_video_mode()
@@ -449,82 +509,12 @@ class WebexOBSDaemon:
                     self._update_video_window()
 
                 if self._discard_requested:
-                    discarded = self.recorder.stop_recording()
-                    if self.recorder.is_recording:
-                        logger.error("OBS stop could not be verified; keeping recording files.")
-                        self.ui.show_notification(
-                            "Webex OBS Companion",
-                            "Could not verify recording stopped; it may still be active. Files were kept.",
-                        )
-                    else:
-                        failed = []
-                        for filename in discarded:
-                            try:
-                                os.remove(filename)
-                            except FileNotFoundError:
-                                pass
-                            except OSError:
-                                logger.exception("Could not delete discarded recording: %s", filename)
-                                failed.append(filename)
-                        if failed:
-                            self.ui.show_notification(
-                                "Webex OBS Companion",
-                                "Recording stopped, but some files could not be deleted.",
-                            )
-                        else:
-                            logger.info("Recording stopped and discarded by user request.")
-                            self.ui.show_notification("Webex OBS Companion", "Recording discarded.")
                     if self.monitor.is_call_active():
                         self.monitor.suppress_current_call_prompt()
-                    self.monitor.is_in_meeting = False
-                    self._discard_requested = False
-                    self._manual_stop_event.clear()
-                    self._active_session = None
-                    continue
-
-                if (not manual and self._manual_stop_event.is_set()) or (manual and self.monitor.is_call_active()):
+                elif (not manual and self._manual_stop_event.is_set()) or (manual and self.monitor.is_call_active()):
                     self.monitor.suppress_current_call_prompt()
-                if manual or self._manual_stop_event.is_set():
-                    self.monitor.is_in_meeting = False
-                recorded_files = self.recorder.stop_recording()
-                if self.recorder.is_recording:
-                    logger.error("OBS stop could not be verified; leaving media untouched for recovery.")
-                    self.ui.show_notification(
-                        "Webex OBS Companion",
-                        "Could not verify recording stopped; it may still be active. Files were kept.",
-                    )
-                    self._manual_stop_event.clear()
-                    continue
-                logger.info(f"Recording session stopped. Captured segments: {recorded_files}")
-
-                if not recorded_files:
-                    self._manual_stop_event.clear()
-                    self._active_session = None
-                    continue
-
-                session = self._active_session or self._new_recording_session()
-                session.use_title_if_missing(self.monitor.current_call_title)
-                recorded_files = session.rename_recordings(recorded_files)
-
-                with self._settings_lock:
-                    job = PostProcessingJob(
-                        media_files=tuple(recorded_files),
-                        meeting_title=session.display_title,
-                        output_stem=session.filename_stem,
-                        transcriber=self.transcriber,
-                        webex=self.webex,
-                        delivery_enabled=self.config.webex_delivery_enabled,
-                        recordings_dir=self.config.recordings_dir,
-                        retention_days=self.config.retention_days,
-                    )
-                self._post_processing_worker.submit(job)
-                logger.info(
-                    "Queued recording session for background post-processing: '%s'.",
-                    session.display_title,
-                )
-
-                self._manual_stop_event.clear()
-                self._active_session = None
+                self.monitor.is_in_meeting = False
+                self._finish_recording()
 
         except KeyboardInterrupt:
             logger.info("Shutting down daemon...")

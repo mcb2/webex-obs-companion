@@ -10,24 +10,39 @@ confirmation retains the 15-second default to audio. The legacy `UIBanner`
 remains available to headless tests and handles notifications.
 
 The lifecycle depends on `recording_backend.RecordingBackend`, which defines
-connect, start, verify/recover, switch to video, stop (returning all completed
-segment paths), and disconnect. `create_recording_backend` currently creates
-an `OBSRecordingBackend` adapter around `OBSController`. A native recorder can
+connect, start, verify/recover, switch to video, stop (returning known completed
+segment paths), and disconnect. `recording_status` is True (active), False
+(stopped), or None (unknown). `is_recording` remains true for an unresolved app
+session; only `stop_verified is True` authorizes completion.
+`create_recording_backend` currently creates an `OBSRecordingBackend` adapter
+around `OBSController`. A native recorder can
 implement the same contract and handle its own permissions, audio/video devices,
 recovery and output files. The adapter maps audio/video modes to OBS scene names.
-OBS start verifies output status and retries transient startup failures against
-the same OBS instance. Service startup leaves OBS running; recording stop can
+OBS start requires a positively idle output and an accepted StartRecord
+response; existing external recordings and ambiguous start responses are not
+adopted. Recovery starts a new segment only from a confirmed stopped output.
+A connection gap or a changed path/reset duration invalidates active ownership;
+OBS has no stable recording ID, so an ambiguous active output is left untouched.
+An external stop/restart between observations can be undetectable without a
+changed path or decreased duration. Paths never reported by OBS are left on
+disk for manual recovery. Switching to video changes scenes without splitting
+the recording output. Service startup leaves OBS running; recording stop can
 optionally exit it after verifying that recording has stopped. If a stop cannot
 be verified, OBS segment tracking and source selection are retained, pending
 connection changes stay deferred, and the daemon leaves media untouched without
 renaming, deleting, or queuing it for transcription. The user is notified so
-capture state can be checked before recovery.
+capture state can be checked before an explicit stop retry. The pending session
+and discard/transcribe action are retained, new starts are blocked, and automatic
+stop retries are disabled. After a connection gap, stop OBS directly before
+retrying the app's Stop action to finalize known segments.
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
 
 Settings updates validate values, atomically change the existing `.env`, and
 replace the running detector, transcription, delivery, and hotkey configuration.
-The OBS adapter defers connection changes until an active recording stops.
+The OBS adapter stores connection changes on the UI thread. The lifecycle
+worker applies them after a verified stop or during idle preparation/start once
+the old output reports stopped; no socket probe runs in Settings on the UI thread.
 LaunchAgent stdout/stderr paths and OBS's recording output path are managed by
 their respective applications.
 
@@ -71,8 +86,17 @@ and optionally `NeuralDiarizer` (pyannote, with a rough acoustic fallback).
 Speaker labels are anonymous. `WebexClient` sends transcripts to a configured
 room or personal recipient, with room ID taking precedence. Long transcripts
 are attached as text files. My Agent forwarding is a manual user action.
-`MediaCleaner` prunes old media after each job using the configured retention
-period (14 days by default).
+`MediaCleaner` only enrolls media after successful transcription of the complete
+session and successful configured delivery (or disabled delivery). Queueing and
+processing revoke eligibility; failures, active segments and recovery segments
+stay protected. Partial transcripts can remain locally, but do not establish
+processing success or trigger delivery. Eligibility is persisted atomically per
+file in `.webex-obs-retention/`, with device, inode, size, modification and change
+times; changed identities, symlinks, files outside the configured directory,
+legacy files and unrelated media are excluded. Cleanup at startup and after
+success uses media modification time and `RETENTION_DAYS` (default 14). Zero
+means delete eligible media immediately after success. Failed sessions are
+retained for manual recovery, including across daemon restarts.
 
 Package initialization disables Hugging Face, pyannote, and OpenTelemetry
 telemetry before dependency imports. Neural diarization uses pyannote.audio 4's

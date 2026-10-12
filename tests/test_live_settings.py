@@ -78,9 +78,10 @@ def test_disabled_delivery_keeps_transcript_local():
 
 def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thread():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon._manual_start_event = threading.Event()
     daemon._manual_start_mode = "audio"
+    daemon._active_session = None
     daemon._request_manual_start("video")
     assert daemon._manual_start_event.is_set()
     assert daemon._manual_start_mode == "video"
@@ -90,7 +91,7 @@ def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thr
 def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_prompt():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.recorder.initialize.return_value = True
     daemon.recorder.stop_recording.return_value = []
     daemon.monitor = Mock(is_in_meeting=False, current_call_title=None,
@@ -126,7 +127,7 @@ def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_promp
 
 def test_audio_hotkey_requests_manual_audio_without_window_probe_or_dialog():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.monitor = Mock(current_call_title="Cached title", default_call_title="Webex Session")
     daemon._active_session = Mock(display_title="Recording title")
     daemon.ui = Mock()
@@ -146,7 +147,7 @@ def test_audio_hotkey_requests_manual_audio_without_window_probe_or_dialog():
 def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_path, mode, response, stop_verified):
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
-    daemon.recorder = Mock(is_recording=False, is_video_recording=mode == "video", is_screen_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True, is_video_recording=mode == "video", is_screen_recording=False)
     daemon.monitor = Mock(is_in_meeting=False, current_call_title=None, default_call_title="Webex Session")
     daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
     daemon.monitor.is_call_active.return_value = True
@@ -176,6 +177,7 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
         return response
     def stop():
         daemon.recorder.is_recording = not stop_verified
+        daemon.recorder.stop_verified = stop_verified
         return [str(file) for file in files]
     daemon.recorder.start_recording.side_effect = start
     daemon.ui.show_manual_consent_prompt.side_effect = consent
@@ -183,7 +185,8 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
 
     with patch.object(daemon, "_new_recording_session", return_value=session), \
          patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
-         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
+         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
+         patch("webex_obs.daemon.time.sleep", side_effect=KeyboardInterrupt):
         daemon.start()
     daemon.ui.show_manual_consent_prompt.assert_called_once_with(meeting_title="Manual meeting")
     daemon.ui.show_startup_prompt.assert_not_called()
@@ -243,7 +246,7 @@ def test_confirmed_discard_is_queued_for_recording_worker():
 
 def test_idle_video_hotkey_uses_manual_lifecycle_including_consent_notice():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     with patch.object(daemon, "_request_manual_start") as request:
         daemon._switch_to_video_mode()
     request.assert_called_once_with("video")
@@ -281,7 +284,7 @@ def test_confirmed_discard_stops_and_deletes_without_post_processing():
         recording.write_bytes(b"test recording")
         daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
         daemon.config = Config(_env_file=None, enable_diarization=False)
-        daemon.recorder = Mock(is_recording=False, is_video_recording=False)
+        daemon.recorder = Mock(is_recording=False, stop_verified=True, is_video_recording=False)
         daemon.recorder.initialize.return_value = True
         daemon.recorder.start_recording.side_effect = lambda **kwargs: True
 
@@ -409,7 +412,7 @@ def test_entire_screen_choice_disables_automatic_window_following():
 def test_completed_recording_is_queued_before_lifecycle_rearms():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.recorder.initialize.return_value = True
     daemon.recorder.stop_recording.return_value = ["recording.mkv"]
     daemon.monitor = Mock(
@@ -457,7 +460,7 @@ def test_completed_recording_is_queued_before_lifecycle_rearms():
 def test_post_processing_job_uses_snapshotted_workers_and_settings():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.ui = Mock()
-    daemon.deliver_transcript = Mock()
+    daemon.deliver_transcript = Mock(return_value=True)
     transcriber = Mock()
     transcript = Path("transcript.txt")
     transcriber.transcribe_files.return_value = transcript
@@ -494,7 +497,7 @@ def test_post_processing_job_uses_snapshotted_workers_and_settings():
 def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_verified):
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
     daemon.config = Config(_env_file=None, enable_diarization=False)
-    daemon.recorder = Mock(is_recording=False)
+    daemon.recorder = Mock(is_recording=False, stop_verified=True)
     daemon.monitor = Mock(is_in_meeting=True, current_call_title="Synthetic call", default_call_title="Webex Session")
     daemon.monitor.should_suppress_automatic_prompt.return_value = False
     daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
@@ -509,13 +512,149 @@ def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_
 
     def stop():
         daemon.recorder.is_recording = not stop_verified
+        daemon.recorder.stop_verified = stop_verified
         return [str(file) for file in files]
 
     daemon.recorder.stop_recording.side_effect = stop
     with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
-         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
+         patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
+         patch("webex_obs.daemon.time.sleep", side_effect=KeyboardInterrupt):
         daemon.start()
     assert all(file.exists() != stop_verified for file in files)
     daemon.recorder.stop_recording.assert_called_once()
     daemon._post_processing_worker.submit.assert_not_called()
     daemon.monitor.suppress_current_call_prompt.assert_called_once()
+    assert (daemon._active_session is None) == stop_verified
+    assert daemon._stop_pending == (not stop_verified)
+    if not stop_verified:
+        assert daemon._discard_requested
+        assert daemon.monitor.wait_for_state_change.call_count == 1
+
+
+@pytest.mark.parametrize("discard", [False, True])
+@pytest.mark.parametrize("status", [True, False, None])
+def test_unverified_completion_retains_session_and_action_until_explicit_verified_retry(tmp_path, discard, status):
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, recordings_dir=tmp_path, enable_diarization=False)
+    media = tmp_path / "owned.mkv"
+    media.write_bytes(b"synthetic")
+    session = Mock(display_title="Synthetic meeting", filename_stem="synthetic")
+    session.rename_recordings.return_value = [str(media)]
+    daemon._active_session = session
+    daemon._discard_requested = discard
+    daemon._manual_stop_event = threading.Event()
+    daemon._manual_start_event = threading.Event()
+    daemon._settings_lock = threading.Lock()
+    # A stale inactive flag and even a returned path cannot authorize completion.
+    daemon.recorder = Mock(is_recording=False, recording_status=status, stop_verified=False)
+    daemon.recorder.stop_recording.return_value = [str(media)]
+    daemon.monitor = Mock(current_call_title="Synthetic meeting")
+    daemon.ui, daemon.transcriber, daemon.webex, daemon._post_processing_worker = Mock(), Mock(), Mock(), Mock()
+
+    assert not daemon._finish_recording()
+    assert media.exists()
+    assert daemon._active_session is session
+    assert daemon._discard_requested is discard
+    assert daemon._stop_pending
+    session.rename_recordings.assert_not_called()
+    daemon._post_processing_worker.submit.assert_not_called()
+    daemon._request_manual_start("audio")
+    assert not daemon._manual_start_event.is_set()
+
+    daemon.recorder.stop_verified = True
+    assert daemon._finish_recording()
+    assert not daemon._stop_pending
+    assert daemon._active_session is None
+    if discard:
+        assert not media.exists()
+        session.rename_recordings.assert_not_called()
+        daemon._post_processing_worker.submit.assert_not_called()
+    else:
+        assert media.exists()
+        daemon._post_processing_worker.submit.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["no-transcript", "transcription-exception", "delivery-false", "delivery-exception"])
+def test_failed_processing_never_becomes_retention_eligible_even_after_other_jobs(tmp_path, failure):
+    from webex_obs.cleaner import MediaCleaner
+
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.ui = Mock()
+    daemon.deliver_transcript = Mock(return_value=True)
+    failed_media = tmp_path / "failed.mkv"
+    failed_media.write_bytes(b"synthetic")
+    transcriber = Mock()
+    transcriber.transcribe_files.return_value = tmp_path / "synthetic.txt"
+    if failure == "no-transcript":
+        transcriber.transcribe_files.return_value = None
+    elif failure == "transcription-exception":
+        transcriber.transcribe_files.side_effect = RuntimeError("synthetic processing failure")
+    elif failure == "delivery-false":
+        daemon.deliver_transcript.return_value = False
+    else:
+        daemon.deliver_transcript.side_effect = RuntimeError("synthetic delivery failure")
+    job = PostProcessingJob(
+        media_files=(str(failed_media),), meeting_title="Synthetic failed job", output_stem="synthetic",
+        transcriber=transcriber, webex=Mock(), delivery_enabled=True,
+        recordings_dir=tmp_path, retention_days=0,
+    )
+    if failure.endswith("exception"):
+        with pytest.raises(RuntimeError):
+            daemon._process_post_processing_job(job)
+    else:
+        daemon._process_post_processing_job(job)
+    assert failed_media.exists()
+    assert not MediaCleaner._marker(failed_media).exists()
+
+    succeeded = tmp_path / "succeeded.mkv"
+    succeeded.write_bytes(b"synthetic")
+    successful_job = PostProcessingJob(
+        media_files=(str(succeeded),), meeting_title="Synthetic successful job", output_stem="success",
+        transcriber=Mock(), webex=Mock(), delivery_enabled=False,
+        recordings_dir=tmp_path, retention_days=0,
+    )
+    daemon.deliver_transcript = Mock(return_value=True)
+    daemon._process_post_processing_job(successful_job)
+    assert not succeeded.exists()
+    assert failed_media.exists()
+    MediaCleaner.prune_old_recordings(tmp_path, 0)  # also safe on subsequent startup
+    assert failed_media.exists()
+
+
+def test_pending_stop_resumes_same_session_only_on_explicit_retry(tmp_path):
+    daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon.config = Config(_env_file=None, recordings_dir=tmp_path, enable_diarization=False)
+    daemon.recorder = Mock(is_recording=True, stop_verified=False)
+    daemon.recorder.stop_recording.return_value = []
+    daemon.monitor = Mock(is_in_meeting=False, current_call_title="Synthetic", default_call_title="Webex Session")
+    daemon.monitor.wait_for_state_change.side_effect = KeyboardInterrupt
+    daemon.hotkeys, daemon.ui, daemon._post_processing_worker = Mock(), Mock(), Mock()
+    daemon._manual_stop_event, daemon._manual_start_event = threading.Event(), threading.Event()
+    daemon._settings_lock = threading.Lock()
+    daemon._active_session = Mock(display_title="Synthetic")
+    session = daemon._active_session
+    daemon._discard_requested = True
+    daemon._stop_pending = True
+    media = tmp_path / "owned.mkv"
+    media.write_bytes(b"synthetic")
+
+    def retry(_seconds):
+        assert daemon._active_session is session
+        daemon.recorder.stop_recording.assert_not_called()
+        daemon.recorder.start_recording.assert_not_called()
+        daemon.monitor.wait_for_state_change.assert_not_called()
+        assert media.exists()
+        daemon.recorder.stop_verified = True
+        daemon.recorder.stop_recording.return_value = [str(media)]
+        daemon._manual_stop_event.set()
+
+    with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
+         patch("webex_obs.daemon.shutil.which", return_value="/synthetic/ffmpeg"), \
+         patch("webex_obs.daemon.time.sleep", side_effect=retry):
+        daemon.start()
+    daemon.recorder.stop_recording.assert_called_once()
+    daemon.recorder.start_recording.assert_not_called()
+    daemon._post_processing_worker.submit.assert_not_called()
+    assert not media.exists()
+    assert daemon._active_session is None
+    assert not daemon._stop_pending

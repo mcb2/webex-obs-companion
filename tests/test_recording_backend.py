@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 from webex_obs.config import Config
 from webex_obs.recording_backend import create_recording_backend
 
@@ -75,6 +77,7 @@ class BackendTests(unittest.TestCase):
         controller = Mock(address="old", port=4455, password="old", is_recording=True)
         def stop():
             controller.is_recording = False
+            controller.stop_verified = True
             return ["recording.mkv"]
         controller.stop_recording.side_effect = stop
         backend = OBSRecordingBackend(controller)
@@ -107,6 +110,118 @@ def test_unverified_stop_keeps_pending_connection_until_later_verified_stop():
     assert controller.address == "old"
 
     controller.is_recording = False
+    controller.stop_verified = True
     assert backend.stop_recording() == ["synthetic.mkv"]
     controller.disconnect.assert_called_once()
     assert controller.address == "new"
+
+
+def test_unknown_status_and_stale_inactive_flag_cannot_replace_connection():
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(address="old", port=4455, password="synthetic", is_recording=False, stop_verified=False)
+    controller._recording_active_status.return_value = None
+    controller.stop_recording.return_value = []
+    backend = OBSRecordingBackend(controller)
+    backend.configure(Config(_env_file=None, obs_ws_host="new"))
+    backend.stop_recording()
+    assert backend._pending_connection is not None
+    assert controller.address == "old"
+    controller.disconnect.assert_not_called()
+
+
+def test_stop_status_is_exposed_separately_from_pending_session():
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(is_recording=True, recording_status=None, stop_verified=False)
+    backend = OBSRecordingBackend(controller)
+    assert backend.is_recording
+    assert backend.recording_status is None
+    assert backend.stop_verified is False
+
+
+def test_configure_defers_network_work_until_verified_idle_preparation():
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(address="old", port=4455, password="synthetic", is_recording=False)
+    controller.obs_is_running.return_value = True
+    controller.check_connection.return_value = True
+    controller._recording_active_status.return_value = False
+    backend = OBSRecordingBackend(controller)
+    backend.configure(Config(_env_file=None, obs_ws_host="new"))
+    controller._recording_active_status.assert_not_called()
+    controller.disconnect.assert_not_called()
+    assert backend.prepare_recording()
+    controller.disconnect.assert_called_once()
+    assert controller.address == "new"
+    assert backend._pending_connection is None
+
+
+def test_external_recording_blocks_pending_connection_during_preparation():
+    from unittest.mock import Mock
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    controller = Mock(address="old", port=4455, password="synthetic", is_recording=False)
+    controller.obs_is_running.return_value = True
+    controller.check_connection.return_value = True
+    controller._recording_active_status.return_value = True
+    backend = OBSRecordingBackend(controller)
+    backend.configure(Config(_env_file=None, obs_ws_host="new"))
+    assert backend.prepare_recording()
+    controller.disconnect.assert_not_called()
+    assert controller.address == "old"
+    assert backend._pending_connection is not None
+
+
+@pytest.mark.parametrize("failure", ["connection-loss", "rejected-stop", "unknown-status"])
+def test_real_backend_retains_old_connection_and_segments_after_failed_stop(tmp_path, failure):
+    from unittest.mock import Mock
+    from obswebsocket import requests
+    from webex_obs.obs_controller import OBSController
+    from webex_obs.recording_backend import OBSRecordingBackend
+
+    def response(**data):
+        res = requests.GetRecordStatus()
+        res.input(data, True)
+        return res
+
+    path = tmp_path / "owned.mkv"
+    path.write_bytes(b"synthetic")
+    controller = OBSController(address="old", exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.recorded_files = [str(path)]
+    controller.selected_window_id = 123
+    controller.ws = Mock()
+    if failure == "rejected-stop":
+        rejected = response()
+        rejected.status = False
+        controller.ws.call.side_effect = lambda request: (rejected if request.name == "StopRecord"
+                                                        else response(outputActive=True))
+    else:
+        controller.ws.call.return_value = response(outputActive=None)
+    backend = OBSRecordingBackend(controller)
+    with patch.object(controller, "check_connection", return_value=failure != "connection-loss"), \
+         patch("webex_obs.obs_controller.time.sleep"), \
+         patch.object(controller, "disconnect") as disconnect:
+        backend.configure(Config(_env_file=None, obs_ws_host="new", exit_obs_on_recording_stop=False))
+        assert backend.stop_recording() == []
+        backend.configure(Config(_env_file=None, obs_ws_host="newer", exit_obs_on_recording_stop=False))
+        assert not backend.stop_verified
+        assert backend.is_recording
+        assert controller.address == "old"
+        assert controller.recorded_files == [str(path)]
+        assert controller.selected_window_id == 123
+        disconnect.assert_not_called()
+
+        controller.ws.call.side_effect = None
+        controller.ws.call.return_value = response(outputActive=False)
+        with patch.object(controller, "check_connection", return_value=True):
+            assert backend.stop_recording() == [str(path)]
+        disconnect.assert_called_once()
+        assert controller.address == "newer"
+        assert backend.stop_verified
+        assert controller.recorded_files == []
+        assert path.exists()

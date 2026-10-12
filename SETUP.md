@@ -215,3 +215,24 @@ Speaker labels are anonymous. If neural diarization cannot load or run, the app
 uses a rough two-group acoustic fallback; it does not identify participant names.
 Completed sessions are transcribed and delivered by a background queue so call
 monitoring can continue while processing the previous meeting.
+
+### Safe completion and retention
+
+OBS must explicitly report `outputActive=false` before session completion or
+discard. If stop fails or status is unknown, files and session state remain
+intact, connection changes stay pending, and new app recordings are blocked.
+Check OBS and retry the pending Stop action from the menu. The original discard
+choice is retained. After a lost connection, stop the ambiguous recording in
+OBS first; the app cannot safely identify an active output after reconnecting.
+Independently started OBS recordings are left untouched.
+
+`RETENTION_DAYS=0` deletes only eligible media immediately after successful
+transcription and any enabled delivery. Positive values retain eligible media
+until its modification time is that many days old (default 14). Cleanup uses
+persisted exact file identities in `.webex-obs-retention/`, never a media-folder
+scan or matching filename pattern. Active, queued, failed, recoverable, unrelated,
+and legacy media without success records stays on disk. Missing segments or
+partial transcription preserve all session media for manual recovery. Changing
+or deleting the retention index disables cleanup of those files; it does not
+cause legacy files to be enrolled. Keep OBS's output directory aligned with
+`RECORDINGS_DIR`; files outside it are not cleaned automatically.

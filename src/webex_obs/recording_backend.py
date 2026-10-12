@@ -1,7 +1,9 @@
 """Recorder contract used by the meeting lifecycle.
 
 Future native backends should return completed media paths from stop_recording,
-including all segments after a recovery or an audio/video mode change.
+including all known segments after a recovery. Return no completed paths until
+stop_verified is True. recording_status is True (active), False (stopped), or
+None (unknown); is_recording also stays True for unresolved owned sessions.
 """
 
 import threading
@@ -19,6 +21,11 @@ RecordingMode = Literal["audio", "video"]
 class RecordingBackend(Protocol):
     @property
     def is_recording(self) -> bool: ...
+
+    @property
+    def recording_status(self) -> bool | None: ...
+    @property
+    def stop_verified(self) -> bool: ...
 
     def connect(self) -> bool: ...
     def initialize(self) -> bool: ...
@@ -64,11 +71,9 @@ class OBSRecordingBackend:
         self.controller.exit_on_stop = config.exit_obs_on_recording_stop
         self.idle_restart_minutes = config.obs_idle_restart_minutes
         connection = (config.obs_address, config.obs_port, config.obs_password)
-        if self.controller.is_recording:
-            self._pending_connection = connection
-        else:
-            self._pending_connection = connection
-            self._apply_connection()
+        # Settings runs on the UI thread. Verification and reconnection belong
+        # to the lifecycle worker, even when the last cached state was idle.
+        self._pending_connection = connection
 
     def _apply_connection(self) -> None:
         if self._pending_connection is None:
@@ -82,6 +87,14 @@ class OBSRecordingBackend:
     @property
     def is_recording(self) -> bool:
         return self.controller.is_recording
+
+    @property
+    def recording_status(self) -> bool | None:
+        return self.controller.recording_status
+
+    @property
+    def stop_verified(self) -> bool:
+        return self.controller.stop_verified
 
     @property
     def is_video_recording(self) -> bool:
@@ -110,6 +123,11 @@ class OBSRecordingBackend:
         with self._lifecycle_lock:
             was_running = self.controller.obs_is_running()
             result = self.controller.check_connection()
+            if (result and self._pending_connection is not None
+                    and not self.controller.is_recording
+                    and self.controller._recording_active_status() is False):
+                self._apply_connection()
+                result = self.controller.check_connection()
             if result and not was_running:
                 self._maintenance.last_refresh = time.monotonic()
             return result
@@ -132,6 +150,9 @@ class OBSRecordingBackend:
             raise ValueError(f"Unknown recording mode: {mode}")
         with self._lifecycle_lock:
             self.mark_call_evidence()
+            if (self._pending_connection is not None and not self.controller.is_recording
+                    and self.controller._recording_active_status() is False):
+                self._apply_connection()
             return self.controller.start_recording(
                 scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
             )
@@ -141,10 +162,12 @@ class OBSRecordingBackend:
         return self.start_recording(mode)
 
     def ensure_recording(self) -> bool:
-        return self.controller.ensure_recording()
+        with self._lifecycle_lock:
+            return self.controller.ensure_recording()
 
     def switch_to_video_mode(self) -> None:
-        self.controller.switch_to_video_mode()
+        with self._lifecycle_lock:
+            self.controller.switch_to_video_mode()
 
     def list_webex_windows(self) -> list[WebexWindow]:
         return self.controller.list_webex_windows()
@@ -165,7 +188,7 @@ class OBSRecordingBackend:
         with self._lifecycle_lock:
             files = self.controller.stop_recording()
             self.mark_call_evidence()
-            if not self.controller.is_recording:
+            if self.controller.stop_verified is True:
                 self._apply_connection()
             return files
 
