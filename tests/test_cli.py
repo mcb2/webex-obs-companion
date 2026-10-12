@@ -171,3 +171,24 @@ def test_runtime_and_locked_project_versions_agree():
     lock = tomllib.loads((root / "uv.lock").read_text())
     locked = next(package for package in lock["package"] if package["name"] == metadata["project"]["name"])
     assert __version__ == metadata["project"]["version"] == locked["version"]
+
+
+@pytest.mark.parametrize("pid,state,expected", [
+    ("-", "running", "not running"), ("123", "running", "healthy (lifecycle responding)"),
+    ("123", "failed", "unhealthy (failed)"), ("123", "missing", "unhealthy"),
+])
+def test_status_separates_loaded_job_from_application_health(tmp_path, monkeypatch, pid, state, expected):
+    from webex_obs.runtime_state import RuntimeState
+    monkeypatch.setattr("webex_obs.config.Config", lambda: Mock(log_dir=tmp_path))
+    monkeypatch.setattr("webex_obs.runtime_state.os.getpid", lambda: 123)
+    monkeypatch.setattr("webex_obs.runtime_state.os.kill", Mock())
+    if state != "missing":
+        RuntimeState(tmp_path).report(state, 3)
+    monkeypatch.setattr(cli.subprocess, "run", Mock(return_value=Mock(
+        returncode=0, stdout=f"PID Status Label\n{pid}\t1\tcom.cisco.webex-obs\n")))
+    output = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=output, width=180, color_system=None))
+    cli.status()
+    assert "LaunchAgent: loaded" in output.getvalue()
+    assert expected in output.getvalue()
+    assert "ACTIVE" not in output.getvalue()

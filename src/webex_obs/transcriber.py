@@ -35,6 +35,7 @@ except Exception:
 import mlx_whisper
 from .diarizer import NeuralDiarizer
 from .session import unique_path
+from .durable_state import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class Transcriber:
         media_files: list[str],
         meeting_title: str = "Webex Session",
         output_stem: str | None = None,
+        output_path: Path | None = None,
     ) -> Path | None:
         if not media_files:
             logger.warning("No media files provided for transcription.")
@@ -93,7 +95,7 @@ class Transcriber:
         all_text_segments = []
         incomplete = False
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        out_file = unique_path(
+        out_file = output_path or unique_path(
             self.transcripts_dir / f"{output_stem or ('meeting_' + timestamp)}.txt"
         )
 
@@ -172,8 +174,7 @@ class Transcriber:
             return None
 
         full_transcript = "\n\n".join(all_text_segments)
-        with open(out_file, "w", encoding="utf-8") as f:
-            f.write(full_transcript)
+        atomic_write(out_file, full_transcript)
 
         logger.info(f"Transcript saved to: {out_file}")
         # Keep a partial transcript for recovery, but never mark the session

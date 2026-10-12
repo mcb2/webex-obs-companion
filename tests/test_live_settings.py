@@ -19,6 +19,7 @@ def speech_components(speech_modules, monkeypatch):
 
 def _daemon():
     daemon = WebexOBSDaemon.__new__(WebexOBSDaemon)
+    daemon._initialize_lifecycle_state()
     daemon._recording_request_lock = threading.RLock()
     daemon._video_switch_generation = None
     daemon._window_session_generation = 0
@@ -124,7 +125,7 @@ def test_manual_video_start_enters_worker_lifecycle_without_automatic_call_promp
 
     with patch.object(daemon, "_new_recording_session", return_value=session), \
          patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
-         patch("webex_obs.daemon.time.sleep"), \
+         patch.object(daemon._shutdown_event, "wait", return_value=False), \
          patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"):
         daemon.start()
 
@@ -196,7 +197,7 @@ def test_manual_consent_runs_after_start_and_cancel_discards_all_segments(tmp_pa
     with patch.object(daemon, "_new_recording_session", return_value=session), \
          patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
          patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
-         patch("webex_obs.daemon.time.sleep", side_effect=KeyboardInterrupt):
+         patch.object(daemon._shutdown_event, "wait", side_effect=KeyboardInterrupt):
         daemon.start()
     daemon.ui.show_manual_consent_prompt.assert_called_once_with(meeting_title="Manual meeting")
     daemon.ui.show_startup_prompt.assert_not_called()
@@ -324,7 +325,7 @@ def test_confirmed_discard_stops_and_deletes_without_post_processing():
         with patch.object(daemon, "_new_recording_session", return_value=Mock()), \
              patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
              patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
-             patch("webex_obs.daemon.time.sleep", side_effect=request_discard):
+             patch.object(daemon._shutdown_event, "wait", side_effect=request_discard):
             daemon.start()
 
         assert not recording.exists()
@@ -531,7 +532,7 @@ def test_automatic_cancel_preserves_files_until_stop_is_verified(tmp_path, stop_
     daemon.recorder.stop_recording.side_effect = stop
     with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
          patch("webex_obs.daemon.shutil.which", return_value="/usr/bin/ffmpeg"), \
-         patch("webex_obs.daemon.time.sleep", side_effect=KeyboardInterrupt):
+         patch.object(daemon._shutdown_event, "wait", side_effect=KeyboardInterrupt):
         daemon.start()
     assert all(file.exists() != stop_verified for file in files)
     daemon.recorder.stop_recording.assert_called_once()
@@ -659,11 +660,12 @@ def test_pending_stop_resumes_same_session_only_on_explicit_retry(tmp_path):
         assert media.exists()
         daemon.recorder.stop_verified = True
         daemon.recorder.stop_recording.return_value = [str(media)]
+        daemon.recorder.stop_recording.side_effect = lambda: setattr(daemon.recorder, "is_recording", False) or [str(media)]
         daemon._manual_stop_event.set()
 
     with patch("webex_obs.daemon.MediaCleaner.prune_old_recordings"), \
          patch("webex_obs.daemon.shutil.which", return_value="/synthetic/ffmpeg"), \
-         patch("webex_obs.daemon.time.sleep", side_effect=retry):
+         patch.object(daemon._shutdown_event, "wait", side_effect=retry):
         daemon.start()
     daemon.recorder.stop_recording.assert_called_once()
     daemon.recorder.start_recording.assert_not_called()

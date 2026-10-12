@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -80,3 +80,38 @@ def test_partial_session_transcription_is_not_reported_as_processing_success(tmp
     partial = list((tmp_path / "transcripts").glob("*.txt"))
     assert len(partial) == 1
     assert "Synthetic first segment" in partial[0].read_text()
+
+
+@pytest.mark.parametrize("stage", ["write", "replace"])
+def test_interrupted_transcript_write_preserves_committed_output(tmp_path, speech_modules, monkeypatch, stage):
+    media = tmp_path / "synthetic.mkv"
+    media.write_bytes(b"synthetic media")
+    target = tmp_path / "transcript.txt"
+    target.write_text("Previously committed synthetic transcript")
+    transcriber = Transcriber("test-model", tmp_path, enable_diarization=False)
+    monkeypatch.setattr("webex_obs.transcriber.shutil.which", lambda _: "/synthetic/ffmpeg")
+    if stage == "replace":
+        monkeypatch.setattr("webex_obs.durable_state.os.replace",
+                            Mock(side_effect=OSError("synthetic interruption")))
+    else:
+        import os
+        original = os.fdopen
+
+        def fail_write(fd, *args, **kwargs):
+            stream = original(fd, *args, **kwargs)
+            class Interrupted:
+                def __enter__(self):
+                    return self
+                def write(self, text):
+                    stream.write(text[:5])
+                    raise OSError("synthetic interrupted write")
+                def __exit__(self, *args):
+                    stream.close()
+            return Interrupted()
+
+        monkeypatch.setattr("webex_obs.durable_state.os.fdopen", fail_write)
+    with pytest.raises(OSError):
+        transcriber.transcribe_files([str(media)], output_path=target)
+    assert target.read_text() == "Previously committed synthetic transcript"
+    assert media.exists()
+    assert not list(tmp_path.glob(".webex-obs-*"))

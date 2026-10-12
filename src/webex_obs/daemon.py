@@ -2,9 +2,9 @@ import logging
 import os
 import queue
 import shutil
+import signal
 import sys
 import threading
-import time
 from pathlib import Path
 
 # Ensure Homebrew and standard binary paths are in PATH
@@ -18,6 +18,8 @@ os.environ["PATH"] = current_path
 from .cleaner import MediaCleaner
 from .config import Config, settings
 from .hotkey_listener import HotkeyListener, display_hotkey
+from .job_store import JobStore
+from .runtime_state import ApplicationStopping, RuntimeState
 from .post_processing import PostProcessingJob, PostProcessingWorker
 from .recording_backend import RecordingBackend, create_recording_backend
 from .process_monitor import ProcessMonitor
@@ -74,9 +76,107 @@ class WebexOBSDaemon:
         self._window_selection_queue: queue.Queue[tuple[int, int | str]] = queue.Queue()
         self._window_prompt_pending = threading.Event()
         self._window_session_generation = 0
+        self._initialize_lifecycle_state()
+        self._job_store = JobStore(self.config.log_dir / "jobs")
+        self._runtime = RuntimeState(self.config.log_dir)
         self._post_processing_worker = PostProcessingWorker(
-            self._process_post_processing_job
+            self._process_post_processing_job, on_fatal=self._worker_failed
         )
+
+    def _initialize_lifecycle_state(self) -> None:
+        self._shutdown_event = threading.Event()
+        self._stopped_event = threading.Event()
+        self._lifecycle_thread: threading.Thread | None = None
+        self.lifecycle_state = "starting"
+        self.failure: str | None = None
+        self._job_store = None
+        self._runtime = None
+
+    def request_shutdown(self) -> None:
+        """Nonblocking; the lifecycle worker alone finalizes capture."""
+        with self._recording_request_lock:
+            self._shutdown_event.set()
+            self._manual_start_event.set()  # Wake idle detection, never start capture.
+            self._manual_stop_event.set()
+            self._video_switch_generation = None
+
+    def _worker_failed(self) -> None:
+        self.failure = "Post-processing worker failed; restart required."
+        self.request_shutdown()
+
+    def _pulse(self) -> None:
+        if self._runtime is not None:
+            self._runtime.report(self.lifecycle_state, self.config.poll_interval)
+
+    def start_background(self) -> None:
+        if self._lifecycle_thread is not None:
+            return
+        self._lifecycle_thread = threading.Thread(target=self.start, name="meeting-lifecycle", daemon=True)
+        self._lifecycle_thread.start()
+
+    def shutdown(self, timeout: float = 10.0) -> bool:
+        """Wait at most timeout seconds; a stuck backend is never stopped concurrently."""
+        self.request_shutdown()
+        return self._stopped_event.wait(timeout)
+
+    def start(self) -> None:
+        """Supervise startup, lifecycle, and cleanup including partial startup failures."""
+        acquired = False
+        try:
+            if self._runtime is not None:
+                self._runtime.acquire()
+                acquired = True
+            self._pulse()
+            self._run_lifecycle()
+            if not self._shutdown_event.is_set():
+                raise RuntimeError("Lifecycle worker returned unexpectedly")
+        except (KeyboardInterrupt, ApplicationStopping):
+            self.request_shutdown()
+        except BaseException as exc:
+            self.failure = f"Lifecycle failed ({type(exc).__name__}); check application logs."
+            logger.exception("Lifecycle startup/worker failed; shutting down.")
+            self.request_shutdown()
+        finally:
+            self.lifecycle_state = "stopping"
+            if acquired or self._runtime is None:
+                try:
+                    self._pulse()
+                except Exception:
+                    self.failure = "Could not save application health; check logs."
+                    logger.exception(self.failure)
+                try:
+                    # A previously ambiguous stop needs explicit user resolution.
+                    if self.recorder.is_recording or self._active_session is not None:
+                        if self._stop_pending:
+                            self.failure = "Capture stop unresolved; check OBS. Media retained."
+                        else:
+                            self._discard_requested = False
+                            if not self._finish_recording():
+                                self.failure = "Capture stop unresolved; check OBS. Media retained."
+                except BaseException:
+                    self.failure = "Capture finalization failed; check OBS. Media retained."
+                    logger.exception(self.failure)
+                for cleanup in (
+                    lambda: self._post_processing_worker.shutdown(wait=True, timeout=2.0, drain=False),
+                    self.hotkeys.stop, self.recorder.disconnect,
+                ):
+                    try:
+                        cleanup()
+                    except BaseException:
+                        self.failure = "Shutdown cleanup failed; check OBS and application logs."
+                        logger.exception(self.failure)
+            self.lifecycle_state = "failed" if self.failure else "stopped"
+            try:
+                if acquired:
+                    self._pulse()
+            except Exception:
+                self.failure = "Could not save final application health; check logs."
+                self.lifecycle_state = "failed"
+                logger.exception(self.failure)
+            finally:
+                self._stopped_event.set()
+            # Retain ownership until process exit, including any inference/network
+            # worker still running after the bounded wait.
 
     def apply_settings(self, config: Config) -> None:
         """Install validated settings without interrupting a recording."""
@@ -124,7 +224,7 @@ class WebexOBSDaemon:
         logger.info("Settings applied to running service.")
 
     def status(self) -> tuple[bool, str]:
-        title = self._active_session.display_title if self._active_session else "Ready for calls"
+        title = self.failure or (self._active_session.display_title if self._active_session else "Ready for calls")
         return self.recorder.is_recording, title
 
     def deliver_transcript(
@@ -158,23 +258,56 @@ class WebexOBSDaemon:
             "Webex OBS Companion",
             f"Transcribing and diarizing {job.meeting_title}...",
         )
-        transcript_file = job.transcriber.transcribe_files(
-            files,
-            meeting_title=job.meeting_title,
-            output_stem=job.output_stem,
-        )
+        record = job.journal.read(job.job_id) if job.journal else None
+        if record and record["state"] not in {"queued", "ready", "delivered"}:
+            return
+        if record and record["state"] != "delivered":
+            if identities != record["identities"]:
+                job.journal.update(job.job_id, state="failed")
+                logger.error("Job media changed or is missing; manual recovery required.")
+                return
+        if record and record["state"] == "queued":
+            job.journal.update(job.job_id, state="transcribing")
+        if record and record["state"] in {"ready", "delivered"}:
+            transcript_file = Path(record["transcript"])
+            if not transcript_file.is_file():
+                logger.error("Checkpoint transcript missing; manual recovery required.")
+                job.journal.update(job.job_id, state="failed")
+                return
+        else:
+            options = {"output_path": Path(record["transcript"])} if record else {}
+            transcript_file = job.transcriber.transcribe_files(
+                files, meeting_title=job.meeting_title, output_stem=job.output_stem, **options,
+            )
         if not transcript_file:
+            if job.journal:
+                job.journal.update(job.job_id, state="failed")
             logger.warning("Processing incomplete; media remains protected for recovery.")
             return
-        if not self.deliver_transcript(
-            transcript_file,
-            job.meeting_title,
-            delivery_enabled=job.delivery_enabled,
-            webex=job.webex,
-        ):
-            logger.warning("Delivery failed; media remains protected for recovery.")
+        if record and record["state"] == "queued":
+            job.journal.update(job.job_id, state="ready")
+        if self._shutdown_event.is_set():
             return
-        MediaCleaner.mark_processed(files, job.recordings_dir, identities=identities)
+        if not record or record["state"] != "delivered":
+            if job.journal:
+                # Write before the request. A crash after acceptance but before the
+                # next checkpoint must never cause an automatic duplicate send.
+                job.journal.update(job.job_id, state="delivering" if job.delivery_enabled else "ready")
+            if not self.deliver_transcript(
+                transcript_file, job.meeting_title,
+                delivery_enabled=job.delivery_enabled, webex=job.webex,
+            ):
+                if job.journal:
+                    state = "uncertain" if job.webex.last_delivery_outcome == "uncertain" else "failed"
+                    job.journal.update(job.job_id, state=state)
+                logger.warning("Delivery incomplete; media remains protected for recovery.")
+                return
+            if job.journal:
+                job.journal.update(job.job_id, state="delivered")
+        MediaCleaner.mark_processed(files, job.recordings_dir,
+                                   identities=record["identities"] if record else identities)
+        if job.journal:
+            job.journal.update(job.job_id, state="complete")
         MediaCleaner.prune_old_recordings(job.recordings_dir, job.retention_days)
 
     def _finish_recording(self) -> bool:
@@ -192,6 +325,8 @@ class WebexOBSDaemon:
                 "Could not verify recording stopped. Files kept. Check OBS, then retry Stop from the menu.",
             )
             return False
+        if self._shutdown_event.is_set():
+            self._discard_requested = False
         if self._discard_requested:
             failed = []
             for filename in recorded_files:
@@ -221,8 +356,12 @@ class WebexOBSDaemon:
                     delivery_enabled=self.config.webex_delivery_enabled,
                     recordings_dir=self.config.recordings_dir,
                     retention_days=self.config.retention_days,
+                    journal=self._job_store,
                 )
-            self._post_processing_worker.submit(job)
+            if self._shutdown_event.is_set() and job.journal is not None:
+                job.journal.create(job)
+            else:
+                self._post_processing_worker.submit(job)
             logger.info("Queued recording session for background post-processing: '%s'.", session.display_title)
         with self._recording_request_lock:
             self._discard_requested = False
@@ -322,7 +461,7 @@ class WebexOBSDaemon:
 
     def _request_manual_start(self, mode: str) -> None:
         with self._recording_request_lock:
-            if (self.recorder.is_recording or self._active_session is not None
+            if (self._shutdown_event.is_set() or self.recorder.is_recording or self._active_session is not None
                     or self._manual_start_event.is_set() or self._stop_pending):
                 return
             self._manual_start_mode = mode
@@ -400,20 +539,23 @@ class WebexOBSDaemon:
         elif not self._window_prompt_pending.is_set():
             self.request_window_selection(suggested_id)
 
-    def start(self):
+    def _run_lifecycle(self):
         logger.info("Starting Webex OBS Companion Daemon...")
 
         # Pre-flight check for ffmpeg
         if not shutil.which("ffmpeg"):
             logger.error("ffmpeg not found in PATH! Please install ffmpeg with: brew install ffmpeg")
 
+        if self._shutdown_event.is_set():
+            return
         self.hotkeys.start()
         self._post_processing_worker.start()
 
+        self.monitor.on_poll = self._pulse
         self.monitor.on_strong_evidence = self.recorder.prepare_recording
         self.monitor.on_possible_evidence = self.recorder.mark_call_evidence
         self.monitor.on_idle = lambda: self.recorder.maintain_idle(
-            lambda: self._manual_start_event.is_set() or self.monitor.is_in_meeting
+            lambda: self._shutdown_event.is_set() or self._manual_start_event.is_set() or self.monitor.is_in_meeting
         )
         # Startup always leaves OBS warm; exit-after-recording applies only to stop.
         if self.recorder.initialize():
@@ -421,19 +563,27 @@ class WebexOBSDaemon:
         else:
             logger.warning("Could not verify OBS Studio at startup; recording start will retry.")
 
+        if self._job_store is not None:
+            for job in self._job_store.recover(self.config):
+                self._post_processing_worker.submit(job)
         MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
+        self.lifecycle_state = "running"
+        self._pulse()
 
         try:
-            while True:
+            while not self._shutdown_event.is_set():
+                self._pulse()
                 if getattr(self, "_stop_pending", False):
                     # Explicit retries only: no repeated stop commands, new
                     # session, or automatic recovery while stop is unresolved.
                     if self._manual_stop_event.is_set():
                         self._finish_recording()
                     else:
-                        time.sleep(self.config.poll_interval)
+                        self._shutdown_event.wait(self.config.poll_interval)
                     continue
                 meeting_active = self.monitor.wait_for_state_change(self._manual_start_event)
+                if self._shutdown_event.is_set():
+                    break
                 if not meeting_active:
                     continue
                 with self._recording_request_lock:
@@ -455,19 +605,25 @@ class WebexOBSDaemon:
                     if manual:
                         self.monitor.is_in_meeting = True
 
+                if self._shutdown_event.is_set():
+                    break
                 started = self.recorder.start_recording(mode=mode)
                 if not started:
                     logger.warning("OBS did not start recording; retrying with the running OBS instance.")
                     for _ in range(2):
-                        if self.recorder.is_recording:
+                        if self.recorder.is_recording or self._shutdown_event.is_set():
                             break
-                        time.sleep(1.0)
+                        self._shutdown_event.wait(1.0)
+                        if self._shutdown_event.is_set():
+                            break
                         started = self.recorder.retry_start_recording(mode=mode)
                         if started:
                             break
-                    while (not manual and not self.recorder.is_recording
+                    while (not self._shutdown_event.is_set() and not manual and not self.recorder.is_recording
                            and self.monitor.is_call_active() and not started):
-                        time.sleep(5)
+                        self._shutdown_event.wait(5)
+                        if self._shutdown_event.is_set():
+                            break
                         started = self.recorder.start_recording(mode=mode)
                     if not started:
                         if self.recorder.is_recording:
@@ -486,6 +642,8 @@ class WebexOBSDaemon:
                         self._active_session = None
                         continue
 
+                if self._shutdown_event.is_set():
+                    break
                 session = self._active_session
                 if manual:
                     # Recording is already active. Do not delay this notice with
@@ -504,6 +662,8 @@ class WebexOBSDaemon:
                     choice = self.ui.show_startup_prompt(
                         meeting_title=session.display_title if session else self.monitor.default_call_title
                     )
+                if self._shutdown_event.is_set():
+                    break
                 if choice == "cancel" and not manual:
                     logger.info(
                         "User cancelled recording. Discarding and suppressing further automatic prompts for this call..."
@@ -540,10 +700,11 @@ class WebexOBSDaemon:
                     )
 
                 # Wait for meeting process termination OR manual stop hotkey
-                while self.monitor.is_in_meeting:
+                while self.monitor.is_in_meeting and not self._shutdown_event.is_set():
+                    self._pulse()
                     if self._manual_stop_event.is_set():
                         break
-                    time.sleep(self.config.poll_interval)
+                    self._shutdown_event.wait(self.config.poll_interval)
                     if self._manual_stop_event.is_set():
                         break
                     if not manual and self.monitor.has_call_ended():
@@ -556,6 +717,8 @@ class WebexOBSDaemon:
                         logger.error("OBS recovery failed; another recovery attempt will be made on the next poll.")
                     self._update_video_window()
 
+                if self._shutdown_event.is_set():
+                    break
                 if self._discard_requested:
                     if self.monitor.is_call_active():
                         self.monitor.suppress_current_call_prompt()
@@ -565,11 +728,7 @@ class WebexOBSDaemon:
                 self._finish_recording()
 
         except KeyboardInterrupt:
-            logger.info("Shutting down daemon...")
-        finally:
-            self._post_processing_worker.shutdown(wait=False)
-            self.hotkeys.stop()
-            self.recorder.disconnect()
+            self.request_shutdown()
 
 
 def main():
@@ -580,14 +739,29 @@ def main():
         force=True,
     )
     daemon = WebexOBSDaemon()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: daemon.request_shutdown())
     if sys.platform == "darwin":
         from .macos_ui import MacOSUI
 
         ui = MacOSUI(daemon)
         daemon.ui = ui
-        ui.run()
+        try:
+            ui.run()
+        finally:
+            timeout = 0.0 if ui._shutdown_started_at is not None else 10.0
+            if not daemon.shutdown(timeout=timeout):
+                daemon.failure = "Shutdown timed out; check OBS."
     else:
-        daemon.start()
+        daemon.start_background()
+        while not daemon._stopped_event.wait(0.2):
+            if daemon._shutdown_event.is_set():
+                if not daemon.shutdown():
+                    daemon.failure = "Shutdown timed out; capture may still be active. Check OBS."
+                    logger.error(daemon.failure)
+                break
+    if daemon.failure:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

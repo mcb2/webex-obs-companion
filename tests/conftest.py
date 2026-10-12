@@ -71,7 +71,7 @@ def speech_modules(monkeypatch):
     """
     import webex_obs
 
-    names = ("transcriber", "post_processing", "daemon")
+    names = ("transcriber", "post_processing", "job_store", "daemon")
     missing = object()
     cached = {name: sys.modules.get(f"webex_obs.{name}", missing) for name in names}
     attrs = {name: getattr(webex_obs, name, missing) for name in names}

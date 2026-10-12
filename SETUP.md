@@ -196,14 +196,22 @@ uv run webex-obs start
 
 The menu bar's **Quit (stop service)** action is equivalent to stopping the
 LaunchAgent for the current login session. Use `uv run webex-obs start` to
-resume it; the installed service starts again on the next login.
+resume it; the installed service starts again on the next login. Quit and SIGTERM
+coordinate recording finalization and retain pending processing jobs. Cleanup
+has a 10-second application deadline, with at most 2 seconds waiting for current
+processing; Quit then unloads launchd using calls bounded to 15 seconds combined.
+If capture stop is unresolved or shutdown times out, check OBS directly; media
+is preserved. `status` reports LaunchAgent registration and application heartbeat
+health separately. See [shutdown and recovery](README.md#shutdown-and-restart-recovery)
+for checkpoint states and ambiguous delivery handling.
 
 ---
 
 ## 6. Directory Structure & Files
 
-- **Text Transcripts**: `~/Documents/WebexTranscripts/YYYY-MM-DD_HH-MM-SS - Meeting Title.txt`
+- **Text Transcripts**: `~/Documents/WebexTranscripts/YYYY-MM-DD_HH-MM-SS - Meeting Title - JobID.txt`
 - **OBS Media Recordings**: `~/Movies/` or `~/Movies/WebexRecordings/`
+- **Private Processing Checkpoints**: `LOG_DIR/jobs/` (default `~/Library/Logs/WebexOBS/jobs/`); keep this path stable across restarts.
 - **Background Service Logs**: `~/Library/Logs/WebexOBS/stdout.log`
 - **Local Model Cache**: `~/.cache/webex_obs/models/`
 

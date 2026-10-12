@@ -83,6 +83,23 @@ generation before applying them. The locked obs-websocket-py 1.0 client returns
 rejected v5 requests with `status=False` (often empty `datain`) rather than raising;
 the controller checks acceptance before using data or updating confirmed state.
 
+## Coordinated application lifetime
+
+The daemon supervises partial startup, the lifecycle worker, and fatal processing
+worker failures. All termination requests set one shutdown event and wake idle
+detection. Only the lifecycle worker finalizes active capture; positive stop
+verification precedes job persistence, and unresolved stops/media stay protected.
+Cleanup stops job admission and waits at most two seconds for processing, then
+stops hotkeys and disconnects the backend. The main/AppKit supervisor enforces a
+ten-second cleanup deadline without issuing competing backend operations. AppKit
+keeps pumping/cancels UI requests during shutdown, exits its run loop, and returns
+failure as a nonzero process exit. Menu Quit unloads launchd only after cleanup
+or timeout, with launchctl calls separately bounded. A lifecycle heartbeat with
+PID, state, and expiration distinguishes a responding app from a loaded job.
+The ownership lock lasts until process exit because a processing thread may
+outlive the cleanup wait. Hard termination cannot stop capture or persist the
+active OBS segment ledger; finalized checkpointed jobs alone resume automatically.
+
 ## Detection, maintenance, and post-processing
 
 `ProcessMonitor` combines native Webex/Zoom/Teams window evidence with
@@ -105,8 +122,17 @@ the recording mode. Manual starts display a timed consent notice after capture
 begins; discard requires a verified recording stop before deleting segments.
 
 Completed sessions enter `PostProcessingWorker`, a FIFO queue on a separate
-background thread. Each job retains its transcription, delivery, and retention
-configuration while call monitoring continues. `Transcriber` uses MLX Whisper
+background thread. Before queue admission, a private atomic JSON checkpoint in
+`LOG_DIR/jobs/` saves media identities and nonsecret transcription, destination,
+and retention settings. Each live job retains its clients; restart reconstructs
+clients with current credentials and holds changed/disabled destinations. One
+state-directory file lock prevents overlapping consumers. `queued`/interrupted
+`transcribing` jobs resume, `ready` reuses the transcript, and `delivered` only
+finishes retention. A pre-request `delivering` checkpoint recovers as `uncertain`;
+network/server errors also require review, never an automatic resend. Failed and
+blocked jobs remain protected. Transcript publication uses fsync and atomic
+replacement at a stable per-job path. Completed checkpoints retain delivery
+completion evidence while call monitoring continues. `Transcriber` uses MLX Whisper
 and optionally `NeuralDiarizer` (pyannote, with a rough acoustic fallback).
 Speaker labels are anonymous. `WebexClient` sends transcripts to a configured
 room or personal recipient, with room ID taking precedence. Long transcripts
