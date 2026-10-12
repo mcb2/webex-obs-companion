@@ -91,6 +91,7 @@ class Transcriber:
             return None
 
         all_text_segments = []
+        incomplete = False
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         out_file = unique_path(
             self.transcripts_dir / f"{output_stem or ('meeting_' + timestamp)}.txt"
@@ -98,6 +99,8 @@ class Transcriber:
 
         for idx, fpath in enumerate(media_files, start=1):
             if not os.path.exists(fpath):
+                logger.error("Recording segment is missing; retaining session media for recovery: %s", fpath)
+                incomplete = True
                 continue
             logger.info(f"Transcribing segment {idx}/{len(media_files)}: {fpath} with {self.model_target}...")
 
@@ -154,6 +157,7 @@ class Transcriber:
                     )
 
             except Exception as e:
+                incomplete = True
                 logger.error(f"Failed to transcribe {fpath}: {e}")
                 if "ffmpeg" in str(e).lower():
                     logger.error("ffmpeg missing. Install via: brew install ffmpeg")
@@ -172,4 +176,6 @@ class Transcriber:
             f.write(full_transcript)
 
         logger.info(f"Transcript saved to: {out_file}")
-        return out_file
+        # Keep a partial transcript for recovery, but never mark the session
+        # successfully processed when a segment failed or went missing.
+        return None if incomplete else out_file

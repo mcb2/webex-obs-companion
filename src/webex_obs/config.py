@@ -130,7 +130,7 @@ class Settings(BaseSettings):
         default=14,
         ge=0,
         validation_alias=AliasChoices("RETENTION_DAYS", "retention_days"),
-        description="Days to keep raw media files before auto-pruning"
+        description="Days to keep successfully processed owned media; 0 prunes immediately after success"
     )
 
     # Polling settings

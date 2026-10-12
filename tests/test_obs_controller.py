@@ -109,7 +109,8 @@ class OBSControllerTests(unittest.TestCase):
     def test_stop_status_query_prevents_quit_while_recording_active(self):
         controller = OBSController()
         controller.ws = Mock()
-        controller.ws.call.side_effect = [_Response(), _Response(outputActive=True)]
+        controller.is_recording = controller._owns_recording = True
+        controller.ws.call.return_value = _Response(outputActive=True)
         with patch.object(controller, "check_connection", return_value=True), \
              patch.object(controller, "quit_obs") as quit_obs, \
              patch("webex_obs.obs_controller.time.sleep"):
@@ -128,7 +129,7 @@ class OBSControllerTests(unittest.TestCase):
     def test_transient_start_failure_retries_without_second_obs_restart(self):
         controller = OBSController()
         controller.ws = Mock()
-        controller.ws.call.side_effect = [RuntimeError("OBS is still initializing"), Mock()]
+        controller.ws.call.side_effect = [RuntimeError("OBS is still initializing"), _Response()]
         with patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "_refresh_recording_status",
                           side_effect=[False, False, False, True]), \
@@ -139,6 +140,7 @@ class OBSControllerTests(unittest.TestCase):
     def test_status_poll_catches_delayed_success_without_duplicate_start(self):
         controller = OBSController()
         controller.ws = Mock()
+        controller.ws.call.return_value = _Response()
         with patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "_refresh_recording_status", side_effect=[False, False, True]), \
              patch("webex_obs.obs_controller.time.sleep"):
@@ -217,6 +219,7 @@ class OBSControllerTests(unittest.TestCase):
         controller = OBSController()
         controller.ws = Mock()
         controller.selected_display_uuid = "display-uuid"
+        controller.ws.call.return_value = _Response()
         with patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "bind_webex_video_window") as bind_window, \
              patch.object(controller, "_refresh_recording_status", side_effect=[False, True]):
@@ -296,13 +299,15 @@ class OBSControllerTests(unittest.TestCase):
         for enabled, verified in ((True, True), (False, True), (True, False)):
             controller = OBSController(exit_on_stop=enabled)
             controller.ws = Mock()
+            controller.is_recording = controller._owns_recording = True
             controller.recorded_files = ["/tmp/segment.mkv"]
             controller.ws.call.return_value = _Response()
             with patch.object(controller, "check_connection", return_value=True), \
+                 patch.object(controller, "_recording_active_status", return_value=True), \
                  patch.object(controller, "_recording_is_confirmed_stopped", return_value=verified), \
                  patch.object(controller, "quit_obs") as quit_obs, \
                  patch("webex_obs.obs_controller.time.sleep"):
-                self.assertEqual(controller.stop_recording(), ["/tmp/segment.mkv"])
+                self.assertEqual(controller.stop_recording(), ["/tmp/segment.mkv"] if verified else [])
             self.assertEqual(quit_obs.call_count, int(enabled and verified))
 
 
@@ -315,8 +320,7 @@ def test_unverified_stop_preserves_segments_and_selection_for_retry(failure, tmp
     segment = tmp_path / "segment.mkv"
     segment.write_bytes(b"synthetic recording")
     controller = OBSController(exit_on_stop=False)
-    # Test the conservative path even when a prior failed probe cleared the flag.
-    controller.is_recording = False
+    controller.is_recording = controller._owns_recording = True
     controller.recorded_files = [str(segment)]
     controller.selected_window_id = 123
     controller.ws = Mock()
@@ -329,7 +333,8 @@ def test_unverified_stop_preserves_segments_and_selection_for_retry(failure, tmp
     with patch.object(controller, "check_connection", return_value=failure != "disconnected"), \
          patch.object(controller, "quit_obs") as quit_obs, \
          patch("webex_obs.obs_controller.time.sleep"):
-        assert controller.stop_recording() == [str(segment)]
+        assert controller.stop_recording() == []
+    assert controller.stop_verified is False
     assert controller.is_recording
     assert controller.recorded_files == [str(segment)]
     assert controller.selected_window_id == 123
@@ -350,10 +355,12 @@ def test_status_then_stop_remembers_output_path_from_stop_response(tmp_path):
     segment.write_bytes(b"synthetic recording")
     controller = OBSController(exit_on_stop=False)
     controller.ws = Mock()
+    controller.is_recording = controller._owns_recording = True
     # GetRecordStatus has no outputPath; StopRecord supplies the finalized path.
     controller.ws.call.side_effect = [
         _Response(outputActive=True, outputPaused=False, outputTimecode="00:00:01.000",
                   outputDuration=1000, outputBytes=128),
+        _Response(outputActive=True),
         _Response(outputPath=str(segment)),
         _Response(outputActive=False),
     ]
@@ -362,3 +369,232 @@ def test_status_then_stop_remembers_output_path_from_stop_response(tmp_path):
         assert controller.recorded_files == []
         assert controller.stop_recording() == [str(segment)]
     assert not controller.is_recording
+
+
+@pytest.mark.parametrize("data", [{}, {"outputActive": None}, {"outputActive": 0}, {"outputActive": "false"}])
+def test_unknown_status_does_not_clear_owned_session_or_start_recovery(data, tmp_path):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    segment = tmp_path / "owned.mkv"
+    segment.write_bytes(b"synthetic")
+    controller.recorded_files = [str(segment)]
+    controller.ws = Mock()
+    controller.ws.call.return_value = _Response(**data)
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch.object(controller, "start_recording") as start:
+        assert controller._refresh_recording_status() is None
+        assert not controller.ensure_recording()
+        assert controller.stop_recording() == []
+    start.assert_not_called()
+    assert controller.recording_status is None
+    assert controller.is_recording
+    assert not controller.stop_verified
+    assert controller.recorded_files == [str(segment)]
+    assert segment.exists()
+
+
+def test_rejected_stop_and_unknown_post_stop_status_preserve_owned_segments(tmp_path):
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    segment, unrelated = tmp_path / "owned.mkv", tmp_path / "unrelated.mkv"
+    segment.write_bytes(b"synthetic")
+    unrelated.write_bytes(b"unrelated synthetic")
+    controller.recorded_files = [str(segment)]
+    controller.ws = Mock()
+    rejected = _Response(outputPath=str(unrelated))
+    rejected.status = False
+    statuses = iter([_Response(outputActive=True), rejected])
+    controller.ws.call.side_effect = lambda request: next(statuses, _Response(outputActive=None))
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch("webex_obs.obs_controller.time.sleep"), \
+         patch.object(controller, "quit_obs") as quit_obs:
+        assert controller.stop_recording() == []
+    assert [call.args[0].name for call in controller.ws.call.call_args_list].count("StopRecord") == 1
+    assert controller.recorded_files == [str(segment)]
+    assert not controller.stop_verified
+    assert controller.is_recording
+    assert unrelated.exists()
+    quit_obs.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["start", "ensure", "stop", "switch"])
+def test_independently_started_recording_is_never_adopted_or_stopped(operation, tmp_path):
+    external = tmp_path / "external.mkv"
+    external.write_bytes(b"synthetic external recording")
+    controller = OBSController(exit_on_stop=False)
+    controller.ws = Mock()
+    controller.ws.call.return_value = _Response(outputActive=True, outputPath=str(external))
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch.object(controller, "switch_scene") as scene:
+        if operation == "start":
+            assert not controller.start_recording()
+        elif operation == "ensure":
+            assert not controller.ensure_recording()
+        elif operation == "stop":
+            assert controller.stop_recording() == []
+        else:
+            controller.switch_to_video_mode()
+    assert controller.recording_status is True
+    assert not controller.is_recording
+    assert not controller.stop_verified
+    assert controller.recorded_files == []
+    assert external.exists()
+    scene.assert_not_called()
+    assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
+
+
+def test_lost_start_response_does_not_claim_an_active_output():
+    controller = OBSController(exit_on_stop=False)
+    controller.ws = Mock()
+    with patch.object(controller, "_refresh_recording_status", side_effect=[False, True]), \
+         patch.object(controller, "switch_scene", return_value=True):
+        controller.ws.call.side_effect = ConnectionError("synthetic lost response")
+        assert not controller.start_recording()
+    assert controller.is_recording  # unresolved request keeps the lifecycle reserved
+    assert not controller._owns_recording
+    assert not controller.stop_verified
+    assert controller.recorded_files == []
+
+
+def test_connection_loss_cannot_adopt_external_output_during_recovery(tmp_path):
+    original, external = tmp_path / "original.mkv", tmp_path / "external.mkv"
+    for path in (original, external):
+        path.write_bytes(b"synthetic")
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.recorded_files = [str(original)]
+    controller.ws = Mock()
+    controller.disconnect()
+    controller.ws = Mock()
+    controller.ws.call.return_value = _Response(outputActive=True, outputPath=str(external))
+    with patch.object(controller, "check_connection", return_value=True):
+        assert not controller.ensure_recording()
+        assert not controller.start_recording()
+        assert controller.stop_recording() == []
+    assert controller.recorded_files == [str(original)]
+    assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
+    # A later positive stopped result finalizes only our already known segment.
+    controller.ws.call.return_value = _Response(outputActive=False, outputPath=str(external))
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.stop_recording() == [str(original)]
+    assert controller.stop_verified
+    assert external.exists()
+
+
+def test_switch_to_video_keeps_the_owned_recording_output():
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.ws = Mock()
+    controller.ws.call.return_value = _Response(outputActive=True)
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch.object(controller, "switch_scene", return_value=True) as scene, \
+         patch.object(controller, "bind_webex_video_window") as bind:
+        controller.switch_to_video_mode()
+    scene.assert_called_once_with("Webex-Video")
+    bind.assert_called_once()
+    assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
+
+
+@pytest.mark.parametrize("change", ["path", "duration"])
+def test_observed_external_restart_does_not_adopt_or_stop_replacement(change, tmp_path):
+    original, external = tmp_path / "original.mkv", tmp_path / "external.mkv"
+    for path in (original, external):
+        path.write_bytes(b"synthetic")
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.ws = Mock()
+    first = _Response(outputActive=True, outputPath=str(original), outputDuration=5000)
+    replaced = (_Response(outputActive=True, outputPath=str(external), outputDuration=6000)
+                if change == "path" else _Response(outputActive=True, outputDuration=1000))
+    controller.ws.call.side_effect = [first, replaced, replaced]
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.ensure_recording()
+        assert not controller.ensure_recording()
+        assert controller.stop_recording() == []
+    assert controller.recorded_files == [str(original)]
+    assert controller.is_recording
+    assert not controller.stop_verified
+    assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
+
+
+def test_observed_idle_output_revokes_ownership_before_external_start():
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.ws = Mock()
+    controller.ws.call.side_effect = [_Response(outputActive=True), _Response(outputActive=False),
+                                      _Response(outputActive=True)]
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller._refresh_recording_status() is True
+        assert controller._refresh_recording_status() is False
+        assert controller.stop_recording() == []
+    assert not controller._owns_recording
+    assert controller.is_recording
+    assert not controller.stop_verified
+
+
+def test_accepted_start_and_verified_stop_return_all_owned_segments(tmp_path):
+    recovered, current = tmp_path / "recovered.mkv", tmp_path / "current.mkv"
+    for path in (recovered, current):
+        path.write_bytes(b"synthetic")
+    controller = OBSController(exit_on_stop=False)
+    controller.recorded_files = [str(recovered)]
+    controller.ws = Mock()
+    controller.ws.call.side_effect = [
+        _Response(outputActive=False), _Response(),  # idle, accepted StartRecord
+        _Response(outputActive=True),               # status need not include path
+        _Response(outputActive=True),               # stop preflight
+        _Response(outputPath=str(current)),         # finalized StopRecord path
+        _Response(outputActive=False),              # verified stop
+    ]
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch.object(controller, "switch_scene", return_value=True):
+        assert controller.start_recording()
+        assert controller.stop_recording() == [str(recovered), str(current)]
+    assert controller.stop_verified
+    assert not controller.is_recording
+    assert controller.recorded_files == []
+
+
+def test_connection_loss_after_stop_response_keeps_final_path_for_retry(tmp_path):
+    segment = tmp_path / "segment.mkv"
+    segment.write_bytes(b"synthetic")
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.selected_window_id = 123
+    controller.ws = Mock()
+
+    def call(request):
+        if request.name == "StopRecord":
+            return _Response(outputPath=str(segment))
+        if not controller.recorded_files:
+            return _Response(outputActive=True)
+        raise ConnectionError("synthetic connection loss while finalizing")
+
+    controller.ws.call.side_effect = call
+    with patch.object(controller, "check_connection", return_value=True), \
+         patch("webex_obs.obs_controller.time.sleep"):
+        assert controller.stop_recording() == []
+    assert controller.recorded_files == [str(segment)]
+    assert controller.is_recording
+    assert not controller.stop_verified
+    assert controller.selected_window_id == 123
+    assert segment.exists()
+    controller.ws.call.side_effect = None
+    controller.ws.call.return_value = _Response(outputActive=False)
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.stop_recording() == [str(segment)]
+    assert controller.stop_verified
+
+
+def test_rejected_status_response_cannot_confirm_stop():
+    controller = OBSController(exit_on_stop=False)
+    controller.is_recording = controller._owns_recording = True
+    controller.ws = Mock()
+    rejected = _Response(outputActive=False)
+    rejected.status = False
+    controller.ws.call.return_value = rejected
+    with patch.object(controller, "check_connection", return_value=True):
+        assert controller.stop_recording() == []
+    assert controller.recording_status is None
+    assert controller.is_recording
+    assert not controller.stop_verified

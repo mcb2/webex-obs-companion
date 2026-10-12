@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 import subprocess
 import time
@@ -7,6 +6,7 @@ from dataclasses import dataclass
 from obswebsocket import obsws, requests
 
 from .macos_displays import active_displays
+from .cleaner import MediaCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,14 @@ class OBSController:
         self.ws: obsws | None = None
         self.is_connected = False
         self.is_recording = False
+        # Status evidence is separate from an unresolved application session.
+        self.recording_status: bool | None = None
+        self.stop_verified = False
+        self._owns_recording = False
+        self._ownership_lost = False
+        self._owned_output_active = False
+        self._current_output_path: str | None = None
+        self._last_output_duration: float | None = None
         self.recorded_files: list[str] = []
         self.current_scene = "Webex-Audio"
         self.selected_window_id: int | None = None
@@ -172,6 +180,11 @@ class OBSController:
                 pass
         self.is_connected = False
         self.ws = None
+        self.recording_status = None
+        if self.is_recording:
+            # OBS provides no recording ID in GetRecordStatus. After a gap we
+            # cannot distinguish our output from one independently restarted.
+            self._ownership_lost = True
 
     def list_webex_windows(self) -> list[WebexWindow]:
         window_list = []
@@ -389,57 +402,73 @@ class OBSController:
 
     def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
-            # The previous command may have succeeded even if its response was
-            # interrupted. Never send a second StartRecord in that case.
-            if self._refresh_recording_status():
-                logger.info("OBS recording is already active in scene '%s'.", scene_name)
-                return True
+            active = self._refresh_recording_status()
+            if active is True:
+                if self._owns_recording and not self._ownership_lost:
+                    return True
+                logger.warning("OBS has an independently started or unidentifiable recording; leaving it untouched.")
+                return False
+            if active is None:
+                logger.warning("OBS status is unknown; refusing to start another recording.")
+                return False
+            # A positively idle output permits a new owned segment.
+            self._owns_recording = False
+            self._ownership_lost = False
             try:
                 if not self.switch_scene(scene_name):
                     raise RuntimeError("OBS scene is not ready")
                 if scene_name == "Webex-Video" and not self.is_screen_recording:
                     if not self.bind_webex_video_window():
                         logger.warning("Video recording started without a bound Webex window.")
-                self.ws.call(requests.StartRecord())
+                self.stop_verified = False
+                # A lost response is ambiguous, not authorization to adopt OBS.
+                self.is_recording = True
+                res = self.ws.call(requests.StartRecord())
+                if res.status is not True:
+                    raise RuntimeError("OBS rejected StartRecord")
+                self._owns_recording = True
+                self._owned_output_active = False
+                self._current_output_path = None
+                self._last_output_duration = None
                 for _ in range(3):
-                    if self._refresh_recording_status():
+                    active = self._refresh_recording_status()
+                    if active is True and not self._ownership_lost:
                         logger.info("OBS recording started in scene '%s'.", scene_name)
                         return True
+                    if active is None:
+                        return False
                     time.sleep(0.4)
                 raise RuntimeError("OBS accepted StartRecord but did not report an active recording")
             except Exception as e:
-                if self._refresh_recording_status():
-                    logger.info("OBS recording is active after an interrupted start command.")
+                active = self._refresh_recording_status()
+                if active is True and self._owns_recording and not self._ownership_lost:
                     return True
                 logger.warning("OBS start attempt %d/3 failed: %s", attempt + 1, e)
+                if active is not False:
+                    return False
+                self.is_recording = bool(self.recorded_files)
                 if attempt < 2:
                     time.sleep(1.0)
         logger.error("Could not start OBS recording after three attempts.")
         return False
 
-    def _refresh_recording_status(self) -> bool:
-        """Query OBS instead of trusting the last command sent over WebSocket."""
-        if not self.check_connection():
-            self.is_recording = False
-            return False
-        try:
-            res = self.ws.call(requests.GetRecordStatus())
-            data = getattr(res, "datain", {})
-            self.is_recording = bool(data.get("outputActive", False))
-            output_path = data.get("outputPath", "")
-            if output_path and output_path not in self.recorded_files:
-                self.recorded_files.append(output_path)
-            return self.is_recording
-        except Exception as e:
-            logger.warning(f"Could not verify OBS recording status: {e}")
-            self.is_recording = False
-            return False
+    def _remember_owned_path(self, output_path: str) -> None:
+        if output_path and output_path not in self.recorded_files:
+            MediaCleaner.protect_recordings([output_path])
+            self.recorded_files.append(output_path)
+
+    def _refresh_recording_status(self) -> bool | None:
+        """Probe status without adopting an external recording or losing segments."""
+        return self._recording_active_status()
 
     def ensure_recording(self, scene_name: str | None = None) -> bool:
-        """Keep a live call recording even if OBS exits or its output stops."""
-        if self._refresh_recording_status():
-            return True
-        logger.warning("OBS recording is no longer active. Resuming in a new segment...")
+        """Recover only from positively idle OBS; unknown outputs stay untouched."""
+        active = self._refresh_recording_status()
+        if active is True:
+            return self._owns_recording and not self._ownership_lost
+        if active is None:
+            return False
+        logger.warning("OBS recording stopped. Resuming in a new segment...")
         return self.start_recording(scene_name=scene_name or self.current_scene)
 
     def switch_scene(self, scene_name: str) -> bool:
@@ -455,84 +484,102 @@ class OBSController:
             return False
 
     def stop_recording(self) -> list[str]:
-        if not self.check_connection():
-            logger.warning("Cannot stop OBS recording cleanly: WebSocket is not connected.")
-            files = list(self.recorded_files)
-            # Keep session recovery state until a later stop can be verified.
-            self.is_recording = True
-            return files
+        """Return segments only after a verified stop; retain everything otherwise."""
+        owned_session = self.is_recording
+        self.stop_verified = False
+        active = self._recording_active_status()
+        if active is None:
+            logger.warning("Cannot verify OBS status; keeping the session for an explicit stop retry.")
+            return []
+        if active is True:
+            if not self._owns_recording or self._ownership_lost:
+                logger.warning("Refusing to stop an independently started or unidentifiable OBS recording.")
+                return []
+            try:
+                res = self.ws.call(requests.StopRecord())
+                if res.status is True:
+                    self._remember_owned_path(getattr(res, "datain", {}).get("outputPath", ""))
+                else:
+                    logger.error("OBS rejected StopRecord; verifying output state before completion.")
+            except Exception as e:
+                logger.error("Error stopping OBS recording: %s", e)
+            # StopRecord can return before OBS finishes finalizing output.
+            for _ in range(10):
+                if self._recording_is_confirmed_stopped():
+                    break
+                time.sleep(0.5)
+            else:
+                logger.warning("OBS stop could not be verified; keeping session and segment state.")
+                return []
 
-        try:
-            res = self.ws.call(requests.StopRecord())
-            output_path = getattr(res, "datain", {}).get("outputPath", "")
-            if output_path and os.path.exists(output_path):
-                if output_path not in self.recorded_files:
-                    self.recorded_files.append(output_path)
-            logger.info("OBS StopRecord command returned.")
-        except Exception as e:
-            logger.error(f"Error stopping OBS recording: {e}")
-        # OBS may still be finalizing its output after StopRecord returns.
-        stopped = False
-        for _ in range(10):
-            if self._recording_is_confirmed_stopped():
-                stopped = True
-                break
-            time.sleep(0.5)
-        if stopped and self.exit_on_stop:
-            self.quit_obs()
-        elif not stopped:
-            logger.warning("OBS recording stop could not be verified; leaving OBS open.")
-        else:
-            logger.info("OBS recording stopped; keeping OBS open as configured.")
+        self.stop_verified = True
+        self.is_recording = False
+        self._owns_recording = False
+        self._ownership_lost = False
+        self._owned_output_active = False
+        self._current_output_path = None
+        self._last_output_duration = None
         files = list(self.recorded_files)
-        if stopped:
-            self.is_recording = False
-            self.recorded_files.clear()
-            self.selected_window_id = None
-            self._seen_window_ids.clear()
-            self._candidate_polls.clear()
-            self._selected_missing_polls = 0
-            self._missing_selected_window_reported = False
-        else:
-            # Unknown output state must not authorize deletion or reconfiguration.
-            self.is_recording = True
+        self.recorded_files.clear()
+        self.selected_window_id = None
+        self.selected_display_uuid = None
+        self._seen_window_ids.clear()
+        self._candidate_polls.clear()
+        self._selected_missing_polls = 0
+        self._missing_selected_window_reported = False
+        if self.exit_on_stop and owned_session:
+            # Recheck idle outputs immediately before graceful shutdown.
+            self.quit_obs(idle_guard=self.outputs_confirmed_idle)
         return files
 
     def _recording_is_confirmed_stopped(self) -> bool:
         return self._recording_active_status() is False
 
     def _recording_active_status(self) -> bool | None:
-        """Return OBS's status, or None if it could not be verified."""
+        """True = active, False = stopped, None = unknown. Never coerce a value."""
+        self.recording_status = None
         if not self.check_connection():
+            self._ownership_lost = self._ownership_lost or self.is_recording
             return None
         try:
-            data = self.ws.call(requests.GetRecordStatus()).datain
-            if "outputActive" not in data:
-                logger.warning("OBS recording status response lacked outputActive.")
+            res = self.ws.call(requests.GetRecordStatus())
+            data = res.datain
+            active = data.get("outputActive")
+            if res.status is not True or type(active) is not bool:
+                logger.warning("OBS recording status response was unsuccessful or lacked a boolean outputActive.")
+                self._ownership_lost = self._ownership_lost or self.is_recording
                 return None
-            active = bool(data["outputActive"])
-            self.is_recording = active
+            self.recording_status = active
+            if not active and self._owned_output_active:
+                self._owns_recording = False
+                self._owned_output_active = False
+            if active and self._owns_recording and not self._ownership_lost:
+                path = data.get("outputPath")
+                duration = data.get("outputDuration")
+                changed_path = path and self._current_output_path and path != self._current_output_path
+                reset_duration = (isinstance(duration, (int, float))
+                                  and self._last_output_duration is not None
+                                  and duration < self._last_output_duration)
+                if changed_path or reset_duration:
+                    self._ownership_lost = True
+                    logger.warning("OBS output changed independently; leaving the new recording untouched.")
+                else:
+                    self._owned_output_active = True
+                    if path:
+                        self._current_output_path = path
+                        self._remember_owned_path(path)
+                    if isinstance(duration, (int, float)):
+                        self._last_output_duration = duration
             return active
         except Exception as e:
             logger.warning("Could not verify OBS recording status: %s", e)
+            self._ownership_lost = self._ownership_lost or self.is_recording
             return None
 
     def switch_to_video_mode(self) -> None:
-        if not self.is_recording:
-            self.start_recording(scene_name="Webex-Video")
-            return
-        logger.info("Transitioning from Audio recording to Video recording...")
-        try:
-            res = self.ws.call(requests.StopRecord())
-            output_path = getattr(res, "datain", {}).get("outputPath", "")
-            if output_path and os.path.exists(output_path):
-                self.recorded_files.append(output_path)
-            time.sleep(1.0)
-            self.switch_scene("Webex-Video")
-            if not self.is_screen_recording:
+        # Switching scenes keeps the same output, avoiding an unverified
+        # stop/start transition and preserving all segment bookkeeping.
+        if (self._recording_active_status() is True and self._owns_recording
+                and not self._ownership_lost):
+            if self.switch_scene("Webex-Video") and not self.is_screen_recording:
                 self.bind_webex_video_window()
-            self.ws.call(requests.StartRecord())
-            self.is_recording = True
-            logger.info("Started new Video segment in OBS.")
-        except Exception as e:
-            logger.error(f"Failed during video mode transition: {e}")

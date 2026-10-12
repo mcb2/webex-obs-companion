@@ -79,8 +79,10 @@ uv run webex-obs setup
 
 Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
 connection, transcription, detection, and shortcuts. Changes are saved and
-applied when you click **OK**, without restarting the service. An active
-recording retains its OBS connection until it stops. OBS still performs all
+applied when you click **OK**, without restarting the service. An active or
+unresolved recording retains its OBS connection until a stop is positively verified.
+Idle connection changes are applied on the next recording preparation/start,
+after the old OBS output is confirmed stopped. OBS still performs all
 capture: update its recording output path in OBS too if you change the
 recordings folder here. Tokens and passwords are masked in Settings.
 Turn off **Deliver transcripts to Webex** to retain transcripts locally without
@@ -154,6 +156,35 @@ multiple recording segments, the media files receive `part-01`, `part-02`,
 and subsequent suffixes. Characters that do not work reliably in filenames
 are replaced, while the original meeting title is retained inside the transcript
 and Webex delivery message.
+
+If OBS stop cannot be verified, the app keeps the current session, segment
+paths, source selection, connection, and pending discard/transcribe action.
+It does not rename, delete, or queue that media, or start another session.
+Check OBS, then retry **Stop & Transcribe** (or **Stop & Discard**) from the menu;
+a retry keeps the original pending discard choice. There is no automatic stop
+retry. Unknown status is treated separately from a confirmed stopped output.
+
+The app leaves independently started OBS recordings untouched. A successful
+StartRecord response establishes ownership; an already active output or a lost
+start response does not. After connection loss, an active output's identity is
+uncertain, so the app leaves it running. Stop it directly in OBS, then retry
+Stop in the app to finalize only already known segments. OBS does not provide
+a stable recording ID or reliably include a media path in GetRecordStatus;
+segments whose paths were never reported remain on disk for manual recovery.
+An independent stop/restart entirely between observations may be undetectable
+when OBS supplies neither a changed path nor a decreased output duration.
+
+`RETENTION_DAYS` defaults to 14 and uses media modification time. Cleanup runs
+at startup and after successful processing, using file identity records in
+`.webex-obs-retention/` inside the configured recordings directory. Only media
+from verified completed app sessions, with successful transcription and any
+enabled Webex delivery, becomes eligible. **0 deletes eligible media immediately
+after success**. Active, queued, failed, recoverable, unrelated, and legacy media
+without these records is retained. Modified/replaced files and symlinks are
+excluded. Missing/failed segments retain all session media; a partial transcript
+may remain locally for recovery and is not delivered automatically. Recordings
+written outside the configured folder are never enrolled in its cleanup.
+Failed sessions require manual recovery; automatic reprocessing is not provided.
 
 ## Development checks
 

@@ -55,3 +55,4 @@
 - Never push or open a pull request, including a draft, without explicit user approval. Do not merge, publish releases, or rewrite remote history without explicit authorization.
 - Before handing off, inspect the final diff and status for unrelated changes, secrets, generated media, and accidental lockfile changes.
 - Explain what changed, why, validation performed, and any remaining limitations. Distinguish implemented behavior from future plans.
+- Every handoff after app updates must include copyable commands to commit the intended local changes, push the current branch to GitHub, and relaunch the app using the verified CLI. Use explicit staging paths that exclude secrets and unrelated work, and use `uv run --locked --no-sync` to avoid implicit dependency installation. Providing commands does not authorize executing them. Remind the user to finish any active recording before relaunching.
