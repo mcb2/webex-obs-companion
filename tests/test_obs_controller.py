@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -9,9 +10,8 @@ from webex_obs.obs_controller import CaptureDisplay, OBSController, WebexWindow
 
 
 def _Response(**data):
-    response = requests.GetRecordStatus()
-    response.input(data, True)
-    return response
+    # Generic RPC double; protocol-level cases below use the installed decoder.
+    return SimpleNamespace(datain=data, status=True)
 
 
 @pytest.fixture(autouse=True)
@@ -423,7 +423,7 @@ def test_independently_started_recording_is_never_adopted_or_stopped(operation, 
     external.write_bytes(b"synthetic external recording")
     controller = OBSController(exit_on_stop=False)
     controller.ws = Mock()
-    controller.ws.call.return_value = _Response(outputActive=True, outputPath=str(external))
+    controller.ws.call.return_value = _Response(outputActive=True)
     with patch.object(controller, "check_connection", return_value=True), \
          patch.object(controller, "switch_scene") as scene:
         if operation == "start":
@@ -466,7 +466,7 @@ def test_connection_loss_cannot_adopt_external_output_during_recovery(tmp_path):
     controller.ws = Mock()
     controller.disconnect()
     controller.ws = Mock()
-    controller.ws.call.return_value = _Response(outputActive=True, outputPath=str(external))
+    controller.ws.call.return_value = _Response(outputActive=True)
     with patch.object(controller, "check_connection", return_value=True):
         assert not controller.ensure_recording()
         assert not controller.start_recording()
@@ -474,7 +474,7 @@ def test_connection_loss_cannot_adopt_external_output_during_recovery(tmp_path):
     assert controller.recorded_files == [str(original)]
     assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
     # A later positive stopped result finalizes only our already known segment.
-    controller.ws.call.return_value = _Response(outputActive=False, outputPath=str(external))
+    controller.ws.call.return_value = _Response(outputActive=False)
     with patch.object(controller, "check_connection", return_value=True):
         assert controller.stop_recording() == [str(original)]
     assert controller.stop_verified
@@ -495,17 +495,16 @@ def test_switch_to_video_keeps_the_owned_recording_output():
     assert all(call.args[0].name == "GetRecordStatus" for call in controller.ws.call.call_args_list)
 
 
-@pytest.mark.parametrize("change", ["path", "duration"])
-def test_observed_external_restart_does_not_adopt_or_stop_replacement(change, tmp_path):
+def test_duration_reset_does_not_adopt_or_stop_replacement(tmp_path):
     original, external = tmp_path / "original.mkv", tmp_path / "external.mkv"
     for path in (original, external):
         path.write_bytes(b"synthetic")
     controller = OBSController(exit_on_stop=False)
     controller.is_recording = controller._owns_recording = True
+    controller.recorded_files = [str(original)]
     controller.ws = Mock()
-    first = _Response(outputActive=True, outputPath=str(original), outputDuration=5000)
-    replaced = (_Response(outputActive=True, outputPath=str(external), outputDuration=6000)
-                if change == "path" else _Response(outputActive=True, outputDuration=1000))
+    first = _Response(outputActive=True, outputDuration=5000)
+    replaced = _Response(outputActive=True, outputDuration=1000)
     controller.ws.call.side_effect = [first, replaced, replaced]
     with patch.object(controller, "check_connection", return_value=True):
         assert controller.ensure_recording()
@@ -542,7 +541,9 @@ def test_accepted_start_and_verified_stop_return_all_owned_segments(tmp_path):
     controller.ws.call.side_effect = [
         _Response(outputActive=False), _Response(),  # idle, accepted StartRecord
         _Response(outputActive=True),               # status need not include path
+        _Response(outputs=[]),                      # unavailable live file target
         _Response(outputActive=True),               # stop preflight
+        _Response(outputs=[]),
         _Response(outputPath=str(current)),         # finalized StopRecord path
         _Response(outputActive=False),              # verified stop
     ]
