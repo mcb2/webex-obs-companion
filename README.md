@@ -148,7 +148,7 @@ uv run webex-obs logs
 | `uv run webex-obs prefetch-model` | Stream download and cache Whisper model weights to `~/.cache/webex_obs/` |
 | `uv run webex-obs diagnose-calls` | Show process, window, Core Audio, and UDP evidence for each supported meeting app |
 | `uv run webex-obs install-service` | Install and start background LaunchAgent (`com.cisco.webex-obs.plist`) |
-| `uv run webex-obs status` | Check whether the background LaunchAgent service is active |
+| `uv run webex-obs status` | Report LaunchAgent load state and application lifecycle health |
 | `uv run webex-obs logs` | Live stream `stdout.log` and `stderr.log` from `~/Library/Logs/WebexOBS/` |
 | `uv run webex-obs start` / `stop` | Start or stop the background service |
 | `uv run webex-obs run` | Run daemon in foreground (interactive debug mode) |
@@ -208,7 +208,60 @@ without these records is retained. Modified/replaced files and symlinks are
 excluded. Missing/failed segments retain all session media; a partial transcript
 may remain locally for recovery and is not delivered automatically. Recordings
 written outside the configured folder are never enrolled in its cleanup.
-Failed sessions require manual recovery; automatic reprocessing is not provided.
+Failed sessions require manual recovery. Interrupted safe work resumes from durable
+checkpoints as described below.
+
+## Shutdown and restart recovery
+
+Quit, SIGINT, SIGTERM, and application termination request the same shutdown.
+New starts stop being accepted. The lifecycle worker attempts one verified stop
+of an active owned recording and saves a processing job; an already unresolved
+stop is left for explicit resolution in OBS. Shutdown does not discard media.
+The app waits up to **10 seconds** for lifecycle cleanup, including up to **2
+seconds** for current processing. Queued work is deferred to restart. A stuck
+backend is never stopped concurrently; timeout exits with an error and leaves
+OBS/media available for manual recovery. Menu Quit still requires an idle
+recording session and unloads the service after cleanup (the launchctl calls
+have a further combined 15-second timeout).
+
+Startup and lifecycle failures are logged, show an error in the menu while
+exiting, and produce a nonzero exit status so launchd can restart the process.
+`status` reports whether the LaunchAgent is loaded separately from whether its
+PID has a fresh running lifecycle heartbeat. A loaded job with no PID, a failed
+startup, or a stale/missing heartbeat is not reported as healthy. Long blocked
+operations can make the heartbeat stale; this is a responsiveness check, not a
+capture/audio-quality guarantee.
+
+Private JSON checkpoints live in `LOG_DIR/jobs/` (default
+`~/Library/Logs/WebexOBS/jobs/`), with files mode 0600 and directory mode 0700.
+They contain sensitive titles, local paths, destination settings, and exact media
+identities, but no tokens or passwords. Transcripts are written to a temporary
+file, flushed, and atomically replaced; a partially written file never becomes
+the committed transcript. Durable jobs append a job ID to the transcript name
+so interrupted work can reuse its own path without overwriting another job.
+
+On restart, `queued` and interrupted `transcribing` jobs resume local processing;
+`ready` jobs reuse their complete transcript. `delivered` jobs only finalize
+retention and never send again. `complete` checkpoints remain as completion
+records. Recovery uses the saved model/destination and current credentials.
+Disabled delivery or a changed destination holds pending outbound work as
+`blocked`; it does not silently send or declare that work complete.
+
+The `delivering` checkpoint is saved **before** making a network request. If
+termination interrupts that request, or Webex returns a network/server error,
+the job becomes `uncertain` and is never resent automatically. Check Webex and
+the local transcript before deciding whether to send manually. `failed`,
+`blocked`, and `uncertain` jobs retain their files and require manual review;
+there is no automatic retry loop or retry command. Do not reset an uncertain
+checkpoint to a sendable state without checking for an existing message.
+
+Keep `LOG_DIR` stable across restarts. To relocate state, stop the app fully and
+move its `jobs/` directory before starting with the new path. A local file lock
+prevents two instances using the same state directory from processing jobs.
+SIGKILL/power loss cannot run cleanup: already checkpointed jobs recover, while
+active OBS capture and its in-memory segment ledger require manual recovery.
+Files remain on disk if termination occurs before the verified stop/job checkpoint,
+or if storage is unavailable; these files are not automatically adopted.
 
 ## Development checks
 

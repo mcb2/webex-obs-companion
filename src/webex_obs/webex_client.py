@@ -17,9 +17,11 @@ class WebexClient:
         self.recipient_email = recipient_email
         self.room_id = room_id
         self.my_agent_email = my_agent_email
+        self.last_delivery_outcome = "not_attempted"
         self.api_url = "https://webexapis.com/v1/messages"
 
     def send_transcript(self, transcript_path: Path, meeting_title: str = "Webex Meeting") -> bool:
+        self.last_delivery_outcome = "rejected"
         if not self.token:
             logger.error("Webex Bot access token is missing in .env. Cannot deliver transcript.")
             return False
@@ -72,9 +74,12 @@ class WebexClient:
 
             if res.status_code in (200, 201):
                 logger.info(f"Successfully posted transcript to Webex: {target_desc}")
+                self.last_delivery_outcome = "delivered"
                 return True
             else:
-                logger.error(f"Webex API error ({res.status_code}): {res.text}")
+                # A server error can follow acceptance; do not infer non-delivery.
+                self.last_delivery_outcome = "uncertain" if res.status_code >= 500 else "rejected"
+                logger.error("Webex API returned HTTP %s.", res.status_code)
                 if res.status_code == 404:
                     if self.room_id:
                         logger.error(
@@ -90,7 +95,8 @@ class WebexClient:
                         )
                 return False
         except Exception as e:
-            logger.error(f"Failed to post to Webex: {e}")
+            self.last_delivery_outcome = "uncertain"
+            logger.error("Webex request outcome is uncertain (%s); check Webex before retrying.", type(e).__name__)
             return False
 
     def list_rooms(self) -> list[dict]:

@@ -41,3 +41,23 @@ def test_short_transcript_uses_json_and_no_attachment(tmp_path, monkeypatch):
     assert payload["json"]["toPersonEmail"] == "person@example.com"
     assert "Synthetic short transcript." in payload["json"]["markdown"]
     assert "files" not in payload
+
+
+@pytest.mark.parametrize("outcome,expected", [
+    (201, "delivered"), (400, "rejected"), (503, "uncertain"),
+    (requests.Timeout("synthetic"), "uncertain"),
+    (requests.ConnectionError("synthetic"), "uncertain"),
+])
+def test_delivery_outcomes_distinguish_rejection_from_uncertainty(tmp_path, monkeypatch, outcome, expected):
+    transcript = tmp_path / "synthetic.txt"
+    transcript.write_text("Synthetic transcript")
+    post = Mock()
+    if isinstance(outcome, Exception):
+        post.side_effect = outcome
+    else:
+        post.return_value = Mock(status_code=outcome)
+    monkeypatch.setattr("webex_obs.webex_client.requests.post", post)
+    client = WebexClient("synthetic-token", recipient_email="person@example.com")
+    assert client.send_transcript(transcript) == (expected == "delivered")
+    assert client.last_delivery_outcome == expected
+    assert post.call_count == 1

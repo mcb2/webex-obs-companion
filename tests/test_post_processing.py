@@ -40,3 +40,16 @@ def test_worker_processes_jobs_in_fifo_order_and_survives_job_failure():
     worker.shutdown(wait=True)
 
     assert processed == ["first", "second", "third"]
+
+
+def test_unexpected_worker_exit_reports_fatal_failure():
+    import threading
+    failed = threading.Event()
+
+    def fatal(job):
+        raise SystemExit("synthetic worker termination")
+
+    worker = PostProcessingWorker(fatal, on_fatal=failed.set)
+    worker.submit(make_job("synthetic"))
+    assert failed.wait(2)
+    assert worker.shutdown(wait=True)

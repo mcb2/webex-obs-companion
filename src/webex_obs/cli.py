@@ -576,13 +576,23 @@ def stop():
 
 @app.command()
 def status():
-    """Check the status of the background LaunchAgent service."""
-    res = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    """Report launchd registration separately from lifecycle health."""
+    from .config import Config
+    from .runtime_state import application_health
+    from .service_control import LAUNCH_AGENT_LABEL
+
+    res = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+    if res.returncode != 0:
+        console.print("[yellow]LaunchAgent status unavailable (launchctl failed).[/yellow]")
+        return
     for line in res.stdout.splitlines():
-        if "com.cisco.webex-obs" in line:
-            console.print(f"[bold green]Service is ACTIVE:[/bold green] {line}")
+        fields = line.split()
+        if len(fields) == 3 and fields[2] == LAUNCH_AGENT_LABEL:
+            pid = int(fields[0]) if fields[0].isdigit() else None
+            health = application_health(Config().log_dir, pid)
+            console.print(f"LaunchAgent: loaded; application: {health}; last exit: {fields[1]}")
             return
-    console.print("[yellow]Service is currently INACTIVE / not loaded.[/yellow]")
+    console.print("LaunchAgent: not loaded; application health not established.")
 
 
 @app.command()

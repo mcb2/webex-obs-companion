@@ -93,6 +93,7 @@ class ProcessMonitor:
         self.on_strong_evidence = None
         self.on_possible_evidence = None
         self.on_idle = None
+        self.on_poll = None
 
     @property
     def current_platform_name(self) -> str | None:
@@ -523,6 +524,8 @@ class ProcessMonitor:
             self.current_call_title = None
             self.current_platform = None
         while True:
+            if self.on_poll:
+                self.on_poll()
             if wake_event is not None and wake_event.is_set():
                 return True
             running = self.is_call_active()

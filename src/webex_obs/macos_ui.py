@@ -6,6 +6,8 @@ Requests from that thread are handed to the main run loop through a short timer.
 
 import queue
 import threading
+import logging
+import time
 from pathlib import Path
 
 import AppKit
@@ -15,8 +17,12 @@ import objc
 from .config import DEFAULT_ENV_FILE
 from .control_dialog import manual_consent_dialog, recording_menu_choices, startup_dialog
 from .settings_store import save_settings
+from .runtime_state import ApplicationStopping
 from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
+
+logger = logging.getLogger(__name__)
+
 
 class _MenuTarget(Foundation.NSObject):
     @objc.python_method
@@ -47,12 +53,12 @@ class _MenuTarget(Foundation.NSObject):
     def quit_(self, sender):
         if self.ui.daemon.recorder.is_recording:
             return
-        try:
-            stop_launch_agent()
-        except Exception as exc:
-            self.ui._alert("Webex OBS Companion", "Could not quit", str(exc), ["OK"])
-        else:
-            AppKit.NSApp.terminate_(None)
+        self.ui._quit_service = True
+        self.ui.daemon.request_shutdown()
+
+    def applicationShouldTerminate_(self, sender):
+        self.ui.daemon.request_shutdown()
+        return AppKit.NSTerminateCancel
 
     def tick_(self, timer):
         self.ui._tick()
@@ -89,6 +95,10 @@ class MacOSUI:
         self._status_images = {}
         self._icon_state = None
         self._control_modal_active = False
+        self._shutdown_started_at = None
+        self._quit_service = False
+        self._unload_started = False
+        self._unload_done = threading.Event()
 
     @staticmethod
     def _status_image(badge_symbol=None):
@@ -176,7 +186,9 @@ class MacOSUI:
         self.timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.15, self.target, "tick:", None, True
         )
-        threading.Thread(target=self.daemon.start, name="meeting-lifecycle", daemon=True).start()
+        app.setDelegate_(self.target)
+        Foundation.NSRunLoop.currentRunLoop().addTimer_forMode_(self.timer, AppKit.NSModalPanelRunLoopMode)
+        self.daemon.start_background()
         app.run()
 
     def _add(self, menu, title, selector):
@@ -187,12 +199,17 @@ class MacOSUI:
         return item
 
     def _tick(self):
+        if self.daemon._shutdown_event.is_set():
+            self._tick_shutdown()
         try:
             # Avoid nested prompts stealing the consent notice's modal timeout.
             while not self._control_modal_active:
                 func, result, done = self.requests.get_nowait()
                 try:
-                    result.append(func())
+                    if self.daemon._shutdown_event.is_set():
+                        result.append(ApplicationStopping("Application is shutting down"))
+                    else:
+                        result.append(func())
                 except Exception as exc:
                     result.append(exc)
                 finally:
@@ -204,8 +221,40 @@ class MacOSUI:
         self._update_status_icon(recording, video)
         self._update_recording_menu()
         if self.item.button():
+            if self.daemon.failure:
+                self.item.button().setTitle_("!")
+                self.item.button().setToolTip_(self.daemon.failure)
+                return
             mode = "Recording video" if video else "Recording audio"
             self.item.button().setToolTip_(mode + " • " + title if recording else "Ready for calls")
+
+    def _tick_shutdown(self):
+        # Keep pumping AppKit requests while lifecycle cleanup runs off-thread.
+        if self._shutdown_started_at is None:
+            self._shutdown_started_at = time.monotonic()
+        if AppKit.NSApp.modalWindow():
+            AppKit.NSApp.stopModalWithCode_(0)
+        if not self.daemon._stopped_event.is_set():
+            if time.monotonic() - self._shutdown_started_at < 10.0:
+                return
+            self.daemon.failure = "Shutdown timed out; capture may still be active. Check OBS."
+            logger.error(self.daemon.failure)
+        if self._quit_service:
+            if not self._unload_started:
+                self._unload_started = True
+                threading.Thread(target=self._unload_service, name="service-unload", daemon=True).start()
+            if not self._unload_done.is_set():
+                return
+        AppKit.NSApp.stop_(None)
+
+    def _unload_service(self):
+        try:
+            stop_launch_agent()
+        except Exception:
+            self.daemon.failure = "Could not unload LaunchAgent; service may restart. Check logs."
+            logger.exception(self.daemon.failure)
+        finally:
+            self._unload_done.set()
 
     def _available_recording_choices(self):
         recording = self.daemon.recorder.is_recording
@@ -244,9 +293,13 @@ class MacOSUI:
     def _on_main(self, func):
         if threading.current_thread() is threading.main_thread():
             return func()
+        if self.daemon._shutdown_event.is_set():
+            raise ApplicationStopping("Application is shutting down")
         result, done = [], threading.Event()
         self.requests.put((func, result, done))
-        done.wait()
+        while not done.wait(0.1):
+            if self.daemon._shutdown_event.is_set():
+                raise ApplicationStopping("Application is shutting down")
         if isinstance(result[0], Exception):
             raise result[0]
         return result[0]

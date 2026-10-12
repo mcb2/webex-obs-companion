@@ -136,3 +136,64 @@ def test_status_icon_tracks_audio_video_and_stop_without_repeated_updates():
         call("Meeting recorder: recording video"),
         call("Meeting recorder: not recording"),
     ]
+
+
+def shutdown_ui():
+    ui = MacOSUI(Mock())
+    ui.daemon._shutdown_event = threading.Event()
+    ui.daemon._stopped_event = threading.Event()
+    ui.daemon.failure = None
+    return ui
+
+
+def test_quit_waits_for_lifecycle_before_unloading_service():
+    ui = shutdown_ui()
+    ui.daemon.recorder.is_recording = False
+    target = _MenuTarget.alloc().init()
+    target.configure(ui)
+    with patch("webex_obs.macos_ui.stop_launch_agent") as unload, \
+         patch("webex_obs.macos_ui.AppKit") as appkit, \
+         patch("webex_obs.macos_ui.threading.Thread") as thread:
+        thread.side_effect = lambda **kwargs: Mock(start=kwargs["target"])
+        target.quit_(None)
+        ui.daemon.request_shutdown.assert_called_once()
+        ui._tick_shutdown()
+        unload.assert_not_called()
+        appkit.NSApp.stop_.assert_not_called()
+        ui.daemon._stopped_event.set()
+        ui._tick_shutdown()
+        unload.assert_called_once()
+        appkit.NSApp.stop_.assert_called_once_with(None)
+
+
+def test_shutdown_deadline_exits_with_visible_capture_warning():
+    ui = shutdown_ui()
+    ui._shutdown_started_at = 0
+    with patch("webex_obs.macos_ui.time.monotonic", return_value=11), \
+         patch("webex_obs.macos_ui.AppKit") as appkit:
+        ui._tick_shutdown()
+    assert "capture may still be active" in ui.daemon.failure
+    appkit.NSApp.stop_.assert_called_once_with(None)
+    ui.daemon.recorder.stop_recording.assert_not_called()
+
+
+def test_application_termination_requests_coordinated_shutdown():
+    ui = shutdown_ui()
+    target = _MenuTarget.alloc().init()
+    target.configure(ui)
+    with patch("webex_obs.macos_ui.AppKit") as appkit:
+        assert target.applicationShouldTerminate_(None) is appkit.NSTerminateCancel
+    ui.daemon.request_shutdown.assert_called_once()
+
+
+def test_ui_bridge_rejects_new_dialogs_during_shutdown():
+    from webex_obs.runtime_state import ApplicationStopping
+    ui = shutdown_ui()
+    ui.daemon._shutdown_event.set()
+    func = Mock()
+    # Exercise the background bridge rather than the direct main-thread path.
+    with patch("webex_obs.macos_ui.threading.current_thread", return_value=object()):
+        with pytest.raises(ApplicationStopping):
+            ui._on_main(func)
+    func.assert_not_called()
+    assert ui.requests.empty()
