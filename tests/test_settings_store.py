@@ -1,9 +1,34 @@
 import tempfile
+import stat
 import unittest
 from pathlib import Path
 
+import pytest
+
 from webex_obs.config import Config
 from webex_obs.settings_store import save_settings
+
+
+@pytest.mark.parametrize("mode", [None, 0o666, 0o755, 0o400])
+def test_credentials_are_private_after_creation_or_replacement(tmp_path, monkeypatch, mode):
+    path = tmp_path / ".env"
+    if mode is not None:
+        path.write_text("# retain\nWEBEX_ACCESS_TOKEN=synthetic-retained\n")
+        path.chmod(mode)
+    from webex_obs import settings_store
+    original_replace = settings_store.os.replace
+
+    def replace(source, destination):
+        assert stat.S_IMODE(Path(source).stat().st_mode) == 0o600
+        original_replace(source, destination)
+
+    monkeypatch.setattr(settings_store.os, "replace", replace)
+    save_settings({"obs_ws_password": "synthetic-new"}, path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert Config(_env_file=path).obs_ws_password == "synthetic-new"
+    if mode is not None:
+        assert "WEBEX_ACCESS_TOKEN=synthetic-retained" in path.read_text()
+        assert "# retain" in path.read_text()
 
 
 class SettingsStoreTests(unittest.TestCase):

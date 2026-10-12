@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
+from getpass import GetPassWarning
 from pathlib import Path
 import requests
 import typer
@@ -55,6 +57,17 @@ PLIST_NAME = "com.cisco.webex-obs.plist"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / PLIST_NAME
 MODELS_CACHE_DIR = Path.home() / ".cache" / "webex_obs" / "models"
+
+
+def _ask_secret(prompt: str, default: str = "") -> str:
+    """Hide defaults and abort before getpass can fall back to echoed input."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GetPassWarning)
+            return Prompt.ask(prompt, default=default, password=True, show_default=False)
+    except GetPassWarning:
+        console.print("[bold red]Secret input requires a terminal that supports hidden input.[/bold red]")
+        raise typer.Exit(code=1) from None
 
 
 def _check_ffmpeg() -> bool:
@@ -312,7 +325,9 @@ def setup():
     my_agent_email = existing_my_agent_email
     room_id = existing_room_id
     if webex_delivery:
-        token = Prompt.ask("Enter your Webex Bot Access Token", default=existing_token if existing_token else None)
+        token = _ask_secret(
+            "Enter your Webex Bot Access Token", default=existing_token,
+        )
         recipient_email = Prompt.ask(
             "Enter your Webex email for 1:1 direct delivery (Option 1)",
             default=existing_recipient_email,
@@ -327,7 +342,9 @@ def setup():
 
     console.print("\n[bold]2. OBS Studio WebSocket Configuration[/bold]")
     obs_port = Prompt.ask("Enter OBS WebSocket port", default=existing_obs_port)
-    obs_password = Prompt.ask("Enter OBS WebSocket password", default=existing_obs_password, password=True)
+    obs_password = _ask_secret(
+        "Enter OBS WebSocket password", default=existing_obs_password,
+    )
     exit_obs = Confirm.ask("Exit OBS after recording stops?", default=existing_exit_obs)
     shared_window_behavior = Prompt.ask(
         "When a new Webex window appears during video recording",
@@ -357,9 +374,8 @@ def setup():
             hf_token = ""
 
         while not hf_token:
-            hf_token = Prompt.ask(
+            hf_token = _ask_secret(
                 "Enter your Hugging Face read token (required for neural diarization)",
-                password=True,
             ).strip()
             if not hf_token:
                 console.print(
@@ -425,8 +441,16 @@ HOTKEY_VIDEO={hotkey_video}
 HOTKEY_VIDEO_SOURCE={hotkey_source}
 HOTKEY_STOP_TRANSCRIBE={hotkey_stop}
 """
-    with open(env_file, "w") as f:
-        f.write(env_content)
+    # mkstemp creates a private (0600) file before any credentials are written.
+    # Replace atomically so a failed write cannot truncate existing credentials.
+    fd, temp_name = tempfile.mkstemp(prefix=".webex-obs-", dir=env_file.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(env_content)
+        os.replace(temp, env_file)
+    finally:
+        temp.unlink(missing_ok=True)
 
     console.print(f"\n[bold green]Configuration successfully saved to {env_file}![/bold green]")
     console.print("[cyan]Tip: Test 1:1 delivery anytime with: [bold]uv run webex-obs test-webex[/bold][/cyan]")
