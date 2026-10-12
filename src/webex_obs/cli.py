@@ -362,10 +362,9 @@ def setup():
             "model conditions:"
         )
         console.print("  Token: [cyan]https://huggingface.co/settings/tokens[/cyan]")
-        console.print("  Segmentation: [cyan]https://huggingface.co/pyannote/segmentation-3.0[/cyan]")
         console.print(
             "  Speaker diarization: "
-            "[cyan]https://huggingface.co/pyannote/speaker-diarization-3.1[/cyan]\n"
+            "[cyan]https://huggingface.co/pyannote/speaker-diarization-community-1[/cyan]\n"
         )
 
         if existing_hf_token and not Confirm.ask(

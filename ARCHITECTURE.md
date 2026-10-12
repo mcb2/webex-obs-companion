@@ -74,6 +74,14 @@ are attached as text files. My Agent forwarding is a manual user action.
 `MediaCleaner` prunes old media after each job using the configured retention
 period (14 days by default).
 
+Package initialization disables Hugging Face, pyannote, and OpenTelemetry
+telemetry before dependency imports. Neural diarization uses pyannote.audio 4's
+local Community-1 pipeline with `token=` authentication. The ffmpeg-produced
+16 kHz mono PCM16 WAV becomes a normalized `(1, samples)` float32 waveform,
+avoiding TorchCodec file decoding. The `speaker_diarization` annotation (or a
+legacy bare annotation) supplies intervals for existing Whisper alignment;
+initialization and inference failures retain the acoustic fallback.
+
 ```text
 Native Webex / Zoom / Teams
            |

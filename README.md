@@ -45,7 +45,7 @@ git clone https://github.com/mcb2/webex-obs-companion.git webex_obs_companion
 cd webex_obs_companion
 uv venv
 source .venv/bin/activate
-uv sync --extra neural-diarization
+uv sync --locked --extra neural-diarization
 brew install ffmpeg
 ```
 
@@ -54,16 +54,22 @@ brew install ffmpeg
 Neural speaker diarization requires a free Hugging Face account and read token:
 
 1. Accept the conditions for
-   [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
-2. Accept the conditions for
-   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1).
-3. Create a **Read** token at
+   [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1).
+2. Create a **Read** token at
    [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
-4. Enter that token when `uv run webex-obs setup` prompts for it. The token is
+3. Enter that token when `uv run webex-obs setup` prompts for it. The token is
    stored only in the local `.env` file.
 
 A plain `uv sync` does not install the optional neural-diarization packages;
-use `uv sync --extra neural-diarization` after updates.
+use `uv sync --locked --extra neural-diarization` after updates.
+
+The locked pyannote.audio 4 pipeline uses Community-1; access to the older 3.1
+models does not grant access to Community-1. Its weights are downloaded on first
+use, then inference runs locally. Hugging Face and pyannote telemetry are
+disabled before speech dependencies are imported. Extracted PCM audio is passed
+in memory, so diarization does not need TorchCodec file decoding. `ffmpeg` is
+still required to extract audio from recordings. If neural initialization or
+inference fails, the acoustic speaker-label fallback remains available.
 
 ### 2. Configuration Wizard
 Run the interactive setup wizard (intelligently preserves existing `.env` values when re-run):

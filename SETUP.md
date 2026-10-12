@@ -20,21 +20,28 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 5. **Neural speaker diarization dependencies** (required when
    `ENABLE_DIARIZATION=true`):
    ```bash
-   uv sync --extra neural-diarization
+   uv sync --locked --extra neural-diarization
    ```
-   Neural diarization also requires a free Hugging Face account. Complete all
-   three access steps before running the setup wizard:
+   Neural diarization also requires a free Hugging Face account. Complete both
+   access steps before running the setup wizard:
 
    1. Accept the conditions for
-      [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
-   2. Accept the conditions for
-      [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1).
-   3. Create a **Read** token at
+      [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1).
+   2. Create a **Read** token at
       [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
 
    The setup wizard prompts for this token and saves it as `HF_TOKEN` only in
    your local `.env` file. A plain `uv sync` does not install the optional
    neural-diarization dependency group.
+
+   Community-1 is the local pipeline supported by the locked pyannote.audio 4
+   API. Its agreement is separate from the older 3.1 model conditions, and its
+   weights must be cached on first use before offline inference is possible.
+   Hugging Face and pyannote telemetry are disabled at application import time.
+   The app supplies normalized mono PCM audio in memory, avoiding TorchCodec's
+   file-decoder/shared-library requirements. `ffmpeg` remains necessary for
+   extraction. Missing dependencies, inaccessible models, and inference failures
+   use the existing acoustic fallback. Speaker labels remain anonymous.
 
 ---
 
