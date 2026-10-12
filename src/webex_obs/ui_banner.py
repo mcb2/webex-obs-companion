@@ -130,5 +130,12 @@ class UIBanner:
 
     @staticmethod
     def show_notification(title: str, message: str) -> None:
-        apple_script = f'display notification "{message}" with title "{title}"'
-        subprocess.run(["osascript", "-e", apple_script], capture_output=True)
+        # Keep dynamic text out of executable source, including quotes and newlines.
+        apple_script = (
+            "on run argv\n"
+            "display notification (item 2 of argv) with title (item 1 of argv)\n"
+            "end run"
+        )
+        subprocess.run(
+            ["osascript", "-e", apple_script, "--", title, message], capture_output=True
+        )

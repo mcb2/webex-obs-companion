@@ -2,7 +2,34 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 from webex_obs.ui_banner import UIBanner
+
+
+@pytest.mark.parametrize("value", [
+    'Meeting "Alpha"',
+    "C:\\Meetings\\Alpha\\",
+    "First line\nSecond line\rThird line",
+    '\" & (do shell script "touch /tmp/notification-injection") & "',
+    '\"\nend run\ndo shell script "touch /tmp/notification-injection"\n--',
+    "-e",
+    "Unicode: café 🎙️",
+])
+@pytest.mark.parametrize("field", ["title", "message"])
+def test_notification_text_is_only_passed_as_data(value, field):
+    title, message = (value, "Message") if field == "title" else ("Title", value)
+    # Never run osascript or any injected command, even on macOS.
+    with patch("webex_obs.ui_banner.subprocess.run") as run:
+        UIBanner.show_notification(title, message)
+    run.assert_called_once_with(
+        ["osascript", "-e", (
+            "on run argv\n"
+            "display notification (item 2 of argv) with title (item 1 of argv)\n"
+            "end run"
+        ), "--", title, message],
+        capture_output=True,
+    )
 
 
 class UIBannerTests(unittest.TestCase):

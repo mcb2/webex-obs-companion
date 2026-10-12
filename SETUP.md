@@ -116,6 +116,13 @@ The setup wizard reuses existing `.env` values as defaults, so you can press **E
 uv run webex-obs setup
 ```
 
+Webex tokens and OBS passwords use hidden input and never display existing
+secret defaults. Press **Enter** to retain them. Secret entry requires a terminal
+that supports hidden input; setup aborts if input would be echoed.
+Setup creates or replaces `.env`
+atomically with owner-only read/write permissions (`0600`); Settings saves also
+enforce these permissions.
+
 When neural diarization is enabled, the wizard requires a Hugging Face read
 token. It displays the token and model-access links above, masks newly entered
 tokens, and can retain an existing token without displaying it.

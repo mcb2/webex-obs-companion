@@ -67,12 +67,10 @@ def save_settings(values: dict[str, str | bool | Path | None], path: Path | None
     try:
         if path.exists():
             shutil.copyfile(path, temp)
-            os.chmod(temp, path.stat().st_mode & 0o700)
-        else:
-            os.chmod(temp, 0o600)
         for field, value in values.items():
             formatted = "" if value is None else (str(value).lower() if isinstance(value, bool) else str(value))
             set_key(str(temp), EDITABLE[field], formatted, quote_mode="always")
+        os.chmod(temp, 0o600)
         os.replace(temp, path)
         return validated
     finally:
