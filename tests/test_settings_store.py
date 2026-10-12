@@ -26,7 +26,7 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertIn("OBS_WS_PASSWORD=secret", path.read_text())
             loaded = Config(_env_file=path)
             self.assertEqual(loaded.obs_ws_port, 4456)
-            self.assertEqual(loaded.recordings_dir, Path("/tmp/Meeting Recordings"))
+            self.assertEqual(loaded.recordings_dir, Path("/tmp/Meeting Recordings").resolve())
 
     def test_invalid_input_does_not_touch_file(self):
         with tempfile.TemporaryDirectory() as folder:

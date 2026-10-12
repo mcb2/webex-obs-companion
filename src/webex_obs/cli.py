@@ -1,4 +1,5 @@
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from rich.progress import (
 )
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+
+from . import __version__
 
 # Ensure Homebrew and standard binary paths are in PATH
 extra_paths = ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")]
@@ -66,7 +69,7 @@ def _check_ffmpeg() -> bool:
 
 def _stream_download_file(url: str, dest_path: Path, token: str | None = None) -> bool:
     """Download a file with streaming chunks and a live progress bar."""
-    headers = {"User-Agent": "webex-obs-companion/0.2.1"}
+    headers = {"User-Agent": f"webex-obs-companion/{__version__}"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -491,43 +494,22 @@ def install_service():
 
     env_path = f"/opt/homebrew/bin:/usr/local/bin:{os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')}"
 
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.cisco.webex-obs</string>
-    <key>WorkingDirectory</key>
-    <string>{project_root}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{venv_python}</string>
-        <string>-u</string>
-        <string>-m</string>
-        <string>webex_obs.daemon</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PYTHONUNBUFFERED</key>
-        <string>1</string>
-        <key>PATH</key>
-        <string>{env_path}</string>
-        <key>HF_HUB_ENABLE_HF_TRANSFER</key>
-        <string>0</string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
-</dict>
-</plist>
-"""
-    with open(PLIST_PATH, "w") as f:
-        f.write(plist_content)
+    plist_content = {
+        "Label": "com.cisco.webex-obs",
+        "WorkingDirectory": str(project_root),
+        "ProgramArguments": [venv_python, "-u", "-m", "webex_obs.daemon"],
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "PATH": env_path,
+            "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        },
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(stdout_log),
+        "StandardErrorPath": str(stderr_log),
+    }
+    with PLIST_PATH.open("wb") as f:
+        plistlib.dump(plist_content, f)
 
     subprocess.run(["launchctl", "unload", str(PLIST_PATH)], capture_output=True)
     res = subprocess.run(["launchctl", "load", str(PLIST_PATH)], capture_output=True, text=True)

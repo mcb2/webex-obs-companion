@@ -1,21 +1,11 @@
 import socket
-import sys
 import types
 import unittest
 import threading
+
+import pytest
 from unittest.mock import patch
 
-
-class _PsutilError(Exception):
-    pass
-
-
-fake_psutil = types.ModuleType("psutil")
-fake_psutil.NoSuchProcess = _PsutilError
-fake_psutil.AccessDenied = _PsutilError
-fake_psutil.ZombieProcess = _PsutilError
-fake_psutil.process_iter = lambda attrs: []
-sys.modules.setdefault("psutil", fake_psutil)
 
 from webex_obs.core_audio_monitor import AudioActivity
 from webex_obs.process_monitor import TEAMS, WEBEX, ZOOM, ProcessMonitor
@@ -48,6 +38,16 @@ class _AudioMonitor:
     def activity_for_pids(self, pids):
         self.requested_pids.append(pids)
         return self.activity
+
+
+@pytest.fixture(autouse=True)
+def isolated_probes(monkeypatch):
+    # UDP fallback tests explicitly model a host without the per-process API.
+    monkeypatch.setattr("webex_obs.process_monitor.CoreAudioProcessMonitor",
+                        lambda: _AudioMonitor(AudioActivity(available=False)))
+    monkeypatch.setattr("webex_obs.process_monitor.psutil.process_iter", lambda attrs: [])
+    monkeypatch.setattr("webex_obs.process_monitor.subprocess.run",
+                        lambda *args, **kwargs: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
 
 
 class ProcessMonitorTests(unittest.TestCase):
@@ -92,10 +92,10 @@ class ProcessMonitorTests(unittest.TestCase):
     def test_general_webex_socket_requires_call_window(self):
         monitor = ProcessMonitor()
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
-             patch.object(monitor, "_active_call_window_name", return_value="Mark Bahler"):
+             patch.object(monitor, "_active_call_window_name", return_value="Synthetic Caller"):
             self.assertTrue(monitor.is_webex_running())
-            self.assertIn("call window 'Mark Bahler'", monitor._last_detection_reason)
-            self.assertEqual(monitor.current_call_title, "Mark Bahler")
+            self.assertIn("call window 'Synthetic Caller'", monitor._last_detection_reason)
+            self.assertEqual(monitor.current_call_title, "Synthetic Caller")
 
     def test_webex_media_process_without_call_controls_is_not_enough(self):
         audio = _AudioMonitor(AudioActivity(available=False))
@@ -387,3 +387,16 @@ class ProcessMonitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_inaccessible_process_does_not_hide_a_detectable_call():
+    import psutil
+
+    inaccessible = _Process("Webex", 5004, pid=100)
+    accessible = _Process("Webex", 5004, pid=200)
+    monitor = ProcessMonitor()
+    with patch.object(inaccessible, "net_connections", side_effect=psutil.AccessDenied(pid=100)), \
+         patch("webex_obs.process_monitor.psutil.process_iter", return_value=[inaccessible, accessible]), \
+         patch.object(monitor, "_active_call_window_name", return_value="Synthetic meeting"):
+        assert monitor.is_webex_running()
+        assert monitor.current_call_title == "Synthetic meeting"

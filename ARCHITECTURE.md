@@ -17,7 +17,11 @@ implement the same contract and handle its own permissions, audio/video devices,
 recovery and output files. The adapter maps audio/video modes to OBS scene names.
 OBS start verifies output status and retries transient startup failures against
 the same OBS instance. Service startup leaves OBS running; recording stop can
-optionally exit it after verifying that recording has stopped.
+optionally exit it after verifying that recording has stopped. If a stop cannot
+be verified, OBS segment tracking and source selection are retained, pending
+connection changes stay deferred, and the daemon leaves media untouched without
+renaming, deleting, or queuing it for transcription. The user is notified so
+capture state can be checked before recovery.
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
 

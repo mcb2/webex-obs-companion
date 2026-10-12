@@ -74,3 +74,20 @@ def test_unavailable_process_api_falls_back_cleanly():
 
     assert not activity.available
     assert not activity.active
+
+
+def test_disappearing_process_does_not_hide_other_process_audio(monkeypatch):
+    monitor = CoreAudioProcessMonitor(_FakeCoreAudio(input_active=True))
+    requested = []
+
+    def translate(pid):
+        requested.append(pid)
+        if pid == 10:
+            raise OSError("process exited")
+        return 99
+
+    monkeypatch.setattr(monitor, "_translate_pid", translate)
+    activity = monitor.activity_for_pids([20, 10, 20])
+    assert activity.available
+    assert activity.input_pids == (20,)
+    assert requested == [10, 20]

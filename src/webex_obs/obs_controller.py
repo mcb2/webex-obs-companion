@@ -458,12 +458,8 @@ class OBSController:
         if not self.check_connection():
             logger.warning("Cannot stop OBS recording cleanly: WebSocket is not connected.")
             files = list(self.recorded_files)
-            self.recorded_files.clear()
-            self.selected_window_id = None
-            self._seen_window_ids.clear()
-            self._candidate_polls.clear()
-            self._selected_missing_polls = 0
-            self._missing_selected_window_reported = False
+            # Keep session recovery state until a later stop can be verified.
+            self.is_recording = True
             return files
 
         try:
@@ -489,12 +485,17 @@ class OBSController:
         else:
             logger.info("OBS recording stopped; keeping OBS open as configured.")
         files = list(self.recorded_files)
-        self.recorded_files.clear()
-        self.selected_window_id = None
-        self._seen_window_ids.clear()
-        self._candidate_polls.clear()
-        self._selected_missing_polls = 0
-        self._missing_selected_window_reported = False
+        if stopped:
+            self.is_recording = False
+            self.recorded_files.clear()
+            self.selected_window_id = None
+            self._seen_window_ids.clear()
+            self._candidate_polls.clear()
+            self._selected_missing_polls = 0
+            self._missing_selected_window_reported = False
+        else:
+            # Unknown output state must not authorize deletion or reconfiguration.
+            self.is_recording = True
         return files
 
     def _recording_is_confirmed_stopped(self) -> bool:
