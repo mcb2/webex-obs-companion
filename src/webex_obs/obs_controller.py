@@ -3,7 +3,9 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from obswebsocket import obsws, requests
+from pathlib import Path
+from queue import Empty, SimpleQueue
+from obswebsocket import events, obsws, requests
 from obswebsocket.base_classes import Baserequests
 
 from .macos_displays import active_displays
@@ -56,6 +58,15 @@ class OBSController:
         self._current_output_path: str | None = None
         self._last_output_duration: float | None = None
         self.recorded_files: list[str] = []
+        # Callbacks run on obs-websocket-py's receiver. Only the lifecycle
+        # worker mutates ownership and paths; callbacks must never make RPCs.
+        self._record_events: SimpleQueue[tuple[int, int | None, str, dict]] = SimpleQueue()
+        self._connection_generation = 0
+        self._segment_paths: list[list[str]] = []
+        self._segment_index: int | None = None
+        self._accepted_segments: set[int] = set()
+        self._path_probe_warned = False
+        self._last_record_event_state: str | None = None
         self.current_scene = "Webex-Audio"
         self.selected_window_id: int | None = None
         self.selected_display_uuid: str | None = None
@@ -134,6 +145,9 @@ class OBSController:
 
     def connect(self) -> bool:
         """Establish connection to OBS WebSocket server."""
+        self._drain_record_events()
+        if self.is_recording:
+            self._ownership_lost = True
         try:
             started_here = not self.obs_is_running()
             if started_here:
@@ -144,6 +158,7 @@ class OBSController:
             return False
         try:
             if self.ws:
+                self._connection_generation += 1
                 try:
                     self.ws.disconnect()
                 except Exception:
@@ -151,7 +166,14 @@ class OBSController:
             attempts = 15 if started_here else 3
             for attempt in range(attempts):
                 try:
-                    self.ws = obsws(self.address, self.port, self.password)
+                    self._connection_generation += 1
+                    generation = self._connection_generation
+                    self.ws = obsws(self.address, self.port, self.password, legacy=False)
+                    def enqueue(event, generation=generation):
+                        self._record_events.put((generation, self._segment_index,
+                                                 event.name, dict(event.datain)))
+                    self.ws.register(enqueue, events.RecordStateChanged)
+                    self.ws.register(enqueue, events.RecordFileChanged)
                     self.ws.connect()
                     self.is_connected = True
                     logger.info("Connected to OBS Studio WebSocket v5.")
@@ -182,6 +204,8 @@ class OBSController:
 
     def disconnect(self):
         """Disconnect WebSocket cleanly."""
+        self._drain_record_events()
+        self._connection_generation += 1
         if self.ws and self.is_connected:
             try:
                 self.ws.disconnect()
@@ -440,6 +464,9 @@ class OBSController:
                 logger.warning("OBS status is unknown; refusing to start another recording.")
                 return False
             # A positively idle output permits a new owned segment.
+            if self._ownership_lost and self._segment_index is not None:
+                # Late events cannot grant new paths to an ambiguous segment.
+                self._accepted_segments.discard(self._segment_index)
             self._owns_recording = False
             self._ownership_lost = False
             try:
@@ -456,14 +483,22 @@ class OBSController:
                 self.stop_verified = False
                 # A lost response is ambiguous, not authorization to adopt OBS.
                 self.is_recording = True
-                self._call(requests.StartRecord())
-                self._owns_recording = True
-                self._owned_output_active = False
+                self._segment_index = len(self._segment_paths)
+                self._segment_paths.append([])
                 self._current_output_path = None
                 self._last_output_duration = None
+                self._path_probe_warned = False
+                self._last_record_event_state = None
+                self._call(requests.StartRecord())
+                self._accepted_segments.add(self._segment_index)
+                # Scene preparation may have reconnected after the idle probe.
+                # This accepted start establishes ownership on the new socket.
+                self._ownership_lost = False
+                self._owns_recording = True
+                self._owned_output_active = False
                 for _ in range(3):
                     active = self._refresh_recording_status()
-                    if active is True and not self._ownership_lost:
+                    if active is True and self._owns_recording and not self._ownership_lost:
                         logger.info("OBS recording started in scene '%s'.", scene_name)
                         return True
                     if active is None:
@@ -483,10 +518,118 @@ class OBSController:
         logger.error("Could not start OBS recording after three attempts.")
         return False
 
-    def _remember_owned_path(self, output_path: str) -> None:
-        if output_path and output_path not in self.recorded_files:
+    def _remember_owned_path(self, output_path: str | None, segment: int | None = None) -> None:
+        if isinstance(output_path, str) and output_path and output_path not in self.recorded_files:
             MediaCleaner.protect_recordings([output_path])
-            self.recorded_files.append(output_path)
+            segment = self._segment_index if segment is None else segment
+            if segment is None:
+                self.recorded_files.append(output_path)
+                return
+            known = {path for paths in self._segment_paths for path in paths}
+            legacy = [path for path in self.recorded_files if path not in known]
+            self._segment_paths[segment].append(output_path)
+            self.recorded_files = legacy + [path for paths in self._segment_paths for path in paths]
+
+    def _capture_owned_output_path(self) -> None:
+        """Read a live file target before OBS can exit and lose its last path.
+
+        GetRecordStatus has no outputPath in v5. GetOutputSettings is generic;
+        these are OBS Studio's built-in recording outputs and their local-file
+        settings, not a protocol guarantee for third-party output plugins.
+        Never search a directory or use another output as recording evidence.
+        """
+        if not self._owns_recording or self._ownership_lost or self._segment_index is None:
+            return
+        try:
+            outputs = self._call(requests.GetOutputList()).datain.get("outputs", [])
+            matches = [output for output in outputs if output.get("outputName") in {
+                "simple_file_output", "simple_ffmpeg_output", "adv_file_output", "adv_ffmpeg_output",
+            } and output.get("outputActive") is True]
+            if len(matches) != 1:
+                if not self._path_probe_warned:
+                    logger.warning("OBS recording file target is unavailable; stop events/responses are required for recovery.")
+                    self._path_probe_warned = True
+                return
+            settings = self._call(requests.GetOutputSettings(
+                outputName=matches[0]["outputName"],
+            )).datain.get("outputSettings", {})
+            self._drain_record_events()
+            if not self._owns_recording or self._ownership_lost:
+                return
+            field = "url" if matches[0]["outputName"].endswith("ffmpeg_output") else "path"
+            path = settings.get(field)
+            if isinstance(path, str) and Path(path).is_absolute():
+                # Split-file outputs can retain their initial settings path.
+                # Only an unfamiliar target signals an independent restart.
+                if self._current_output_path and path not in self._segment_paths[self._segment_index]:
+                    self._ownership_lost = True
+                    logger.warning("OBS file target changed independently; leaving the new recording untouched.")
+                    return
+                if self._current_output_path is None:
+                    self._current_output_path = path
+                self._remember_owned_path(path)
+        except Exception as exc:
+            if not self._path_probe_warned:
+                logger.warning("Could not read OBS recording file target; retaining event/response tracking: %s", exc)
+                self._path_probe_warned = True
+
+    def _drain_record_events(self) -> None:
+        """Consume ordered events under the backend lifecycle lock.
+
+        Socket generations reject late callbacks after reconnect. Segment
+        indices preserve order when an event arrives after a recovery start.
+        A stopped event alone never establishes ownership of an unknown output.
+        """
+        while True:
+            try:
+                generation, segment, name, data = self._record_events.get_nowait()
+            except Empty:
+                return
+            if generation != self._connection_generation or not self.is_recording:
+                continue
+            path = data.get("outputPath")
+            state = data.get("outputState")
+            if (name == "RecordStateChanged" and segment == self._segment_index
+                    and state in {"OBS_WEBSOCKET_OUTPUT_STARTING", "OBS_WEBSOCKET_OUTPUT_STARTED"}):
+                # Consecutive duplicates are harmless. A new start transition
+                # after our started output identifies an independent restart,
+                # even if its stopped event or duration reset was missed.
+                if (self._last_record_event_state == "OBS_WEBSOCKET_OUTPUT_STARTED"
+                        and state == "OBS_WEBSOCKET_OUTPUT_STARTING"):
+                    self._ownership_lost = True
+                    logger.warning("OBS restarted recording independently; leaving the new output untouched.")
+                self._last_record_event_state = state
+            elif name == "RecordStateChanged" and state == "OBS_WEBSOCKET_OUTPUT_STOPPED":
+                if data.get("outputActive") is not False:
+                    continue
+                if segment != self._segment_index and segment in self._accepted_segments:
+                    # Fill an unreported earlier segment, but never attach an
+                    # unfamiliar late file to a segment already identified.
+                    if not self._segment_paths[segment]:
+                        self._remember_owned_path(path, segment)
+                    continue
+                # Duplicates for an older file must not revoke a new segment.
+                if path in self.recorded_files and path != self._current_output_path:
+                    continue
+                if segment != self._segment_index:
+                    continue
+                if (self._owns_recording or segment in self._accepted_segments) and not self._ownership_lost:
+                    if self._current_output_path and path and path != self._current_output_path:
+                        self._ownership_lost = True
+                        continue
+                    self._remember_owned_path(path)
+                    if isinstance(path, str) and path:
+                        self._current_output_path = path
+                    self._owns_recording = False
+                    self._owned_output_active = False
+            elif name == "RecordFileChanged" and segment == self._segment_index:
+                if self._owns_recording and not self._ownership_lost:
+                    path = data.get("newOutputPath")
+                    if isinstance(path, str) and Path(path).is_absolute():
+                        if path in self.recorded_files:
+                            continue
+                        self._remember_owned_path(path)
+                        self._current_output_path = path
 
     def _refresh_recording_status(self) -> bool | None:
         """Probe status without adopting an external recording or losing segments."""
@@ -528,7 +671,7 @@ class OBSController:
                 return []
             try:
                 res = self._call(requests.StopRecord())
-                self._remember_owned_path(res.datain.get("outputPath", ""))
+                self._remember_owned_path(res.datain.get("outputPath"))
             except Exception as e:
                 logger.error("Error stopping OBS recording: %s", e)
             # StopRecord can return before OBS finishes finalizing output.
@@ -549,6 +692,10 @@ class OBSController:
         self._last_output_duration = None
         files = list(self.recorded_files)
         self.recorded_files.clear()
+        self._segment_paths.clear()
+        self._accepted_segments.clear()
+        self._segment_index = None
+        self._last_record_event_state = None
         # Reset OBS as well as our session cache. A rejected reset must never
         # silently authorize full-screen capture in the next video session.
         self._reset_capture_selection()
@@ -569,12 +716,14 @@ class OBSController:
     def _recording_active_status(self) -> bool | None:
         """True = active, False = stopped, None = unknown. Never coerce a value."""
         self.recording_status = None
+        self._drain_record_events()
         if not self.check_connection():
             self._ownership_lost = self._ownership_lost or self.is_recording
             return None
         try:
             res = self._call(requests.GetRecordStatus())
             data = res.datain
+            self._drain_record_events()
             active = data.get("outputActive")
             if res.status is not True or type(active) is not bool:
                 logger.warning("OBS recording status response was unsuccessful or lacked a boolean outputActive.")
@@ -585,22 +734,19 @@ class OBSController:
                 self._owns_recording = False
                 self._owned_output_active = False
             if active and self._owns_recording and not self._ownership_lost:
-                path = data.get("outputPath")
                 duration = data.get("outputDuration")
-                changed_path = path and self._current_output_path and path != self._current_output_path
                 reset_duration = (isinstance(duration, (int, float))
                                   and self._last_output_duration is not None
                                   and duration < self._last_output_duration)
-                if changed_path or reset_duration:
+                if reset_duration:
                     self._ownership_lost = True
                     logger.warning("OBS output changed independently; leaving the new recording untouched.")
                 else:
                     self._owned_output_active = True
-                    if path:
-                        self._current_output_path = path
-                        self._remember_owned_path(path)
                     if isinstance(duration, (int, float)):
                         self._last_output_duration = duration
+                    if self._segment_index is not None:
+                        self._capture_owned_output_path()
             return active
         except Exception as e:
             logger.warning("Could not verify OBS recording status: %s", e)

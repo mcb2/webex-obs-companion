@@ -24,9 +24,20 @@ adopted. Recovery starts a new segment only from a confirmed stopped output.
 A connection gap or a changed path/reset duration invalidates active ownership;
 OBS has no stable recording ID, so an ambiguous active output is left untouched.
 An external stop/restart between observations can be undetectable without a
-changed path or decreased duration. Paths never reported by OBS are left on
-disk for manual recovery. Switching to video changes scenes without splitting
-the recording output. Service startup leaves OBS running; recording stop can
+changed path or decreased duration. WebSocket v5 GetRecordStatus never supplies
+outputPath. Accepted StopRecord responses and stopped RecordStateChanged events
+supply finalized paths. GetOutputList/GetOutputSettings capture exact local
+targets of OBS Studio's built-in simple/advanced file and FFmpeg recording
+outputs while ownership is intact, preserving paths across missed stop events,
+interrupted stop responses, and OBS restarts. Unknown/custom outputs fall back
+to reported stop paths. RecordFileChanged (v5.5+) tracks splits. Receiver callbacks
+only enqueue events; the lifecycle worker consumes them, rejecting stale socket
+generations and duplicate paths. A per-start ledger preserves session order,
+including late final events, and is cleared only after verified completion.
+No directory scan, recent-file heuristic, or filename match grants ownership.
+Unobserved paths remain on disk for manual recovery; the ledger is in memory
+and does not survive a companion restart. Switching to video changes scenes
+without splitting the recording output. Service startup leaves OBS running; recording stop can
 optionally exit it after verifying that recording has stopped. If a stop cannot
 be verified, OBS segment tracking and source selection are retained, pending
 connection changes stay deferred, and the daemon leaves media untouched without

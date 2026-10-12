@@ -226,6 +226,15 @@ choice is retained. After a lost connection, stop the ambiguous recording in
 OBS first; the app cannot safely identify an active output after reconnecting.
 Independently started OBS recordings are left untouched.
 
+Recovery retains exact paths observed from OBS's built-in recording output
+settings, stop responses, and recording events. A verified stop returns all
+known segments once in session order, even after OBS restarts during the session.
+`GetRecordStatus` itself has no file path. Files whose paths were never observed
+remain on disk for manual recovery; recent files are never adopted by scanning
+the recording directory. Custom output plugins and missing file-split events
+may require manual recovery. Segment tracking does not survive restarting the
+companion itself.
+
 `RETENTION_DAYS=0` deletes only eligible media immediately after successful
 transcription and any enabled delivery. Positive values retain eligible media
 until its modification time is that many days old (default 14). Cleanup uses

@@ -181,8 +181,20 @@ StartRecord response establishes ownership; an already active output or a lost
 start response does not. After connection loss, an active output's identity is
 uncertain, so the app leaves it running. Stop it directly in OBS, then retry
 Stop in the app to finalize only already known segments. OBS does not provide
-a stable recording ID or reliably include a media path in GetRecordStatus;
-segments whose paths were never reported remain on disk for manual recovery.
+a stable recording ID, and [WebSocket v5 `GetRecordStatus`](https://github.com/obsproject/obs-websocket/blob/master/docs/generated/protocol.md#getrecordstatus)
+has no media path.
+The companion tracks accepted `StopRecord` paths and stopped
+`RecordStateChanged` events. While it owns an active recording, it also reads
+the exact local file target of OBS Studio's built-in recording output through
+`GetOutputList` / `GetOutputSettings`. This preserves known recovery segments
+when OBS exits, a stop response is interrupted, or a stop event is missed.
+WebSocket 5.5+ file-split events retain subsequent paths too. After a verified
+stop, completed paths are returned once, in session order. Reconciliation uses
+only observed paths; recent files or similar names never establish ownership.
+Third-party outputs may not expose a supported local file target. Files whose
+paths were never observed (including missed split events) remain on disk for
+manual recovery. Tracking survives OBS restarts within the running companion
+session; it does not persist across companion restarts.
 An independent stop/restart entirely between observations may be undetectable
 when OBS supplies neither a changed path nor a decreased output duration.
 
