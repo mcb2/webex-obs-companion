@@ -4,6 +4,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from obswebsocket import obsws, requests
+from obswebsocket.base_classes import Baserequests
 
 from .macos_displays import active_displays
 from .cleaner import MediaCleaner
@@ -58,10 +59,18 @@ class OBSController:
         self.current_scene = "Webex-Audio"
         self.selected_window_id: int | None = None
         self.selected_display_uuid: str | None = None
+        self._capture_reset_pending = False
         self._seen_window_ids: set[int] = set()
         self._candidate_polls: dict[int, int] = {}
         self._selected_missing_polls = 0
         self._missing_selected_window_reported = False
+
+    def _call(self, request: Baserequests) -> Baserequests:
+        """obs-websocket-py 1.0 returns rejected requests rather than raising."""
+        response = self.ws.call(request)
+        if response.status is not True:
+            raise RuntimeError(f"OBS rejected {request.name}")
+        return response
 
     def obs_is_running(self) -> bool:
         return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0
@@ -115,7 +124,7 @@ class OBSController:
         try:
             for request in (requests.GetRecordStatus, requests.GetStreamStatus,
                             requests.GetReplayBufferStatus):
-                data = self.ws.call(request()).datain
+                data = self._call(request()).datain
                 if data.get("outputActive") is not False:
                     return False
             return True
@@ -163,7 +172,7 @@ class OBSController:
         if self.ws and self.is_connected:
             try:
                 # Fast heartbeat ping
-                self.ws.call(requests.GetVersion())
+                self._call(requests.GetVersion())
                 return True
             except Exception:
                 logger.warning("OBS WebSocket connection was lost. Reconnecting...")
@@ -222,7 +231,7 @@ class OBSController:
         # Its own window dropdown is the authoritative list of capturable IDs.
         if self.ws and self.is_connected:
             try:
-                response = self.ws.call(requests.GetInputPropertiesListPropertyItems(
+                response = self._call(requests.GetInputPropertiesListPropertyItems(
                     inputName="Webex-Meeting-Window", propertyName="window"
                 )).datain
                 for option in response.get("propertyItems", []):
@@ -247,7 +256,7 @@ class OBSController:
         if not self.ws or not self.is_connected:
             return []
         try:
-            info = self.ws.call(requests.GetInputSettings(inputName=source_name)).datain
+            info = self._call(requests.GetInputSettings(inputName=source_name)).datain
             if info.get("inputKind") != "screen_capture":
                 return []
             # OBS 32.2.2 crashes serializing the NULL placeholder in this
@@ -268,7 +277,10 @@ class OBSController:
             logger.warning("Selected display is not available to OBS: %s", display_uuid)
             return False
         try:
-            self.ws.call(requests.SetInputSettings(
+            # Even a lost response may have enabled screen capture in OBS.
+            # This safety flag is separate from the confirmed source cache.
+            self._capture_reset_pending = True
+            self._call(requests.SetInputSettings(
                 inputName=source_name,
                 inputSettings={"type": 0, "display_uuid": display_uuid},
                 overlay=True,
@@ -300,7 +312,7 @@ class OBSController:
         if chosen is None or not self.check_connection():
             return False
         try:
-            info = self.ws.call(requests.GetInputSettings(inputName=source_name)).datain
+            info = self._call(requests.GetInputSettings(inputName=source_name)).datain
             kind = info.get("inputKind")
             if kind == "screen_capture":
                 settings = {"type": 1, "window": chosen.window_id}
@@ -309,13 +321,14 @@ class OBSController:
             else:
                 logger.warning("OBS source '%s' has unsupported input kind '%s'.", source_name, kind)
                 return False
-            self.ws.call(requests.SetInputSettings(
+            self._call(requests.SetInputSettings(
                 inputName=source_name,
                 inputSettings=settings,
                 overlay=True
             ))
             self.selected_window_id = chosen.window_id
             self.selected_display_uuid = None
+            self._capture_reset_pending = False
             self._seen_window_ids = {w.window_id for w in windows}
             self._candidate_polls.clear()
             self._selected_missing_polls = 0
@@ -325,6 +338,21 @@ class OBSController:
             return True
         except Exception as e:
             logger.warning("Could not bind OBS video source to Webex window: %s", e)
+            return False
+
+    def _reset_capture_selection(self) -> bool:
+        """Remove session-only full-display capture before another video session."""
+        if not self._capture_reset_pending:
+            return True
+        try:
+            self._call(requests.SetInputSettings(
+                inputName="Webex-Meeting-Window",
+                inputSettings={"type": 1, "window": 0}, overlay=True,
+            ))
+            self._capture_reset_pending = False
+            return True
+        except Exception as exc:
+            logger.warning("Could not reset OBS screen selection; video start remains guarded: %s", exc)
             return False
 
     def poll_webex_window_change(self) -> list[WebexWindow]:
@@ -415,6 +443,11 @@ class OBSController:
             self._owns_recording = False
             self._ownership_lost = False
             try:
+                if (scene_name == "Webex-Video" and self._capture_reset_pending
+                        and not self.is_screen_recording):
+                    if not self._reset_capture_selection() and not self.bind_webex_video_window():
+                        logger.error("Video start blocked: previous screen selection could not be reset.")
+                        return False
                 if not self.switch_scene(scene_name):
                     raise RuntimeError("OBS scene is not ready")
                 if scene_name == "Webex-Video" and not self.is_screen_recording:
@@ -423,9 +456,7 @@ class OBSController:
                 self.stop_verified = False
                 # A lost response is ambiguous, not authorization to adopt OBS.
                 self.is_recording = True
-                res = self.ws.call(requests.StartRecord())
-                if res.status is not True:
-                    raise RuntimeError("OBS rejected StartRecord")
+                self._call(requests.StartRecord())
                 self._owns_recording = True
                 self._owned_output_active = False
                 self._current_output_path = None
@@ -475,7 +506,7 @@ class OBSController:
         if not self.check_connection():
             return False
         try:
-            self.ws.call(requests.SetCurrentProgramScene(sceneName=scene_name))
+            self._call(requests.SetCurrentProgramScene(sceneName=scene_name))
             self.current_scene = scene_name
             logger.info(f"Switched OBS scene to '{scene_name}'.")
             return True
@@ -496,11 +527,8 @@ class OBSController:
                 logger.warning("Refusing to stop an independently started or unidentifiable OBS recording.")
                 return []
             try:
-                res = self.ws.call(requests.StopRecord())
-                if res.status is True:
-                    self._remember_owned_path(getattr(res, "datain", {}).get("outputPath", ""))
-                else:
-                    logger.error("OBS rejected StopRecord; verifying output state before completion.")
+                res = self._call(requests.StopRecord())
+                self._remember_owned_path(res.datain.get("outputPath", ""))
             except Exception as e:
                 logger.error("Error stopping OBS recording: %s", e)
             # StopRecord can return before OBS finishes finalizing output.
@@ -521,6 +549,9 @@ class OBSController:
         self._last_output_duration = None
         files = list(self.recorded_files)
         self.recorded_files.clear()
+        # Reset OBS as well as our session cache. A rejected reset must never
+        # silently authorize full-screen capture in the next video session.
+        self._reset_capture_selection()
         self.selected_window_id = None
         self.selected_display_uuid = None
         self._seen_window_ids.clear()
@@ -542,7 +573,7 @@ class OBSController:
             self._ownership_lost = self._ownership_lost or self.is_recording
             return None
         try:
-            res = self.ws.call(requests.GetRecordStatus())
+            res = self._call(requests.GetRecordStatus())
             data = res.datain
             active = data.get("outputActive")
             if res.status is not True or type(active) is not bool:
@@ -576,10 +607,18 @@ class OBSController:
             self._ownership_lost = self._ownership_lost or self.is_recording
             return None
 
-    def switch_to_video_mode(self) -> None:
+    def switch_to_video_mode(self) -> bool:
         # Switching scenes keeps the same output, avoiding an unverified
         # stop/start transition and preserving all segment bookkeeping.
+        if self.current_scene == "Webex-Video":
+            return False
         if (self._recording_active_status() is True and self._owns_recording
                 and not self._ownership_lost):
-            if self.switch_scene("Webex-Video") and not self.is_screen_recording:
-                self.bind_webex_video_window()
+            if self._capture_reset_pending and not self.is_screen_recording:
+                if not self._reset_capture_selection() and not self.bind_webex_video_window():
+                    return False
+            if self.switch_scene("Webex-Video"):
+                if not self.is_screen_recording:
+                    self.bind_webex_video_window()
+                return True
+        return False
