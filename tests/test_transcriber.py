@@ -172,3 +172,20 @@ def test_silence_only_session_does_not_authorize_cleanup(tmp_path, speech_module
     assert transcriber.transcribe_files([str(media)]) is None
     assert media.exists()
     assert not list(transcriber.transcripts_dir.glob("*.txt"))
+
+
+def test_model_download_panic_preserves_media_and_explains_recovery(tmp_path, speech_modules, monkeypatch, caplog):
+    media = tmp_path / "synthetic.mkv"
+    media.write_bytes(b"synthetic media")
+    transcriber = Transcriber("synthetic/model", tmp_path / "transcripts", enable_diarization=False)
+    monkeypatch.setattr("webex_obs.transcriber.shutil.which", lambda _: "/synthetic/ffmpeg")
+    speech_modules["inference"].side_effect = RuntimeError(
+        'Task error: task 1 panicked with message "range end out of bounds: 100 <= 10"'
+    )
+
+    assert transcriber.transcribe_files([str(media)]) is None
+    assert media.read_bytes() == b"synthetic media"
+    assert not list(transcriber.transcripts_dir.glob("*.txt"))
+    assert "Possible Hugging Face Xet model-download failure" in caplog.text
+    assert "prefetch-model synthetic/model" in caplog.text
+    assert "restart does not retry failed jobs" in caplog.text

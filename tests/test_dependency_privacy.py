@@ -20,7 +20,7 @@ def test_telemetry_disabled_before_dependency_imports(tmp_path, entry):
         import types
 
         expected = {"HF_HUB_DISABLE_TELEMETRY": "1", "PYANNOTE_METRICS_ENABLED": "0",
-                    "OTEL_SDK_DISABLED": "true"}
+                    "OTEL_SDK_DISABLED": "true", "HF_HUB_DISABLE_XET": "1"}
         seen = set()
 
         def deny_network(event, args):
@@ -70,7 +70,7 @@ def test_telemetry_disabled_before_dependency_imports(tmp_path, entry):
         "HF_HOME": str(tmp_path / "hf"), "HF_HUB_OFFLINE": "1",
         "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
         "HF_HUB_DISABLE_TELEMETRY": "0", "PYANNOTE_METRICS_ENABLED": "1",
-        "OTEL_SDK_DISABLED": "false",
+        "OTEL_SDK_DISABLED": "false", "HF_HUB_DISABLE_XET": "0",
     }
     result = subprocess.run(
         [sys.executable, "-c", script, entry], env=env, cwd=tmp_path,

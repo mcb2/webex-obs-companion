@@ -141,6 +141,7 @@ def test_stop_event_recovers_path_when_live_target_unavailable(recording_peer):
     assert controller.ensure_recording()
     assert controller.stop_recording() == [str(first), str(second)]
     assert peer.calls.count("StartRecord") == 2
+    assert peer.calls.count("GetInputList") == 2
 
 
 def test_missing_stop_events_and_obs_restart_preserve_every_segment(recording_peer):

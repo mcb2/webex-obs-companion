@@ -13,7 +13,7 @@ for p in extra_paths:
         current_path = f"{p}:{current_path}"
 os.environ["PATH"] = current_path
 
-# Disable fast transfer CAS client that fails on corporate CDNs / expired signed URLs
+# Disable the legacy downloader too; Xet is disabled in package initialization.
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 # Ensure macOS system root certs and certifi bundle are active for HuggingFace downloads
@@ -63,6 +63,12 @@ class Transcriber:
             logger.info(f"Using local pre-fetched Whisper model at: {self.model_target}")
         else:
             self.model_target = model_name
+            logger.info(
+                "Whisper prefetch cache unavailable or invalid; Hugging Face may "
+                "check/download model files. Speech inference stays local. "
+                "Pre-cache with 'uv run --locked --no-sync webex-obs prefetch-model %s' "
+                "and restart the app to use it.", model_name,
+            )
 
     def transcribe_files(
         self,
@@ -177,10 +183,20 @@ class Transcriber:
                 logger.error(f"Failed to transcribe {fpath}: {e}")
                 if "ffmpeg" in str(e).lower():
                     logger.error("ffmpeg missing. Install via: brew install ffmpeg")
+                elif ("xet" in str(e).lower()
+                      or ("panicked" in str(e) and "range end out of bounds" in str(e))):
+                    logger.error(
+                        "Possible Hugging Face Xet model-download failure. "
+                        "Pre-cache the model with 'uv run --locked --no-sync webex-obs "
+                        "prefetch-model %s', then restart the app. "
+                        "The failed session still requires manual recovery; "
+                        "restart does not retry failed jobs.", self.model_name,
+                    )
                 elif "SSL" in str(e) or "certificate verify failed" in str(e) or "403" in str(e):
                     logger.error(
                         "Model download / CDN verification failed. "
-                        "Run 'uv run webex-obs prefetch-model' to pre-cache the model locally."
+                        "Run 'uv run --locked --no-sync webex-obs prefetch-model %s' "
+                        "to pre-cache the model locally.", self.model_name,
                     )
 
         if not successful_segments:
