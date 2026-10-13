@@ -48,6 +48,11 @@ stop retries are disabled. After a connection gap, stop OBS directly before
 retrying the app's Stop action to finalize known segments.
 `RecordingSession`, `Transcriber`, and
 `WebexClient` consume backend-independent file paths and meeting titles.
+OBS owns microphone and screen/system-audio capture permissions. Window detection
+uses System Events (Accessibility/Automation); global shortcuts use pynput.
+Quartz window details can be restricted by permissions, with OBS's own source
+property list providing capturable windows. Sensor failures remain unknown.
+Permission grants and capture quality are not established by mocked tests.
 
 Settings updates validate values, atomically change the existing `.env`, and
 replace the running detector, transcription, delivery, and hotkey configuration.
@@ -149,8 +154,12 @@ replacement at a stable per-job path. Completed checkpoints retain delivery
 completion evidence while call monitoring continues. `Transcriber` uses MLX Whisper
 and optionally `NeuralDiarizer` (pyannote, with a rough acoustic fallback).
 Speaker labels are anonymous. `WebexClient` sends transcripts to a configured
-room or personal recipient, with room ID taking precedence. Long transcripts
-are attached as text files. My Agent forwarding is a manual user action.
+room or personal recipient, with room ID taking precedence. Transcripts of 6,000
+characters or more are attached as text files; the attachment is open only for
+the synchronous request and closes on success, rejection, or exception. HTTP
+200/201 confirms API delivery; network/server errors remain uncertain. Notifications
+describe transcript delivery. My Agent forwarding and summary requests are manual
+user actions.
 `MediaCleaner` only enrolls media after successful transcription of the complete
 session and successful configured delivery (or disabled delivery). Queueing and
 processing revoke eligibility; failures, active segments and recovery segments

@@ -87,6 +87,32 @@ def test_disabled_delivery_keeps_transcript_local():
     daemon.webex.send_transcript.assert_called_once_with(Path("transcript.txt"), meeting_title="Team call")
 
 
+@pytest.mark.parametrize("sent,outcome,message", [
+    (True, "delivered", "Transcript delivered to Webex."),
+    (False, "rejected", "Webex delivery failed. Transcript kept locally; check application logs."),
+    (False, "uncertain",
+     "Webex delivery is uncertain. Check Webex before retrying; transcript kept locally."),
+])
+def test_delivery_notifications_describe_confirmed_transcript_outcome(sent, outcome, message):
+    daemon = _daemon()
+    daemon.config = Config(_env_file=None, webex_delivery_enabled=False)
+    daemon.ui = Mock()
+    daemon.webex = Mock()
+    client = Mock(last_delivery_outcome=outcome)
+    client.send_transcript.return_value = sent
+
+    # An already queued job retains its delivery settings and client.
+    assert daemon.deliver_transcript(
+        Path("synthetic.txt"), "Synthetic call", delivery_enabled=True, webex=client,
+    ) is sent
+    client.send_transcript.assert_called_once_with(Path("synthetic.txt"), meeting_title="Synthetic call")
+    daemon.webex.send_transcript.assert_not_called()
+    assert [call.args for call in daemon.ui.show_notification.call_args_list] == [
+        ("Webex OBS Companion", "Delivering transcript to Webex..."),
+        ("Webex OBS Companion", message),
+    ]
+
+
 def test_manual_start_requests_daemon_worker_instead_of_starting_obs_on_menu_thread():
     daemon = _daemon()
     daemon.recorder = Mock(is_recording=False, stop_verified=True)

@@ -31,8 +31,9 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
       [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
 
    The setup wizard prompts for this token and saves it as `HF_TOKEN` only in
-   your local `.env` file. A plain `uv sync` does not install the optional
-   neural-diarization dependency group.
+   your local `.env` file. For the base environment use `uv sync --locked`;
+   the optional extra above adds neural diarization. Run commands in this guide
+   use `--no-sync` and require dependencies to be installed beforehand.
 
    Community-1 is the local pipeline supported by the locked pyannote.audio 4
    API. Its agreement is separate from the older 3.1 model conditions, and its
@@ -71,12 +72,32 @@ window choices only. Window titles and IDs depend on what
 Webex exposes to macOS; content rendered inside the meeting window stays
 part of that window.
 
+### macOS permissions
+
+OBS performs capture. Grant it **Screen Recording** (called **Screen & System
+Audio Recording** on some macOS versions) and **Microphone** access for the
+configured sources. The companion does not set up or verify audio routing.
+
+The companion reads client window names through AppleScript **System Events**;
+allow **Accessibility** and the prompted **Automation** access for the process
+hosting Python (for example, your terminal during foreground runs). Global
+hotkeys use `pynput` and may also require **Input Monitoring**. Permissions for
+an interactive terminal do not establish access for a LaunchAgent. Use the
+macOS prompt and System Settings to identify the requesting process.
+
+Quartz window details may be restricted without Screen Recording access for the
+companion's host. OBS's capturable-window list supplies a fallback for video
+selection; this does not bypass capture permissions in OBS. Allow notifications
+if you want delivery/error notices. Missing sensor access is reported as unknown,
+not evidence that a call ended; stop manually if detection remains unknown.
+Permission grants and actual audio/video quality require the manual checks below.
+
 ### OBS Lifecycle & Auto-Reconnection
 - **Startup check**: The service launches/connects OBS, verifies WebSocket connectivity, and leaves OBS running, including when exit-after-recording is enabled. If startup connectivity cannot be verified, a recording request retries the connection.
-- **Recording**: Service startup always launches/connects OBS and leaves it running; there is no startup shutdown cycle, even with a legacy exit-after-recording preference enabled. By default, OBS also stays open and connected between calls (`EXIT_OBS_ON_RECORDING_STOP=false`). Existing explicit true values and legacy `RELAUNCH_OBS_PER_CALL` values apply only after a recording stops: turn off **Exit OBS on recording stop** in Settings to enable keep-open behavior and idle maintenance between calls. OBS is prepared immediately on a manual recording request or strong audio/network call evidence, before slow window validation. Automatic recordings still require the existing window/attachment checks and two positive polls; meeting-title enrichment happens after recording starts.
+- **Recording**: By default, OBS stays open and connected between calls (`EXIT_OBS_ON_RECORDING_STOP=false`). Existing explicit true values and legacy `RELAUNCH_OBS_PER_CALL` values apply only after a recording stops: turn off **Exit OBS on recording stop** in Settings to enable keep-open behavior and idle maintenance between calls. OBS is prepared immediately on a manual recording request or strong audio/network call evidence, before slow window validation. Automatic recordings still require the existing window/attachment checks and two positive polls; meeting-title enrichment happens after recording starts.
 - **Idle maintenance**: **Idle restart interval (minutes; 0 = off)** / `OBS_IDLE_RESTART_MINUTES` defaults to 60. This is a minimum OBS uptime, not a fixed wall-clock schedule. Maintenance waits for at least two minutes without potential call evidence and runs only during minutes 05–24 or 35–54 of the local hour, avoiding five minutes either side of :00 and :30. Recording, streaming, replay-buffer activity, unknown output status, or a pending recording request defer the restart. OBS is gracefully restarted and immediately reconnected; failures back off for two minutes. Maintenance applies only to local OBS in keep-open mode, and never runs from the active recording lifecycle. A request arriving during shutdown is handled after OBS reconnects. The timer is preventative, not an audio-health check.
-- **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
-- **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
+- **Recovery**: During recording, the companion checks capture status and can start a new segment from a confirmed stopped output. After connection loss, an active output cannot safely be identified as its own: stop OBS directly, then retry the pending Stop action in the companion. Unobserved segment paths and the in-memory active-session ledger require manual recovery after a companion restart.
+- **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Finish any active recording before running `uv run --locked --no-sync webex-obs start` from the repository to reload the service.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
 - **Transport-independent detection**: Webex, Zoom, and Teams can use a non-idle call window plus per-process Core Audio input/output even with TCP-only or dynamic-port media. Unsupported Core Audio requires known UDP plus a window. Webex output-only also requires a non-attachment window. See the [per-platform requirements](README.md). `uv run --locked --no-sync webex-obs diagnose-calls` shows process, window, audio, and UDP evidence; failed reads display “Read failed (unknown).”
 - **Call-end grace period**: A transient loss of meeting window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of confirmed continuous inactivity on the originating platform. Unknown sensor reads reset this timer and retain the recording; persistent failures require manual Stop. Overlapping platforms cannot extend or rename the recording. Prompt declines remain suppressed per platform through title changes and sensor failures.
@@ -102,16 +123,22 @@ WEBEX_ROOM_ID=
 ```
 - Set `WEBEX_DELIVERY_ENABLED=false`, or turn off **Deliver transcripts to Webex**
   in Settings, to save transcripts locally without automatically sending them.
-- **How it Works**: When a meeting ends, your bot sends the full transcript directly to your personal 1:1 Webex chat.
+- **Delivery**: After a verified recording stop and complete transcription, the bot sends the transcript to the configured recipient or space. Partial and no-speech-only sessions do not trigger delivery.
 - **AI Summary**: You can forward or paste the transcript directly into your 1:1 chat with the My Agent address configured as `MY_AGENT_EMAIL` to request executive summaries and action items. The companion does not automatically forward transcripts to My Agent or generate summaries.
 
 ### Space Delivery (Option 2)
 
-Add the bot to the intended Webex space, run `uv run webex-obs list-rooms`, and
+Add the bot to the intended Webex space, run `uv run --locked --no-sync webex-obs list-rooms`, and
 save its ID as `WEBEX_ROOM_ID` in `.env` or Settings. A nonempty room ID takes
 precedence over `WEBEX_RECIPIENT_EMAIL`; clear it to return to personal delivery.
-Transcripts shorter than 6,000 characters are sent inline; longer transcripts
-are attached as `.txt` files.
+Transcripts shorter than 6,000 characters are sent inline; transcripts of 6,000
+characters or more are attached as `.txt` files. A successful notification means
+Webex returned HTTP 200/201, not that a person read the message or a summary was
+generated. Network/server errors leave delivery uncertain; check Webex before
+sending manually. Failed, blocked, and uncertain jobs retain media and do not
+retry automatically. Changing delivery settings affects future jobs; already
+queued jobs retain their settings and clients. Restart recovery holds pending
+outbound jobs if delivery was disabled or the saved destination changed.
 
 ---
 
@@ -120,7 +147,7 @@ are attached as `.txt` files.
 ### Step A: Run the Setup Wizard
 The setup wizard reuses existing `.env` values as defaults, so you can press **Enter** to keep your current configuration:
 ```bash
-uv run webex-obs setup
+uv run --locked --no-sync webex-obs setup
 ```
 
 Webex tokens and OBS passwords use hidden input and never display existing
@@ -156,8 +183,9 @@ in the current state appear. Video source
 selection still opens a separate picker, and **Stop & Discard…** opens a separate
 confirmation with **No** as the default. Manual audio/video starts show a consent
 notice while recording is already running: **OK** (default) or waiting 10 seconds
-continues recording; **Cancel & Discard** stops and deletes the session without
-transcription. The automatic call-detection prompt retains its existing behavior.
+continues recording; **Cancel & Discard** deletes session segments only after a
+positively verified stop, without transcription. An unresolved stop retains the
+session and files. The automatic call-detection prompt retains its existing behavior.
 The Settings sections are OBS recording, Transcription, Files and detection,
 Keyboard shortcuts, and finally Webex delivery.
 
@@ -172,7 +200,7 @@ errors are reported explicitly and require a restart after recording finishes.
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
 ```bash
-uv run webex-obs prefetch-model
+uv run --locked --no-sync webex-obs prefetch-model
 ```
 
 Each full repository name has its own hashed cache directory. Prefetch succeeds
@@ -187,7 +215,7 @@ prefetch before offline use.
 ### Step C: Test 1:1 Webex Delivery
 Send a verification message through your Webex Bot into your 1:1 Webex chat:
 ```bash
-uv run webex-obs test-webex
+uv run --locked --no-sync webex-obs test-webex
 ```
 
 ---
@@ -198,21 +226,21 @@ Install the companion daemon as a background macOS LaunchAgent (`com.cisco.webex
 
 ```bash
 # Install, start now, and auto-start at login
-uv run webex-obs install-service
+uv run --locked --no-sync webex-obs install-service
 
 # Check service status
-uv run webex-obs status
+uv run --locked --no-sync webex-obs status
 
 # Stream live background logs
-uv run webex-obs logs
+uv run --locked --no-sync webex-obs logs
 
 # Stop or Start anytime
-uv run webex-obs stop
-uv run webex-obs start
+uv run --locked --no-sync webex-obs stop
+uv run --locked --no-sync webex-obs start
 ```
 
 The menu bar's **Quit (stop service)** action is equivalent to stopping the
-LaunchAgent for the current login session. Use `uv run webex-obs start` to
+LaunchAgent for the current login session. Use `uv run --locked --no-sync webex-obs start` to
 resume it; the installed service starts again on the next login. Quit and SIGTERM
 coordinate recording finalization and retain pending processing jobs. Cleanup
 has a 10-second application deadline, with at most 2 seconds waiting for current

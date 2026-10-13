@@ -295,12 +295,19 @@ class WebexOBSDaemon:
             logger.info("Webex delivery disabled; transcript saved locally: %s", transcript_file)
             return True
         client = webex if webex is not None else self.webex
-        self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex / My Agent...")
+        self.ui.show_notification("Webex OBS Companion", "Delivering transcript to Webex...")
         sent = client.send_transcript(transcript_file, meeting_title=meeting_title)
         if sent:
-            self.ui.show_notification("Webex OBS Companion", "Summary request delivered to Webex!")
+            self.ui.show_notification("Webex OBS Companion", "Transcript delivered to Webex.")
+        elif client.last_delivery_outcome == "uncertain":
+            self.ui.show_notification(
+                "Webex OBS Companion",
+                "Webex delivery is uncertain. Check Webex before retrying; transcript kept locally.",
+            )
         else:
-            self.ui.show_notification("Webex OBS Companion", "Webex delivery failed. Check stdout.log")
+            self.ui.show_notification(
+                "Webex OBS Companion", "Webex delivery failed. Transcript kept locally; check application logs."
+            )
         return bool(sent)
 
     def _process_post_processing_job(self, job: PostProcessingJob) -> None:

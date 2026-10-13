@@ -8,10 +8,10 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 
 - **Automated Meeting Detection**: Detects Webex, Zoom, and Microsoft Teams calls from sustained, app-specific media activity and macOS window state before recording.
 - **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. OBS stays open between calls by default. Guarded idle restarts refresh long-running OBS instances; optional exit after recording is also available.
-- **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and restarts/resumes in a new segment if OBS exits or capture stops.
+- **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and starts a new segment when capture is confirmed stopped; ambiguous active outputs require manual resolution.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
 - **Neural & Acoustic Speaker Diarization**: Assigns anonymous speaker labels to speech turns. Neural diarization falls back to a rough two-group acoustic classification when unavailable; labels do not identify participant names.
-- **Direct 1:1 Webex Bot Delivery**: Automatically delivers formatted meeting transcripts directly to your personal 1:1 Webex chat via a permanent Webex Bot token.
+- **Direct 1:1 Webex Bot Delivery**: Optionally delivers completed transcripts to your personal 1:1 Webex chat or a configured space via a Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.
 - **Configurable Global Hotkeys**: Customize Start Audio (Cmd+Shift+A), Start / Switch Video (Cmd+Shift+V), Select Video Source (Cmd+Shift+R), and Stop Recording / Transcribe (Cmd+Shift+S) in Settings or the setup wizard. Source selection is available only while recording video; starting audio while already recording and switching to video while already recording video do nothing. Existing `HOTKEY_MENU` values are used as the source shortcut until `HOTKEY_VIDEO_SOURCE` is saved.
 - **Live Video Source Selection**: Choose whether a newly opened Webex window is selected automatically or offered in a picker during video recording. The video-only menu command lets you select a Webex window or an entire screen at any time; screen capture pauses automatic window following.
@@ -69,7 +69,7 @@ segments within an unfinished session retain its source selection.
 
 Requires macOS on Apple Silicon, Python 3.11+, OBS Studio 28+ with WebSocket
 enabled, and `uv`. The current MLX transcription backend requires Apple Silicon.
-Configure the OBS scenes and audio sources described in [SETUP.md](SETUP.md).
+Configure the OBS scenes, audio sources, and [macOS permissions](SETUP.md#macos-permissions).
 
 ```bash
 git clone https://github.com/mcb2/webex-obs-companion.git webex_obs_companion
@@ -88,11 +88,12 @@ Neural speaker diarization requires a free Hugging Face account and read token:
    [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1).
 2. Create a **Read** token at
    [Hugging Face Access Tokens](https://huggingface.co/settings/tokens).
-3. Enter that token when `uv run webex-obs setup` prompts for it. The token is
+3. Enter that token when `uv run --locked --no-sync webex-obs setup` prompts for it. The token is
    stored only in the local `.env` file.
 
-A plain `uv sync` does not install the optional neural-diarization packages;
-use `uv sync --locked --extra neural-diarization` after updates.
+For the base environment, use `uv sync --locked`. Neural diarization is optional;
+install it explicitly with `uv sync --locked --extra neural-diarization`.
+The run commands below use the existing environment without installing packages.
 
 The locked pyannote.audio 4 pipeline uses Community-1; access to the older 3.1
 models does not grant access to Community-1. Its weights are downloaded on first
@@ -105,7 +106,7 @@ inference fails, the acoustic speaker-label fallback remains available.
 ### 2. Configuration Wizard
 Run the interactive setup wizard (intelligently preserves existing `.env` values when re-run):
 ```bash
-uv run webex-obs setup
+uv run --locked --no-sync webex-obs setup
 ```
 
 Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
@@ -124,7 +125,7 @@ recordings folder here. Tokens and passwords are masked in Settings.
 Turn off **Deliver transcripts to Webex** to retain transcripts locally without
 sending them to the bot; recording and transcription continue as usual.
 **Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays
-closed for the current login session. Start it again with `uv run webex-obs start`;
+closed for the current login session. Start it again with `uv run --locked --no-sync webex-obs start`;
 the installed LaunchAgent also starts at the next login.
 
 OBS idle maintenance defaults to a minimum uptime of 60 minutes
@@ -135,17 +136,19 @@ after a verified recording stop and disables idle maintenance.
 
 Delivery can also target a Webex space using `WEBEX_ROOM_ID`, which takes
 precedence over the recipient email; the bot must belong to that space.
-Transcripts shorter than 6,000 characters are included in the message; longer
-transcripts are attached as text files. My Agent summaries require manually
+Transcripts shorter than 6,000 characters are included in the message; transcripts
+of 6,000 characters or more are attached as text files. Delivery notifications
+report the transcript request outcome; network/server errors are uncertain, not
+proof that Webex rejected the message. My Agent summaries require manually
 forwarding or pasting the transcript; the app does not generate summaries.
 
 ### 3. Model Pre-fetching & Webex Testing
 ```bash
 # Pre-cache Apple Silicon MLX model weights locally
-uv run webex-obs prefetch-model
+uv run --locked --no-sync webex-obs prefetch-model
 
 # Test Webex Bot 1:1 message delivery
-uv run webex-obs test-webex
+uv run --locked --no-sync webex-obs test-webex
 ```
 
 Prefetch and transcription share a cache identity derived from the full repository
@@ -159,13 +162,13 @@ run prefetch again before relying on offline transcription.
 ### 4. Background Service Management
 ```bash
 # Install and launch as macOS background daemon
-uv run webex-obs install-service
+uv run --locked --no-sync webex-obs install-service
 
 # Check running status
-uv run webex-obs status
+uv run --locked --no-sync webex-obs status
 
 # Stream live background logs
-uv run webex-obs logs
+uv run --locked --no-sync webex-obs logs
 ```
 
 ---
@@ -174,16 +177,16 @@ uv run webex-obs logs
 
 | Command | Description |
 |---|---|
-| `uv run webex-obs setup` | Interactive `.env` wizard with automatic defaults preservation |
-| `uv run webex-obs test-webex` | Send an instant test message to verify Webex Bot delivery |
-| `uv run webex-obs list-rooms` | List all Webex spaces your Bot belongs to along with their `Room ID` |
-| `uv run webex-obs prefetch-model` | Stream download and cache Whisper model weights to `~/.cache/webex_obs/` |
-| `uv run webex-obs diagnose-calls` | Show process, window, Core Audio, and UDP evidence for each supported meeting app |
-| `uv run webex-obs install-service` | Install and start background LaunchAgent (`com.cisco.webex-obs.plist`) |
-| `uv run webex-obs status` | Report LaunchAgent load state and application lifecycle health |
-| `uv run webex-obs logs` | Live stream `stdout.log` and `stderr.log` from `~/Library/Logs/WebexOBS/` |
-| `uv run webex-obs start` / `stop` | Start or stop the background service |
-| `uv run webex-obs run` | Run daemon in foreground (interactive debug mode) |
+| `uv run --locked --no-sync webex-obs setup` | Interactive `.env` wizard with automatic defaults preservation |
+| `uv run --locked --no-sync webex-obs test-webex` | Send an instant test message to verify Webex Bot delivery |
+| `uv run --locked --no-sync webex-obs list-rooms` | List all Webex spaces your Bot belongs to along with their `Room ID` |
+| `uv run --locked --no-sync webex-obs prefetch-model` | Stream download and cache Whisper model weights to `~/.cache/webex_obs/` |
+| `uv run --locked --no-sync webex-obs diagnose-calls` | Show process, window, Core Audio, and UDP evidence for each supported meeting app |
+| `uv run --locked --no-sync webex-obs install-service` | Install and start background LaunchAgent (`com.cisco.webex-obs.plist`) |
+| `uv run --locked --no-sync webex-obs status` | Report LaunchAgent load state and application lifecycle health |
+| `uv run --locked --no-sync webex-obs logs` | Live stream `stdout.log` and `stderr.log` from `~/Library/Logs/WebexOBS/` |
+| `uv run --locked --no-sync webex-obs start` / `stop` | Start or stop the background service |
+| `uv run --locked --no-sync webex-obs run` | Run daemon in foreground (interactive debug mode) |
 
 ---
 
