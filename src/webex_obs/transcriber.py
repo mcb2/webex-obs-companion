@@ -36,10 +36,9 @@ import mlx_whisper
 from .diarizer import NeuralDiarizer
 from .session import unique_path
 from .durable_state import atomic_write
+from .model_cache import MODELS_CACHE_DIR, invalid_artifacts, model_cache_path
 
 logger = logging.getLogger(__name__)
-
-MODELS_CACHE_DIR = Path.home() / ".cache" / "webex_obs" / "models"
 
 
 class Transcriber:
@@ -58,9 +57,8 @@ class Transcriber:
         self.diarizer = NeuralDiarizer(hf_token=hf_token)
 
         # Check for locally pre-fetched model directory
-        model_slug = Path(model_name).name
-        local_dir = MODELS_CACHE_DIR / model_slug
-        if local_dir.exists() and (local_dir / "weights.safetensors").exists():
+        local_dir = model_cache_path(model_name, MODELS_CACHE_DIR)
+        if not invalid_artifacts(local_dir):
             self.model_target = str(local_dir)
             logger.info(f"Using local pre-fetched Whisper model at: {self.model_target}")
         else:

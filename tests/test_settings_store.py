@@ -94,3 +94,101 @@ class SettingsStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("value", [
+    "Meeting Recordings #1", "l'été / 雪", 'double "quotes"',
+    r"back\slash\'quoted", "literal ${HOME} and $PATH", "line\nbreak",
+])
+def test_literal_values_round_trip_through_writer_and_config(tmp_path, value):
+    path = tmp_path / "configuration with spaces" / ".env"
+    updated = save_settings({"obs_ws_password": value, "recordings_dir": str(tmp_path / value)}, path)
+    loaded = Config(_env_file=path)
+    assert loaded.obs_ws_password == value
+    assert loaded.recordings_dir == updated.recordings_dir
+
+
+@pytest.mark.parametrize("assignment", [
+    "OBS_WS_PORT=4455 # keep inline\n", "export OBS_WS_PORT = '4455'  # keep inline\n",
+    'OBS_WS_PORT="4455" # keep inline\n',
+])
+def test_preserves_inline_comments_on_edited_fields(tmp_path, assignment):
+    path = tmp_path / ".env"
+    path.write_text("# heading\n" + assignment + "UNRELATED=literal\n")
+    save_settings({"obs_ws_port": "4456"}, path)
+    assert "# keep inline\n" in path.read_text()
+    assert "# heading\n" in path.read_text()
+    assert "UNRELATED=literal\n" in path.read_text()
+    assert Config(_env_file=path).obs_ws_port == 4456
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_apply_failure_restores_exact_original_file(tmp_path, exists):
+    path = tmp_path / ".env"
+    original = b"# retain\r\nOBS_PORT=4455 # legacy\r\nUNRELATED=x\r\n"
+    if exists:
+        path.write_bytes(original)
+    def fail(config):
+        assert Config(_env_file=path).obs_ws_port == 4456
+        raise RuntimeError("synthetic apply failure")
+    with pytest.raises(RuntimeError, match="synthetic apply failure"):
+        save_settings({"obs_ws_port": "4456"}, path, apply=fail)
+    assert path.exists() is exists
+    if exists:
+        assert path.read_bytes() == original
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".webex-obs-*"))
+
+
+def test_failed_atomic_save_never_applies_runtime(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from webex_obs import settings_store
+    path = tmp_path / ".env"
+    path.write_text("OBS_PORT=4455\n")
+    apply = Mock()
+    monkeypatch.setattr(settings_store.os, "replace", Mock(side_effect=OSError("synthetic disk failure")))
+    with pytest.raises(OSError):
+        save_settings({"obs_ws_port": "4456"}, path, apply=apply)
+    apply.assert_not_called()
+    assert path.read_text() == "OBS_PORT=4455\n"
+    assert not list(tmp_path.glob(".webex-obs-*"))
+
+
+def test_persistence_rollback_failure_is_reported_without_secret_values(tmp_path, monkeypatch):
+    from webex_obs import settings_store
+    path = tmp_path / ".env"
+    path.write_text("OBS_PORT=4455\n")
+    original_replace = settings_store.os.replace
+    calls = 0
+    def replace(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic rollback disk failure")
+        original_replace(source, destination)
+    monkeypatch.setattr(settings_store.os, "replace", replace)
+    def fail(config):
+        raise RuntimeError("synthetic secret")
+    with pytest.raises(settings_store.SettingsRollbackError, match="restore the previous") as exc:
+        save_settings({"obs_ws_password": "synthetic secret"}, path, apply=fail)
+    assert "synthetic secret" not in str(exc.value)
+    assert not list(tmp_path.glob(".webex-obs-*"))
+
+
+def test_rollback_file_is_private_before_original_credentials_are_written(tmp_path, monkeypatch):
+    from webex_obs import settings_store
+    path = tmp_path / ".env"
+    path.write_text("OBS_WS_PASSWORD=synthetic-retained\n")
+    original_fdopen = settings_store.os.fdopen
+    writes = []
+    def fdopen(fd, *args, **kwargs):
+        writes.append(stat.S_IMODE(settings_store.os.fstat(fd).st_mode))
+        assert writes[-1] == 0o600
+        return original_fdopen(fd, *args, **kwargs)
+    monkeypatch.setattr(settings_store.os, "fdopen", fdopen)
+    def fail(config):
+        raise RuntimeError("synthetic failure")
+    with pytest.raises(RuntimeError):
+        save_settings({"obs_ws_port": "4456"}, path, apply=fail)
+    assert writes == [0o600]
+    assert Config(_env_file=path).obs_ws_password == "synthetic-retained"

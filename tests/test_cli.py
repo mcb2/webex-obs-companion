@@ -53,7 +53,7 @@ def test_setup_hides_secrets_and_saves_private_file(
         env_file.chmod(0o666)
     monkeypatch.setattr(cli, "__file__", str(tmp_path / "src/webex_obs/cli.py"))
     monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
-    monkeypatch.setattr("webex_obs.config.Settings", lambda: Config(_env_file=env_file))
+    monkeypatch.setattr("webex_obs.config.DEFAULT_ENV_FILE", str(env_file))
     output = io.StringIO()
     console = Console(file=output, width=180)
     monkeypatch.setattr(cli, "console", console)
@@ -123,7 +123,7 @@ def test_setup_failed_replacement_preserves_existing_file(tmp_path, monkeypatch)
     env_file.write_text(original)
     monkeypatch.setattr(cli, "__file__", str(tmp_path / "src/webex_obs/cli.py"))
     monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
-    monkeypatch.setattr("webex_obs.config.Settings", lambda: Config(_env_file=env_file))
+    monkeypatch.setattr("webex_obs.config.DEFAULT_ENV_FILE", str(env_file))
     monkeypatch.setattr(cli.Prompt, "ask", lambda *args, **kwargs: kwargs.get("default", ""))
     monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: kwargs["default"])
     monkeypatch.setattr(cli.os, "replace", Mock(side_effect=OSError("synthetic replacement failure")))
@@ -210,3 +210,62 @@ def test_diagnostics_distinguish_sensor_failure_from_idle(monkeypatch):
     assert output.getvalue().count("Read failed (unknown)") == 4
     assert "Idle" in output.getvalue()
     assert "Unavailable (UDP fallback)" in output.getvalue()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_setup_preserves_unedited_keys_aliases_zero_and_application_defaults(tmp_path, monkeypatch, existing):
+    path = tmp_path / ".env"
+    original = (
+        "# retain this configuration\nOBS_HOST=synthetic-host\nPOLL_INTERVAL=1.25\n"
+        "OBS_IDLE_RESTART_MINUTES=0\nRETENTION_DAYS=0\nCALL_END_GRACE_SECONDS=0\n"
+        "HOTKEY_MENU=<ctrl>+m\nUNRELATED=untouched\nENABLE_DIARIZATION=false\n"
+    )
+    if existing:
+        path.write_text(original)
+    monkeypatch.setattr("webex_obs.config.DEFAULT_ENV_FILE", str(path))
+    monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *a, **kw:
+                        False if "Enable Neural" in a[0] else kw["default"])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw:
+                        r"synthetic 'password' \ ${HOME}" if "OBS WebSocket password" in a[0] else kw.get("default", ""))
+    cli.setup()
+    loaded = Config(_env_file=path)
+    assert loaded.obs_ws_password == r"synthetic 'password' \ ${HOME}"
+    assert loaded.exit_obs_on_recording_stop is False
+    if existing:
+        assert path.read_text().startswith(original)
+        assert loaded.obs_ws_host == "synthetic-host"
+        assert loaded.poll_interval == 1.25
+        assert loaded.retention_days == loaded.call_end_grace_seconds == loaded.obs_idle_restart_minutes == 0
+        assert loaded.hotkey_video_source == "<ctrl>+m"
+    else:
+        defaults = Config(_env_file=None)
+        for field in ("obs_ws_host", "poll_interval", "retention_days", "obs_idle_restart_minutes"):
+            assert getattr(loaded, field) == getattr(defaults, field)
+
+
+@pytest.mark.parametrize("field,value", [("port", "99999"), ("Retention", "-1"), ("Start Audio", "not+a+hotkey")])
+def test_setup_rejects_invalid_values_without_replacing_file(tmp_path, monkeypatch, field, value):
+    path = tmp_path / ".env"
+    original = "# preserve\nENABLE_DIARIZATION=false\n"
+    path.write_text(original)
+    monkeypatch.setattr("webex_obs.config.DEFAULT_ENV_FILE", str(path))
+    monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *a, **kw: kw["default"])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw: value if field in a[0] else kw.get("default", ""))
+    with pytest.raises(cli.typer.Exit) as exc:
+        cli.setup()
+    assert exc.value.exit_code == 1
+    assert path.read_text() == original
+
+
+def test_setup_does_not_overwrite_invalid_existing_configuration(tmp_path, monkeypatch, capsys):
+    path = tmp_path / ".env"
+    original = "OBS_PORT=invalid\nWEBEX_ACCESS_TOKEN=synthetic secret\n"
+    path.write_text(original)
+    monkeypatch.setattr("webex_obs.config.DEFAULT_ENV_FILE", str(path))
+    monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
+    with pytest.raises(cli.typer.Exit):
+        cli.setup()
+    assert path.read_text() == original
+    assert "synthetic secret" not in capsys.readouterr().out
