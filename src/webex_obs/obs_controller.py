@@ -452,6 +452,30 @@ class OBSController:
     def _recording_window_priority(window: WebexWindow) -> tuple[bool, int]:
         return OBSController._is_share_title(window.title), window.area
 
+    def _restart_audio_capture(self) -> None:
+        """Attempt the recovery button before a start, under the lifecycle lock.
+
+        OBS disables this button for healthy capture. Failure is advisory: an
+        accepted button request also does not establish that audio is flowing.
+        """
+        try:
+            inputs = self._call(requests.GetInputList(
+                inputKind="sck_audio_capture",
+            )).datain["inputs"]
+        except Exception as e:
+            logger.warning("Could not enumerate macOS Audio Capture sources before recording; "
+                           "continuing without capture restart: %s", e)
+            return
+        for source in inputs:
+            try:
+                self._call(requests.PressInputPropertiesButton(
+                    inputName=source["inputName"], propertyName="reactivate_capture",
+                ))
+                logger.info("OBS accepted macOS Audio Capture Restart Capture request.")
+            except Exception as e:
+                logger.warning("Could not press macOS Audio Capture Restart Capture "
+                               "(OBS disables it for healthy capture); continuing recording: %s", e)
+
     def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
             active = self._refresh_recording_status()
@@ -480,6 +504,7 @@ class OBSController:
                 if scene_name == "Webex-Video" and not self.is_screen_recording:
                     if not self.bind_webex_video_window():
                         logger.warning("Video recording started without a bound Webex window.")
+                self._restart_audio_capture()
                 self.stop_verified = False
                 # A lost response is ambiguous, not authorization to adopt OBS.
                 self.is_recording = True

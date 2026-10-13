@@ -131,6 +131,7 @@ class OBSControllerTests(unittest.TestCase):
         controller.ws = Mock()
         controller.ws.call.side_effect = [RuntimeError("OBS is still initializing"), _Response()]
         with patch.object(controller, "switch_scene", return_value=True), \
+             patch.object(controller, "_restart_audio_capture"), \
              patch.object(controller, "_refresh_recording_status",
                           side_effect=[False, False, False, True]), \
              patch("webex_obs.obs_controller.time.sleep"):
@@ -142,6 +143,7 @@ class OBSControllerTests(unittest.TestCase):
         controller.ws = Mock()
         controller.ws.call.return_value = _Response()
         with patch.object(controller, "switch_scene", return_value=True), \
+             patch.object(controller, "_restart_audio_capture"), \
              patch.object(controller, "_refresh_recording_status", side_effect=[False, False, True]), \
              patch("webex_obs.obs_controller.time.sleep"):
             self.assertTrue(controller.start_recording())
@@ -539,7 +541,7 @@ def test_accepted_start_and_verified_stop_return_all_owned_segments(tmp_path):
     controller.recorded_files = [str(recovered)]
     controller.ws = Mock()
     controller.ws.call.side_effect = [
-        _Response(outputActive=False), _Response(),  # idle, accepted StartRecord
+        _Response(outputActive=False), _Response(inputs=[]), _Response(),  # idle, inputs, start
         _Response(outputActive=True),               # status need not include path
         _Response(outputs=[]),                      # unavailable live file target
         _Response(outputActive=True),               # stop preflight
@@ -770,3 +772,51 @@ def test_rejected_scene_never_starts_output_or_reports_video_mode(obs_v5_client,
             assert not controller.switch_to_video_mode()
     assert controller.current_scene == "Webex-Audio"
     assert not any(name in {"StartRecord", "StopRecord"} for name in calls)
+
+
+@pytest.mark.parametrize("scene", ["Webex-Audio", "Webex-Video"])
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "error", "empty", "list-error"])
+def test_audio_restart_precedes_recording_and_failures_are_advisory(obs_v5_client, scene, outcome, caplog):
+    calls = []
+
+    def respond(name, data):
+        calls.append((name, data))
+        if name == "GetInputList":
+            assert data == {"inputKind": "sck_audio_capture"}
+            if outcome == "list-error":
+                raise ConnectionError("synthetic enumeration failure")
+            return True, {"inputs": [] if outcome == "empty" else [
+                {"inputName": "Renamed system audio"}, {"inputName": "Application audio"},
+            ]}
+        if name == "PressInputPropertiesButton":
+            assert data["propertyName"] == "reactivate_capture"
+            if data["inputName"] == "Renamed system audio":
+                if outcome == "error":
+                    raise ConnectionError("synthetic button failure")
+                if outcome == "rejected":
+                    return False, None
+        return True, None
+
+    controller = OBSController()
+    controller.ws = obs_v5_client(respond)
+    with patch.object(controller, "switch_scene", return_value=True), \
+         patch.object(controller, "bind_webex_video_window", return_value=True), \
+         patch.object(controller, "_refresh_recording_status", side_effect=[False, True]):
+        assert controller.start_recording(scene)
+    assert calls[-1] == ("StartRecord", {})
+    buttons = [data["inputName"] for name, data in calls if name == "PressInputPropertiesButton"]
+    assert buttons == ([] if outcome in {"empty", "list-error"} else [
+        "Renamed system audio", "Application audio",
+    ])
+    if outcome in {"rejected", "error", "list-error"}:
+        assert "continuing" in caplog.text
+
+
+@pytest.mark.parametrize("active, owned", [(True, True), (True, False), (None, False)])
+def test_no_audio_restart_for_active_or_unknown_recording(active, owned):
+    controller = OBSController()
+    controller._owns_recording = owned
+    with patch.object(controller, "_refresh_recording_status", return_value=active), \
+         patch.object(controller, "_restart_audio_capture") as restart:
+        assert controller.start_recording() is owned
+    restart.assert_not_called()

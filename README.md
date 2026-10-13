@@ -7,7 +7,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 ## Key Features
 
 - **Automated Meeting Detection**: Detects Webex, Zoom, and Microsoft Teams calls from sustained, app-specific media activity and macOS window state before recording.
-- **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. OBS stays open between calls by default. Guarded idle restarts refresh long-running OBS instances; optional exit after recording is also available.
+- **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. Before each recording start, attempts Restart Capture on all macOS Audio Capture sources, including renamed sources. OBS disables this button for healthy capture; failures are logged and recording continues. OBS stays open between calls by default. Guarded idle restarts refresh long-running OBS instances; optional exit after recording is also available.
 - **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and starts a new segment when capture is confirmed stopped; ambiguous active outputs require manual resolution.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
 - **Neural & Acoustic Speaker Diarization**: Assigns anonymous speaker labels to speech turns. Neural diarization falls back to a rough two-group acoustic classification when unavailable; labels do not identify participant names.
@@ -158,6 +158,16 @@ a nonzero exit status. The installed MLX backend uses its bundled tokenizer.
 These checks do not load the model or verify a publisher checksum. Old basename
 cache folders remain on disk but are ignored because their owner is ambiguous;
 run prefetch again before relying on offline transcription.
+
+Without a valid prefetch cache, MLX Whisper contacts Hugging Face to check and
+download model files; recordings are processed locally and are not uploaded to
+Hugging Face. The app disables the Rust Xet downloader before dependency imports
+and uses ordinary HTTP downloads. A model-download failure can therefore prevent
+transcription before inference starts. Run prefetch for the configured model
+(pass its repository name as an argument if nondefault), then restart the app.
+This prevents Whisper model lookups when the validated local cache is selected;
+optional neural diarization has its own model cache. Failed jobs retain media
+and still require manual recovery; restarting does not retry them.
 
 ### 4. Background Service Management
 ```bash

@@ -93,6 +93,7 @@ not evidence that a call ended; stop manually if detection remains unknown.
 Permission grants and actual audio/video quality require the manual checks below.
 
 ### OBS Lifecycle & Auto-Reconnection
+- **Audio capture restart**: Before each manual or automatic audio/video recording start, including recovery segments and start retries, the companion requests **Restart Capture** for all macOS Audio Capture sources (`sck_audio_capture`) in OBS, regardless of source name or scene. Microphone and screen-capture sources are unaffected. OBS disables this button unless it has flagged capture as failed; rejected requests and enumeration failures are logged without blocking recording. An accepted request does not verify audio health. No new configuration is required. For a manual check, use synthetic audio in both recording modes, confirm both sides are audible, and check that a disabled button does not prevent recording; if a failed source is available, confirm its enabled button is requested before recording starts.
 - **Startup check**: The service launches/connects OBS, verifies WebSocket connectivity, and leaves OBS running, including when exit-after-recording is enabled. If startup connectivity cannot be verified, a recording request retries the connection.
 - **Recording**: By default, OBS stays open and connected between calls (`EXIT_OBS_ON_RECORDING_STOP=false`). Existing explicit true values and legacy `RELAUNCH_OBS_PER_CALL` values apply only after a recording stops: turn off **Exit OBS on recording stop** in Settings to enable keep-open behavior and idle maintenance between calls. OBS is prepared immediately on a manual recording request or strong audio/network call evidence, before slow window validation. Automatic recordings still require the existing window/attachment checks and two positive polls; meeting-title enrichment happens after recording starts.
 - **Idle maintenance**: **Idle restart interval (minutes; 0 = off)** / `OBS_IDLE_RESTART_MINUTES` defaults to 60. This is a minimum OBS uptime, not a fixed wall-clock schedule. Maintenance waits for at least two minutes without potential call evidence and runs only during minutes 05–24 or 35–54 of the local hour, avoiding five minutes either side of :00 and :30. Recording, streaming, replay-buffer activity, unknown output status, or a pending recording request defer the restart. OBS is gracefully restarted and immediately reconnected; failures back off for two minutes. Maintenance applies only to local OBS in keep-open mode, and never runs from the active recording lifecycle. A request arriving during shutdown is handled after OBS reconnects. The timer is preventative, not an audio-health check.
@@ -211,6 +212,15 @@ MLX tokenizer is bundled, so repository tokenizer files are not downloaded.
 Structural checks do not prove inference compatibility or detect every change
 to weight data. Existing basename-only caches are retained but ignored; rerun
 prefetch before offline use.
+
+If logs show Hugging Face revision or `xet-read-token` requests, Whisper is using
+the repository download path rather than the validated prefetch cache. These
+requests concern model files, not meeting audio. The app disables Xet before
+dependency imports to avoid that downloader's failure path. After a download
+panic, run prefetch (with the configured repository argument for a nondefault
+model) and restart after finishing any active recording. Confirm the next
+startup logs `Using local pre-fetched Whisper model`. This prepares future
+transcription; failed jobs remain protected and require manual recovery.
 
 ### Step C: Test 1:1 Webex Delivery
 Send a verification message through your Webex Bot into your 1:1 Webex chat:

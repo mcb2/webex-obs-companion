@@ -32,7 +32,7 @@ for p in extra_paths:
         current_path = f"{p}:{current_path}"
 os.environ["PATH"] = current_path
 
-# Disable fast transfer CAS client that fails on corporate CDNs / expired signed URLs
+# Disable the legacy downloader too; Xet is disabled in package initialization.
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 # Ensure root certificates are injected
