@@ -161,11 +161,28 @@ transcription. The automatic call-detection prompt retains its existing behavior
 The Settings sections are OBS recording, Transcription, Files and detection,
 Keyboard shortcuts, and finally Webex delivery.
 
+Setup and native Settings use the same validated atomic writer. Rerunning setup
+retains unedited settings, comments, compatibility aliases, and zero values.
+New configurations use application defaults, including keeping OBS open. Dotenv
+values are literal: `${HOME}` is not interpolated; use `~` or an absolute folder
+path. Settings persistence and runtime application run in a background worker.
+Failures restore the original file and changed runtime components; rollback
+errors are reported explicitly and require a restart after recording finishes.
+
 ### Step B: Pre-fetch Local Whisper Models
 Download and cache the Apple Silicon MLX Whisper model weights locally:
 ```bash
 uv run webex-obs prefetch-model
 ```
+
+Each full repository name has its own hashed cache directory. Prefetch succeeds
+only when `config.json` has the required model dimensions and
+`weights.safetensors` passes header, tensor-layout, and file-length checks. It
+exits nonzero for missing/corrupt required artifacts, including HTTP 404. The
+MLX tokenizer is bundled, so repository tokenizer files are not downloaded.
+Structural checks do not prove inference compatibility or detect every change
+to weight data. Existing basename-only caches are retained but ignored; rerun
+prefetch before offline use.
 
 ### Step C: Test 1:1 Webex Delivery
 Send a verification message through your Webex Bot into your 1:1 Webex chat:
@@ -294,6 +311,14 @@ that only writes synthetic test files. Keep AppKit on the main thread.
    eligibility. Restore the part and retry locally; the completed transcript
    must no longer contain partial markers. Inspect MLX/diarization quality
    separately if models/hardware are available.
+
+6. **Settings responsiveness and rollback:** in the isolated test process, inject
+   a delayed/failing settings component and change a shortcut plus detector/OBS
+   settings. Confirm the menu and window still respond during application. On
+   failure, confirm the original file bytes and runtime settings return, with an
+   alert on the main thread. During synthetic capture, confirm connection edits
+   stay deferred until a verified stop. Check zero values, quoted paths, and
+   legacy keys survive setup and Settings round trips.
 
 The mocked suite validates these state transitions without OBS or model inference.
 Actual app window naming, Core Audio behavior, transport fallback, permissions,

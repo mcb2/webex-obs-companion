@@ -16,7 +16,7 @@ import objc
 
 from .config import DEFAULT_ENV_FILE
 from .control_dialog import manual_consent_dialog, recording_menu_choices, startup_dialog
-from .settings_store import save_settings
+from .settings_store import SettingsRollbackError
 from .runtime_state import ApplicationStopping
 from .service_control import stop_launch_agent
 from .ui_banner import UIBanner
@@ -99,6 +99,7 @@ class MacOSUI:
         self._quit_service = False
         self._unload_started = False
         self._unload_done = threading.Event()
+        self._settings_saving = False
 
     @staticmethod
     def _status_image(badge_symbol=None):
@@ -495,6 +496,8 @@ class MacOSUI:
         ]
 
     def show_settings(self):
+        if self._settings_saving:
+            return
         config = self.daemon.config
         sections = self._settings_sections()
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -602,16 +605,35 @@ class MacOSUI:
             else:
                 value = str(field.stringValue())
             original = getattr(config, key)
-            if value != (bool(original) if kind == "bool" else str(original or "")):
+            if value != (bool(original) if kind == "bool" else ("" if original is None else str(original))):
                 values[key] = value
         if not values:
             return
-        try:
-            updated = save_settings(values, Path(DEFAULT_ENV_FILE), current=config)
+        self._save_settings_async(values)
+
+    def _save_settings_async(self, values):
+        """Only collect controls on AppKit; persistence and integrations can block."""
+        if self._settings_saving:
+            return
+        self._settings_saving = True
+
+        def save():
+            error = None
             try:
-                self.daemon.apply_settings(updated)
-            except Exception:
-                save_settings({key: getattr(config, key) for key in values}, Path(DEFAULT_ENV_FILE), current=updated)
-                raise
-        except Exception as exc:
-            self._alert("Settings", "Could not save settings", str(exc), ["OK"])
+                self.daemon.save_settings(values, Path(DEFAULT_ENV_FILE))
+            except Exception as exc:
+                logger.error("Settings save/application failed (%s).", type(exc).__name__)
+                error = (
+                    "Settings rollback failed. Finish any recording and restart the app."
+                    if isinstance(exc, SettingsRollbackError) else
+                    "Settings could not be saved or applied. Previous settings were retained."
+                )
+
+            def finish():
+                self._settings_saving = False
+                if error:
+                    self._alert("Settings", "Could not save settings", error, ["OK"])
+
+            self.requests.put((finish, [], threading.Event()))
+
+        threading.Thread(target=save, name="settings-apply", daemon=True).start()

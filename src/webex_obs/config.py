@@ -4,6 +4,9 @@ from typing import Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource
+from pydantic_settings.sources.utils import parse_env_vars
+from dotenv import dotenv_values
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DOTENV_PATH = PROJECT_ROOT / ".env"
@@ -17,6 +20,15 @@ else:
     DEFAULT_ENV_FILE = ".env"
 
 
+class _LiteralDotEnvSource(DotEnvSettingsSource):
+    def _read_env_file(self, file_path: Path) -> dict[str, str | None]:
+        # Credentials and macOS filenames can contain literal ${...} text.
+        return parse_env_vars(
+            dotenv_values(file_path, encoding=self.env_file_encoding or "utf-8", interpolate=False),
+            self.case_sensitive, self.env_ignore_empty, self.env_parse_none_str,
+        )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=DEFAULT_ENV_FILE,
@@ -24,6 +36,20 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings,
+                                   dotenv_settings, file_secret_settings):
+        literal_dotenv = _LiteralDotEnvSource(
+            settings_cls, env_file=dotenv_settings.env_file,
+            env_file_encoding=dotenv_settings.env_file_encoding,
+            case_sensitive=dotenv_settings.case_sensitive,
+            env_prefix=dotenv_settings.env_prefix,
+            env_ignore_empty=dotenv_settings.env_ignore_empty,
+            env_parse_none_str=dotenv_settings.env_parse_none_str,
+            env_parse_enums=dotenv_settings.env_parse_enums,
+        )
+        return init_settings, env_settings, literal_dotenv, file_secret_settings
 
     # Webex settings (Permanent Bot Token)
     webex_delivery_enabled: bool = Field(

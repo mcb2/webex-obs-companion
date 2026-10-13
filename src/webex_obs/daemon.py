@@ -84,6 +84,7 @@ class WebexOBSDaemon:
         )
 
     def _initialize_lifecycle_state(self) -> None:
+        self._settings_update_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._stopped_event = threading.Event()
         self._lifecycle_thread: threading.Thread | None = None
@@ -158,7 +159,7 @@ class WebexOBSDaemon:
                     logger.exception(self.failure)
                 for cleanup in (
                     lambda: self._post_processing_worker.shutdown(wait=True, timeout=2.0, drain=False),
-                    self.hotkeys.stop, self.recorder.disconnect,
+                    self._disconnect_settings_components,
                 ):
                     try:
                         cleanup()
@@ -178,10 +179,33 @@ class WebexOBSDaemon:
             # Retain ownership until process exit, including any inference/network
             # worker still running after the bounded wait.
 
+    def _disconnect_settings_components(self) -> None:
+        # Settings now runs off-thread. Do not let an in-flight save register
+        # new listeners after lifecycle cleanup has stopped the previous ones.
+        with self._settings_update_lock:
+            try:
+                self.hotkeys.stop()
+            finally:
+                self.recorder.disconnect()
+
+    def save_settings(self, values: dict[str, str | bool], path: Path | None = None) -> Config:
+        """Serialize persistence and runtime application on the Settings worker."""
+        from .settings_store import save_settings
+
+        with self._settings_update_lock:
+            if self._shutdown_event.is_set():
+                raise ApplicationStopping("Application is shutting down")
+            return save_settings(values, path, current=self.config, apply=self._apply_settings)
+
     def apply_settings(self, config: Config) -> None:
-        """Install validated settings without interrupting a recording."""
+        """Install validated settings; restore changed components on failure."""
+        with self._settings_update_lock:
+            self._apply_settings(config)
+
+    def _apply_settings(self, config: Config) -> None:
+        if self._shutdown_event.is_set():
+            raise ApplicationStopping("Application is shutting down")
         old = self.config
-        # Construct workers before stopping the old hotkey listener.
         transcriber = Transcriber(
             model_name=config.whisper_model,
             transcripts_dir=config.transcripts_dir,
@@ -194,6 +218,8 @@ class WebexOBSDaemon:
             room_id=config.webex_room_id,
             my_agent_email=config.my_agent_email,
         )
+        old_hotkeys = self.hotkeys
+        replacement = None
         if any(getattr(old, key) != getattr(config, key) for key in (
             "hotkey_audio", "hotkey_video", "hotkey_video_source", "hotkey_stop_transcribe"
         )):
@@ -207,20 +233,48 @@ class WebexOBSDaemon:
                 video_source_hotkey=config.hotkey_video_source,
                 stop_transcribe_hotkey=config.hotkey_stop_transcribe,
             )
-            self.hotkeys.stop()
-            try:
+        recorder_attempted = False
+        hotkeys_attempted = False
+        old_poll = self.monitor.poll_interval
+        old_grace = self.monitor.call_end_grace_seconds
+        try:
+            if self._shutdown_event.is_set():
+                raise ApplicationStopping("Application is shutting down")
+            if replacement is not None:
+                hotkeys_attempted = True
+                old_hotkeys.stop()
                 replacement.start()
-            except Exception:
-                self.hotkeys.start()
-                raise
-            self.hotkeys = replacement
-        self.recorder.configure(config)
-        self.monitor.poll_interval = config.poll_interval
-        self.monitor.call_end_grace_seconds = config.call_end_grace_seconds
+            recorder_attempted = True
+            self.recorder.configure(config)
+            self.monitor.poll_interval = config.poll_interval
+            self.monitor.call_end_grace_seconds = config.call_end_grace_seconds
+        except Exception:
+            # Include the component that raised: an integration may mutate then fail.
+            rollback = [
+                lambda: setattr(self.monitor, "poll_interval", old_poll),
+                lambda: setattr(self.monitor, "call_end_grace_seconds", old_grace),
+            ]
+            if recorder_attempted:
+                rollback.append(lambda: self.recorder.configure(old))
+            if hotkeys_attempted:
+                rollback.extend((replacement.stop, old_hotkeys.start))
+            failed = False
+            for restore in rollback:
+                try:
+                    restore()
+                except Exception as exc:
+                    failed = True
+                    logger.error("Runtime settings rollback failed (%s).", type(exc).__name__)
+            if failed:
+                from .settings_store import SettingsRollbackError
+                raise SettingsRollbackError("Runtime rollback failed; restart after finishing recording.") from None
+            raise
         with self._settings_lock:
             self.transcriber = transcriber
             self.webex = webex
             self.config = config
+            if replacement is not None:
+                self.hotkeys = replacement
         logger.info("Settings applied to running service.")
 
     def status(self) -> tuple[bool, str]:

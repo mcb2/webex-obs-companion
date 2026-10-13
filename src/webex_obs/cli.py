@@ -22,6 +22,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from . import __version__
+from .model_cache import MODELS_CACHE_DIR, REQUIRED_ARTIFACTS, artifact_valid, invalid_artifacts, model_cache_path
 
 # Ensure Homebrew and standard binary paths are in PATH
 extra_paths = ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")]
@@ -56,7 +57,6 @@ console = Console()
 PLIST_NAME = "com.cisco.webex-obs.plist"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / PLIST_NAME
-MODELS_CACHE_DIR = Path.home() / ".cache" / "webex_obs" / "models"
 
 
 def _ask_secret(prompt: str, default: str = "") -> str:
@@ -82,12 +82,14 @@ def _check_ffmpeg() -> bool:
 
 def _stream_download_file(url: str, dest_path: Path, token: str | None = None) -> bool:
     """Download a file with streaming chunks and a live progress bar."""
-    headers = {"User-Agent": f"webex-obs-companion/{__version__}"}
+    headers = {"User-Agent": f"webex-obs-companion/{__version__}", "Accept-Encoding": "identity"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+    fd, temporary = tempfile.mkstemp(prefix=".webex-obs-", dir=dest_path.parent)
+    os.close(fd)
+    temp_path = Path(temporary)
 
     try:
         with requests.get(url, headers=headers, stream=True, timeout=30) as response:
@@ -111,12 +113,14 @@ def _stream_download_file(url: str, dest_path: Path, token: str | None = None) -
                         f.write(chunk)
                         progress.update(task, advance=len(chunk))
 
+        if total_size and temp_path.stat().st_size != total_size:
+            raise OSError("Incomplete download (content length mismatch)")
+        if not temp_path.stat().st_size:
+            raise OSError("Empty download")
         temp_path.replace(dest_path)
         return True
-    except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise e
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @app.command()
@@ -199,45 +203,28 @@ def prefetch_model(
     """Directly download and cache Whisper model weights locally."""
     _check_ffmpeg()
 
-    model_slug = Path(model_name).name
-    target_dir = MODELS_CACHE_DIR / model_slug
+    target_dir = model_cache_path(model_name, MODELS_CACHE_DIR)
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    console.print(f"[bold blue]Directly fetching MLX Whisper model '{model_name}'...[/bold blue]")
+    console.print(f"[bold blue]Fetching MLX Whisper model '{model_name}'...[/bold blue]")
     console.print(f"Target local directory: [cyan]{target_dir}[/cyan]\n")
-
-    repo_files = [
-        "config.json",
-        "weights.safetensors",
-        "tokenizer.json",
-        "preprocessor_config.json",
-        "special_tokens_map.json",
-        "vocab.json",
-        "merges.txt",
-        "normalizer.json",
-    ]
-
     base_url = f"https://huggingface.co/{model_name}/resolve/main"
-
-    for idx, fname in enumerate(repo_files, start=1):
+    for fname in REQUIRED_ARTIFACTS:
         dest = target_dir / fname
-        if dest.exists() and dest.stat().st_size > 0:
-            console.print(f"[{idx}/{len(repo_files)}] [green]✓ Already cached:[/green] {fname} ({dest.stat().st_size:,} bytes)")
+        if artifact_valid(dest):
+            console.print(f"[green]✓ Already cached:[/green] {fname}")
             continue
-
-        url = f"{base_url}/{fname}"
         try:
-            downloaded = _stream_download_file(url, dest, token=hf_token)
-            if downloaded:
-                console.print(f"[{idx}/{len(repo_files)}] [green]✓ Downloaded:[/green] {fname}")
-        except Exception as e:
-            if fname == "weights.safetensors":
-                console.print(f"[bold red]Failed to download {fname}:[/bold red] {e}")
-                console.print(f"\n[yellow]Direct curl fallback command:[/yellow]")
-                console.print(f"  curl -L -o \"{dest}\" \"{url}\"")
-                return
-
-    console.print(f"\n[bold green]✓ Whisper model successfully pre-fetched and cached locally![/bold green]")
+            if not _stream_download_file(f"{base_url}/{fname}", dest, token=hf_token):
+                console.print(f"[red]Required artifact unavailable:[/red] {fname}")
+        except Exception as exc:
+            # Do not echo request URLs/headers or a supplied access token.
+            console.print(f"[red]Download failed:[/red] {fname} ({type(exc).__name__})")
+    invalid = invalid_artifacts(target_dir)
+    if invalid:
+        console.print("[bold red]Model prefetch incomplete; missing or invalid: "
+                      + ", ".join(invalid) + "[/bold red]")
+        raise typer.Exit(code=1)
+    console.print("\n[bold green]✓ Whisper model successfully pre-fetched and validated locally![/bold green]")
     console.print(f"Cached at: [cyan]{target_dir}[/cyan]")
 
 
@@ -248,70 +235,38 @@ def setup():
 
     _check_ffmpeg()
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    env_file = project_root / ".env"
+    from .config import Config, DEFAULT_ENV_FILE
+    from .settings_store import save_settings
 
-    # Default configuration values
-    existing_webex_delivery = True
-    existing_token = ""
-    existing_recipient_email = ""
-    existing_my_agent_email = ""
-    existing_room_id = ""
-    existing_obs_port = "4455"
-    existing_obs_password = ""
-    existing_exit_obs = True
-    existing_shared_window_behavior = "prompt"
-    existing_whisper_model = "mlx-community/whisper-large-v3-turbo"
-    existing_enable_diarize = True
-    existing_hf_token = ""
-    existing_recordings_dir = str(Path.home() / "Movies" / "WebexRecordings")
-    existing_transcripts_dir = str(Path.home() / "Documents" / "WebexTranscripts")
-    existing_retention_days = "14"
-    existing_call_end_grace_seconds = "15.0"
-    existing_hotkey_audio = "<cmd>+<shift>+a"
-    existing_hotkey_video = "<cmd>+<shift>+v"
-    existing_hotkey_source = "<cmd>+<shift>+r"
-    existing_hotkey_stop = "<cmd>+<shift>+s"
-
+    env_file = Path(DEFAULT_ENV_FILE).expanduser().resolve()
+    try:
+        current = Config(_env_file=env_file)
+    except ValueError:
+        console.print("[bold red]Existing configuration is invalid; correct it before running setup.[/bold red]")
+        raise typer.Exit(code=1) from None
     if env_file.exists():
         console.print(f"[bold green]Found existing configuration at {env_file}.[/bold green]")
         console.print("[dim]Press Enter on any prompt to keep its current value.[/dim]\n")
-        try:
-            from webex_obs.config import Settings
-            current = Settings()
-            existing_webex_delivery = current.webex_delivery_enabled
-            if current.webex_access_token:
-                existing_token = current.webex_access_token
-            if current.webex_recipient_email:
-                existing_recipient_email = current.webex_recipient_email
-            if current.my_agent_email:
-                existing_my_agent_email = current.my_agent_email
-            if current.webex_room_id:
-                existing_room_id = current.webex_room_id
-            if current.obs_ws_port:
-                existing_obs_port = str(current.obs_ws_port)
-            if current.obs_ws_password:
-                existing_obs_password = current.obs_ws_password
-            existing_exit_obs = current.exit_obs_on_recording_stop
-            existing_shared_window_behavior = current.shared_window_behavior
-            if current.whisper_model:
-                existing_whisper_model = current.whisper_model
-            existing_enable_diarize = current.enable_diarization
-            if current.hf_token:
-                existing_hf_token = current.hf_token
-            if current.recordings_dir:
-                existing_recordings_dir = str(current.recordings_dir)
-            if current.transcripts_dir:
-                existing_transcripts_dir = str(current.transcripts_dir)
-            if current.retention_days:
-                existing_retention_days = str(current.retention_days)
-            existing_call_end_grace_seconds = str(current.call_end_grace_seconds)
-            existing_hotkey_audio = current.hotkey_audio
-            existing_hotkey_video = current.hotkey_video
-            existing_hotkey_source = current.hotkey_video_source
-            existing_hotkey_stop = current.hotkey_stop_transcribe
-        except Exception:
-            pass
+    existing_webex_delivery = current.webex_delivery_enabled
+    existing_token = current.webex_access_token
+    existing_recipient_email = current.webex_recipient_email
+    existing_my_agent_email = current.my_agent_email
+    existing_room_id = current.webex_room_id
+    existing_obs_port = str(current.obs_ws_port)
+    existing_obs_password = current.obs_ws_password
+    existing_exit_obs = current.exit_obs_on_recording_stop
+    existing_shared_window_behavior = current.shared_window_behavior
+    existing_whisper_model = current.whisper_model
+    existing_enable_diarize = current.enable_diarization
+    existing_hf_token = current.hf_token or ""
+    existing_recordings_dir = str(current.recordings_dir)
+    existing_transcripts_dir = str(current.transcripts_dir)
+    existing_retention_days = str(current.retention_days)
+    existing_call_end_grace_seconds = str(current.call_end_grace_seconds)
+    existing_hotkey_audio = current.hotkey_audio
+    existing_hotkey_video = current.hotkey_video
+    existing_hotkey_source = current.hotkey_video_source
+    existing_hotkey_stop = current.hotkey_stop_transcribe
 
     console.print("[bold]1. Webex Bot Configuration[/bold]")
     console.print("Create a permanent bot at: [cyan]https://developer.webex.com/my-apps[/cyan]\n")
@@ -398,58 +353,39 @@ def setup():
     hotkey_source = Prompt.ask("Select Video source", default=existing_hotkey_source)
     hotkey_stop = Prompt.ask("Stop recording & Transcribe", default=existing_hotkey_stop)
 
-    from webex_obs.hotkey_listener import validate_hotkeys
-
+    proposed = {
+        "webex_delivery_enabled": webex_delivery,
+        "webex_access_token": token,
+        "webex_recipient_email": recipient_email,
+        "my_agent_email": my_agent_email,
+        "webex_room_id": room_id,
+        "obs_ws_port": obs_port,
+        "obs_ws_password": obs_password,
+        "exit_obs_on_recording_stop": exit_obs,
+        "shared_window_behavior": shared_window_behavior,
+        "whisper_model": whisper_model,
+        "enable_diarization": enable_diarize,
+        "hf_token": hf_token,
+        "recordings_dir": recordings_dir,
+        "transcripts_dir": transcripts_dir,
+        "retention_days": retention_days,
+        "call_end_grace_seconds": call_end_grace_seconds,
+        "hotkey_audio": hotkey_audio,
+        "hotkey_video": hotkey_video,
+        "hotkey_video_source": hotkey_source,
+        "hotkey_stop_transcribe": hotkey_stop,
+    }
+    # Only edited fields are written; aliases and unprompted settings survive.
+    values = {}
+    for key, value in proposed.items():
+        original = getattr(current, key)
+        if str(value if value is not None else "") != str(original if original is not None else ""):
+            values[key] = value
     try:
-        validate_hotkeys(hotkey_audio, hotkey_video, hotkey_source, hotkey_stop)
-    except ValueError as exc:
-        console.print(f"[bold red]Hotkey configuration not saved:[/bold red] {exc}")
-        console.print("Run [bold]uv run webex-obs setup[/bold] again and choose different shortcuts.")
-        return
-
-    env_content = f"""# Webex OBS Companion Configuration
-# Permanent Webex Bot Access Token (developer.webex.com)
-WEBEX_DELIVERY_ENABLED={'true' if webex_delivery else 'false'}
-WEBEX_ACCESS_TOKEN={token}
-WEBEX_RECIPIENT_EMAIL={recipient_email}
-MY_AGENT_EMAIL={my_agent_email}
-WEBEX_ROOM_ID={room_id}
-
-# OBS Studio WebSocket
-OBS_WS_HOST=localhost
-OBS_WS_PORT={obs_port}
-OBS_WS_PASSWORD={obs_password}
-EXIT_OBS_ON_RECORDING_STOP={'true' if exit_obs else 'false'}
-SHARED_WINDOW_BEHAVIOR={shared_window_behavior}
-
-# Transcription & Neural Diarization
-WHISPER_MODEL={whisper_model}
-ENABLE_DIARIZATION={'true' if enable_diarize else 'false'}
-HF_TOKEN={hf_token}
-
-# File & Storage Paths
-RECORDINGS_DIR={recordings_dir}
-TRANSCRIPTS_DIR={transcripts_dir}
-RETENTION_DAYS={retention_days}
-POLL_INTERVAL=3.0
-CALL_END_GRACE_SECONDS={call_end_grace_seconds}
-
-# Global Keyboard Shortcuts (pynput syntax)
-HOTKEY_AUDIO={hotkey_audio}
-HOTKEY_VIDEO={hotkey_video}
-HOTKEY_VIDEO_SOURCE={hotkey_source}
-HOTKEY_STOP_TRANSCRIBE={hotkey_stop}
-"""
-    # mkstemp creates a private (0600) file before any credentials are written.
-    # Replace atomically so a failed write cannot truncate existing credentials.
-    fd, temp_name = tempfile.mkstemp(prefix=".webex-obs-", dir=env_file.parent)
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(env_content)
-        os.replace(temp, env_file)
-    finally:
-        temp.unlink(missing_ok=True)
+        save_settings(values, env_file, current=current)
+    except ValueError:
+        console.print("[bold red]Configuration not saved: invalid settings. Check values and shortcuts.[/bold red]")
+        raise typer.Exit(code=1) from None
 
     console.print(f"\n[bold green]Configuration successfully saved to {env_file}![/bold green]")
     console.print("[cyan]Tip: Test 1:1 delivery anytime with: [bold]uv run webex-obs test-webex[/bold][/cyan]")

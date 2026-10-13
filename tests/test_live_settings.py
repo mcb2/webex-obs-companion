@@ -763,3 +763,172 @@ def test_picker_enumeration_runs_off_main_thread_and_ignores_completion_during_p
     daemon.ui.choose_webex_window.assert_not_called()
     assert daemon._window_selection_queue.empty()
     assert not daemon._window_prompt_pending.is_set()
+
+
+@pytest.mark.parametrize("failure", ["transcriber", "webex", "hotkeys", "recorder", "monitor"])
+def test_partial_settings_application_restores_runtime_and_exact_persistence(tmp_path, failure):
+    daemon = _daemon()
+    path = tmp_path / ".env"
+    original = b"# exact original\r\nOBS_PORT=4455\r\nENABLE_DIARIZATION=false\r\n"
+    path.write_bytes(original)
+    daemon.config = Config(_env_file=path)
+    old = daemon.config
+    daemon.transcriber, daemon.webex, daemon.hotkeys = Mock(), Mock(), Mock()
+    prior = daemon.transcriber, daemon.webex, daemon.hotkeys
+    daemon._settings_lock = threading.Lock()
+    backend_state = {"config": old}
+    daemon.recorder = Mock()
+    def configure(config):
+        backend_state["config"] = config
+        if failure == "recorder" and config is not old:
+            raise RuntimeError("synthetic configure failure after mutation")
+    daemon.recorder.configure.side_effect = configure
+    class Monitor:
+        poll_interval = old.poll_interval
+        _grace = old.call_end_grace_seconds
+        @property
+        def call_end_grace_seconds(self):
+            return self._grace
+        @call_end_grace_seconds.setter
+        def call_end_grace_seconds(self, value):
+            self._grace = value
+            if failure == "monitor" and value != old.call_end_grace_seconds:
+                raise RuntimeError("synthetic monitor failure after mutation")
+    daemon.monitor = Monitor()
+    with patch("webex_obs.daemon.Transcriber") as transcriber, \
+         patch("webex_obs.daemon.WebexClient") as webex, \
+         patch("webex_obs.daemon.HotkeyListener") as listener:
+        if failure in {"transcriber", "webex"}:
+            (transcriber if failure == "transcriber" else webex).side_effect = RuntimeError("synthetic constructor failure")
+        if failure == "hotkeys":
+            listener.return_value.start.side_effect = RuntimeError("synthetic listener failure after start")
+        with pytest.raises(RuntimeError, match="synthetic"):
+            daemon.save_settings({"hotkey_audio": "<ctrl>+x", "poll_interval": "1.0",
+                                  "call_end_grace_seconds": "7.0", "obs_ws_port": "4456"}, path)
+        assert listener.return_value.stop.call_count == (failure in {"hotkeys", "recorder", "monitor"})
+        assert prior[2].start.call_count == (failure in {"hotkeys", "recorder", "monitor"})
+    assert path.read_bytes() == original
+    assert daemon.config is old
+    assert (daemon.transcriber, daemon.webex, daemon.hotkeys) == prior
+    assert backend_state["config"] is old
+    assert daemon.monitor.poll_interval == old.poll_interval
+    assert daemon.monitor.call_end_grace_seconds == old.call_end_grace_seconds
+
+
+def test_rollback_failure_still_restores_file_and_other_components(tmp_path):
+    from webex_obs.settings_store import SettingsRollbackError
+    daemon = _daemon()
+    path = tmp_path / ".env"
+    path.write_text("ENABLE_DIARIZATION=false\n")
+    daemon.config = Config(_env_file=path)
+    daemon.hotkeys = Mock()
+    daemon.monitor = SimpleNamespace(poll_interval=3.0, call_end_grace_seconds=15.0)
+    daemon.recorder = Mock()
+    daemon.recorder.configure.side_effect = RuntimeError("synthetic persistent backend failure")
+    daemon._settings_lock = threading.Lock()
+    with patch("webex_obs.daemon.Transcriber"), patch("webex_obs.daemon.WebexClient"), \
+         patch("webex_obs.daemon.HotkeyListener") as hotkeys:
+        with pytest.raises(SettingsRollbackError):
+            daemon.save_settings({"hotkey_audio": "<ctrl>+x"}, path)
+        hotkeys.return_value.stop.assert_called_once()
+    daemon.hotkeys.start.assert_called_once()
+    assert path.read_text() == "ENABLE_DIARIZATION=false\n"
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_runtime_transaction_keeps_active_connection_and_restores_deferred_settings(tmp_path, fail):
+    from webex_obs.recording_backend import OBSRecordingBackend
+    daemon = _daemon()
+    path = tmp_path / ".env"
+    path.write_text("ENABLE_DIARIZATION=false\nOBS_WS_HOST=old\n")
+    daemon.config = Config(_env_file=path)
+    daemon._settings_lock = threading.Lock()
+    daemon.hotkeys, daemon.transcriber, daemon.webex = Mock(), Mock(), Mock()
+    controller = Mock(address="old", port=4455, password="", is_recording=True, stop_verified=False)
+    backend = OBSRecordingBackend(controller)
+    daemon.recorder = backend
+    class Monitor:
+        _poll = daemon.config.poll_interval
+        call_end_grace_seconds = daemon.config.call_end_grace_seconds
+        @property
+        def poll_interval(self):
+            return self._poll
+        @poll_interval.setter
+        def poll_interval(self, value):
+            self._poll = value
+            if fail and value == 1:
+                raise RuntimeError("synthetic monitor failure")
+    daemon.monitor = Monitor()
+    with patch("webex_obs.daemon.Transcriber"), patch("webex_obs.daemon.WebexClient"):
+        if fail:
+            with pytest.raises(RuntimeError):
+                daemon.save_settings({"obs_ws_host": "new", "poll_interval": "1"}, path)
+        else:
+            daemon.save_settings({"obs_ws_host": "new", "poll_interval": "1"}, path)
+    assert controller.address == "old"
+    controller.disconnect.assert_not_called()
+    controller.is_recording = False
+    controller.stop_verified = True
+    controller._recording_active_status.return_value = False
+    backend.prepare_recording()
+    assert controller.address == ("old" if fail else "new")
+    assert Config(_env_file=path).obs_ws_host == ("old" if fail else "new")
+
+
+def test_concurrent_settings_transactions_do_not_overwrite_a_prior_success(tmp_path):
+    daemon = _daemon()
+    path = tmp_path / ".env"
+    path.write_text("ENABLE_DIARIZATION=false\n")
+    daemon.config = Config(_env_file=path)
+    daemon._settings_lock = threading.Lock()
+    daemon.monitor = SimpleNamespace(poll_interval=3.0, call_end_grace_seconds=15.0)
+    daemon.recorder, daemon.hotkeys = Mock(), Mock()
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    def build(**kwargs):
+        if kwargs["model_name"] == "first-model":
+            entered.set()
+            assert release.wait(3)
+        return Mock()
+    def save(values):
+        try:
+            daemon.save_settings(values, path)
+        except BaseException as exc:
+            errors.append(exc)
+    first = threading.Thread(target=save, args=({"whisper_model": "first-model"},))
+    second = threading.Thread(target=save, args=({"poll_interval": "1"},))
+    with patch("webex_obs.daemon.Transcriber", side_effect=build), patch("webex_obs.daemon.WebexClient"):
+        first.start()
+        try:
+            assert entered.wait(3)
+            second.start()
+            assert daemon._settings_update_lock.locked()
+        finally:
+            release.set()
+            first.join(3)
+            if second.ident:
+                second.join(3)
+    assert not errors and not first.is_alive() and not second.is_alive()
+    loaded = Config(_env_file=path)
+    assert loaded.whisper_model == daemon.config.whisper_model == "first-model"
+    assert loaded.poll_interval == daemon.config.poll_interval == 1
+
+
+def test_shutdown_during_settings_construction_prevents_listener_restart_and_restores_file(tmp_path):
+    from webex_obs.runtime_state import ApplicationStopping
+    daemon = _daemon()
+    path = tmp_path / ".env"
+    path.write_text("ENABLE_DIARIZATION=false\n")
+    daemon.config = Config(_env_file=path)
+    old = daemon.config
+    daemon.monitor = SimpleNamespace(poll_interval=3.0, call_end_grace_seconds=15.0)
+    daemon.hotkeys, daemon.recorder = Mock(), Mock()
+    with patch("webex_obs.daemon.Transcriber", side_effect=lambda **kwargs: daemon._shutdown_event.set()), \
+         patch("webex_obs.daemon.WebexClient"), patch("webex_obs.daemon.HotkeyListener") as hotkeys:
+        with pytest.raises(ApplicationStopping):
+            daemon.save_settings({"hotkey_audio": "<ctrl>+x"}, path)
+        hotkeys.return_value.start.assert_not_called()
+    daemon.hotkeys.stop.assert_not_called()
+    daemon.recorder.configure.assert_not_called()
+    assert daemon.config is old
+    assert path.read_text() == "ENABLE_DIARIZATION=false\n"

@@ -51,8 +51,13 @@ retrying the app's Stop action to finalize known segments.
 
 Settings updates validate values, atomically change the existing `.env`, and
 replace the running detector, transcription, delivery, and hotkey configuration.
-The OBS adapter queues settings behind a short configuration lock on the UI thread,
-without waiting for its OBS lifecycle lock. The lifecycle worker applies connection
+Setup and native Settings share this writer; edits preserve comments and unknown
+keys. Dotenv values are loaded literally so paths and credentials round trip.
+Native Settings collects controls on AppKit, then serializes saving and application
+on a background worker. Runtime failures restore changed components and exact
+original file bytes; rollback failures are surfaced without credential values.
+The OBS adapter queues settings behind a short configuration lock, without
+waiting for its OBS lifecycle lock. The lifecycle worker applies connection
 changes after a verified stop or during idle preparation/start once
 the old output reports stopped; no socket probe runs in Settings on the UI thread.
 LaunchAgent stdout/stderr paths and OBS's recording output path are managed by

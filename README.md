@@ -110,8 +110,13 @@ uv run webex-obs setup
 
 Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
 connection, transcription, detection, and shortcuts. Changes are saved and
-applied when you click **OK**, without restarting the service. An active or
-unresolved recording retains its OBS connection until a stop is positively verified.
+applied in the background when you click **OK**, without restarting the service.
+Setup and Settings share the validated atomic writer. Unedited keys, comments,
+legacy aliases, and explicit zero values are retained; new configurations use
+the application defaults. Values are literal (including `${...}` text), with
+`~` expansion for folder paths. Failed application restores the previous file
+and runtime settings; a rollback failure asks you to finish recording and restart.
+An active or unresolved recording retains its OBS connection until a stop is positively verified.
 Idle connection changes are applied on the next recording preparation/start,
 after the old OBS output is confirmed stopped. OBS still performs all
 capture: update its recording output path in OBS too if you change the
@@ -142,6 +147,14 @@ uv run webex-obs prefetch-model
 # Test Webex Bot 1:1 message delivery
 uv run webex-obs test-webex
 ```
+
+Prefetch and transcription share a cache identity derived from the full repository
+name. Prefetch requires a valid `config.json` and structurally valid
+`weights.safetensors`; missing, empty, malformed, or truncated artifacts produce
+a nonzero exit status. The installed MLX backend uses its bundled tokenizer.
+These checks do not load the model or verify a publisher checksum. Old basename
+cache folders remain on disk but are ignored because their owner is ambiguous;
+run prefetch again before relying on offline transcription.
 
 ### 4. Background Service Management
 ```bash
@@ -179,7 +192,7 @@ uv run webex-obs logs
 - **Meeting Transcripts**: `~/Documents/WebexTranscripts/`
 - **OBS Media Recordings**: `~/Movies/` or `~/Movies/WebexRecordings/`
 - **Service Logs**: `~/Library/Logs/WebexOBS/stdout.log`
-- **Model Weights**: `~/.cache/webex_obs/models/whisper-large-v3-turbo/`
+- **Model Weights**: `~/.cache/webex_obs/models/<repository-name>-<sha256>/`
 
 Completed files use names such as
 `2026-09-09_12-03-26 - Cloud and AI Weekly Sync.txt`. If OBS produces

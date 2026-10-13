@@ -68,3 +68,14 @@ def test_source_shortcut_reads_legacy_menu_value_but_prefers_new_key():
 def test_all_four_shortcuts_must_be_distinct(first, second):
     with pytest.raises(ValidationError, match="must be different"):
         Settings(_env_file=None, **{first: "<ctrl>+x", second: "<ctrl>+x"})
+
+
+def test_literal_dotenv_preserves_process_override_and_runtime_source_options(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    path.write_text("OBS_WS_PASSWORD='literal ${HOME}'\nOBS_WS_HOST='file-host'\nHF_TOKEN=''\n")
+    monkeypatch.setenv("OBS_WS_HOST", "process-host")
+    settings = Settings(_env_file=path)
+    assert settings.obs_ws_password == "literal ${HOME}"
+    assert settings.obs_ws_host == "process-host"
+    settings = Settings(_env_file=path, _env_ignore_empty=True)
+    assert settings.hf_token is None

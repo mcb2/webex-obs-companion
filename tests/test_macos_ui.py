@@ -197,3 +197,73 @@ def test_ui_bridge_rejects_new_dialogs_during_shutdown():
             ui._on_main(func)
     func.assert_not_called()
     assert ui.requests.empty()
+
+
+@pytest.mark.parametrize("failure", [None, "ordinary", "rollback"])
+def test_settings_worker_keeps_main_thread_free_and_reports_completion_on_main(failure):
+    from webex_obs.settings_store import SettingsRollbackError
+    ui = MacOSUI(Mock())
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    main = threading.current_thread()
+    def save(values, path):
+        assert threading.current_thread() is not main
+        entered.set()
+        try:
+            assert release.wait(3)
+            if failure == "ordinary":
+                raise ValueError("synthetic secret must not reach UI")
+            if failure == "rollback":
+                raise SettingsRollbackError("synthetic rollback error")
+        finally:
+            finished.set()
+    ui.daemon.save_settings.side_effect = save
+    ui._alert = Mock(side_effect=lambda *a: threading.current_thread() is main)
+    try:
+        ui._save_settings_async({"obs_ws_port": "4456"})
+        assert entered.wait(3)
+        assert ui._settings_saving
+        assert ui.requests.empty()
+        ui._save_settings_async({"obs_ws_port": "4457"})
+        assert ui.daemon.save_settings.call_count == 1
+        ui._alert.assert_not_called()
+    finally:
+        release.set()
+    assert finished.wait(3)
+    complete, result, done = ui.requests.get(timeout=3)
+    complete()
+    assert not ui._settings_saving
+    if failure:
+        ui._alert.assert_called_once()
+        message = ui._alert.call_args.args[2]
+        assert "synthetic secret" not in message
+        assert ("restart" in message) is (failure == "rollback")
+    else:
+        ui._alert.assert_not_called()
+
+
+def test_accepting_unchanged_settings_with_zero_values_does_not_save():
+    from webex_obs.config import Config
+    ui = MacOSUI(Mock())
+    ui.daemon.config = Config(_env_file=None, retention_days=0,
+                              call_end_grace_seconds=0, obs_idle_restart_minutes=0)
+    ui.target = Mock()
+    appkit, foundation = Mock(), Mock()
+    appkit.NSApp.runModalForWindow_.return_value = 1
+    def field():
+        control = Mock()
+        saved = {}
+        control.setStringValue_.side_effect = lambda value: saved.update(text=value)
+        control.stringValue.side_effect = lambda: saved["text"]
+        control.setState_.side_effect = lambda value: saved.update(state=value)
+        control.state.side_effect = lambda: saved["state"]
+        control.selectItemAtIndex_.side_effect = lambda value: saved.update(index=value)
+        control.indexOfSelectedItem.side_effect = lambda: saved["index"]
+        return control
+    for name in ("NSTextField", "NSSecureTextField", "NSButton"):
+        getattr(appkit, name).alloc.return_value.initWithFrame_.side_effect = lambda *a: field()
+    appkit.NSPopUpButton.alloc.return_value.initWithFrame_pullsDown_.side_effect = lambda *a: field()
+    with patch("webex_obs.macos_ui.AppKit", appkit), \
+         patch("webex_obs.macos_ui.Foundation", foundation), \
+         patch.object(ui, "_save_settings_async") as save:
+        ui.show_settings()
+    save.assert_not_called()
