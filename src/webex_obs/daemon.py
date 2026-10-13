@@ -367,6 +367,7 @@ class WebexOBSDaemon:
             self._discard_requested = False
             self._active_session = None
             self._stop_pending = False
+            self.monitor.release_platform()
             self._window_session_generation += 1
         return True
 
@@ -600,6 +601,8 @@ class WebexOBSDaemon:
 
                     self._discard_requested = False
                     self._manual_stop_event.clear()
+                    if not manual:
+                        self.monitor.bind_current_platform()
                     self._window_session_generation += 1
                     self._active_session = self._new_recording_session()
                     if manual:
@@ -640,6 +643,7 @@ class WebexOBSDaemon:
                             )
                         self.monitor.is_in_meeting = False
                         self._active_session = None
+                        self.monitor.release_platform()
                         continue
 
                 if self._shutdown_event.is_set():

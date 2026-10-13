@@ -20,12 +20,31 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - Manual audio/video starts (including the Video hotkey while idle) show a two-party/all-party consent reminder after recording begins. **OK** is the default; the notice dismisses after 10 seconds and keeps recording. **Cancel & Discard** stops the session and deletes its segments only after OBS confirms recording has stopped, without transcription. The existing automatically detected-call prompt remains unchanged.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
-Automatic detection currently targets the native macOS desktop clients. It
-combines a matching call window with per-process Core Audio input/output state.
-This works independently of whether the call uses UDP, dynamic peer-to-peer
-ports, or TCP-only media. Known UDP media sockets provide an additional signal
-and a fallback on macOS versions without per-process audio state. Dynamic OBS
-video-window binding remains Webex-specific.
+Automatic detection targets the native macOS desktop clients. The requirements
+below apply to open Core Audio streams, including muted input and listen-only
+output; they do not depend on microphone sound levels.
+
+| Platform | Core Audio supported | Core Audio API unsupported |
+| --- | --- | --- |
+| Webex | Input or output plus a non-idle, non-attachment window, regardless of transport. Input plus known UDP also works without a window. Output-only requires the window. | Non-idle, non-attachment window plus known UDP. |
+| Zoom | Input or output plus a non-idle window or known UDP. | Non-idle window plus known UDP. |
+| Microsoft Teams | Input or output plus a non-idle window or known UDP. | Non-idle window plus known UDP. |
+
+TCP-only and dynamic-port calls therefore require a window and Core Audio.
+Known UDP ports are Webex 5004/9000/33434, Zoom 3478/3479/8801–8810, and
+Teams 3478–3481. Socket or window evidence alone does not override a successful,
+inactive Core Audio read. Failed sensor reads are unknown, rather than idle;
+`diagnose-calls` reports them separately from an unsupported API. Unknown reads
+cannot start recording or count toward the end grace period. Persistent sensor
+failure can keep a recording active until you stop it manually.
+
+Automatic start requires two consecutive positive polls for the same platform.
+The recording and title enrichment stay bound to that platform until recording
+has verifiably stopped; an overlapping call cannot extend or relabel the session.
+Declining or manually stopping a detected call suppresses that platform until
+its evidence has been absent for the full grace period. Title changes and
+activity on another platform do not erase the decline. Dynamic OBS video-window
+binding remains Webex-specific. See the [macOS manual-check plan](SETUP.md#macos-manual-check-plan).
 The `Webex-Video` scene needs a macOS Screen Capture source named
 `Webex-Meeting-Window` configured for Window Capture. Switching its window
 while recording keeps the same OBS recording active.
@@ -206,7 +225,13 @@ enabled Webex delivery, becomes eligible. **0 deletes eligible media immediately
 after success**. Active, queued, failed, recoverable, unrelated, and legacy media
 without these records is retained. Modified/replaced files and symlinks are
 excluded. Missing/failed segments retain all session media; a partial transcript
-may remain locally for recovery and is not delivered automatically. Recordings
+may remain locally for recovery and is not delivered automatically. It starts
+with **PARTIAL TRANSCRIPT — INCOMPLETE**, includes the successful-segment count,
+and marks each missing or failed part by number and input filename in original
+session order. Successful silent parts are labeled “No speech detected.” If no
+part produces speech, no transcript is published and media stays protected.
+Restore missing inputs or resolve the local inference failure before manually
+retrying; failed checkpoints do not retry automatically. Recordings
 written outside the configured folder are never enrolled in its cleanup.
 Failed sessions require manual recovery. Interrupted safe work resumes from durable
 checkpoints as described below.

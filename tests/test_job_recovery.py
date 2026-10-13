@@ -192,3 +192,26 @@ def test_checkpoint_updates_do_not_reorder_recovered_queue(context):
     store.create(second)
     store.update(first.job_id, state="transcribing")
     assert [job.job_id for job in store.recover(config)] == [first.job_id, second.job_id]
+
+
+def test_partial_transcription_checkpoint_blocks_delivery_and_retention(context, speech_modules, monkeypatch):
+    from webex_obs.cleaner import MediaCleaner
+
+    app, store, original, config = context
+    second = Path(original.media_files[0]).with_name("synthetic-second.mkv")
+    second.write_bytes(b"synthetic second segment")
+    job = replace(original, job_id="a" * 32, media_files=(*original.media_files, str(second)))
+    store.create(job)
+    speech_modules["inference"].side_effect = [
+        {"text": "Synthetic first speech", "segments": []}, RuntimeError("synthetic failure"),
+    ]
+    eligible = Mock()
+    monkeypatch.setattr(MediaCleaner, "mark_processed", eligible)
+    app._process_post_processing_job(job)
+    record = store.read(job.job_id)
+    assert record["state"] == "failed"
+    assert Path(record["transcript"]).read_text().startswith("# PARTIAL TRANSCRIPT — INCOMPLETE")
+    assert all(Path(f).exists() for f in job.media_files)
+    app.deliver_transcript.assert_not_called()
+    eligible.assert_not_called()
+    assert all(recovered.job_id != job.job_id for recovered in store.recover(config))

@@ -377,7 +377,8 @@ class ProcessMonitorTests(unittest.TestCase):
         monitor.current_platform = TEAMS
         monitor.current_call_title = "Weekly Sync"
         self.assertFalse(monitor.should_suppress_automatic_prompt())
-        self.assertIsNone(monitor._suppressed_call_title)
+        monitor.current_platform = ZOOM
+        self.assertTrue(monitor.should_suppress_automatic_prompt())
 
     def test_webex_default_title_remains_backward_compatible(self):
         monitor = ProcessMonitor()
@@ -400,3 +401,246 @@ def test_inaccessible_process_does_not_hide_a_detectable_call():
          patch.object(monitor, "_active_call_window_name", return_value="Synthetic meeting"):
         assert monitor.is_webex_running()
         assert monitor.current_call_title == "Synthetic meeting"
+
+
+@pytest.mark.parametrize("platform,name", [(WEBEX, "Webex"), (ZOOM, "zoom.us"), (TEAMS, "MSTeams")])
+@pytest.mark.parametrize("transport,port", [(socket.SOCK_STREAM, 443), (socket.SOCK_DGRAM, 55000)])
+@pytest.mark.parametrize("direction", ["input", "output"])
+def test_audio_and_window_detect_all_platforms_without_known_udp(platform, name, transport, port, direction):
+    # Input state means an open stream, including a muted microphone; no sound
+    # level or microphone permission is required for the output-only case.
+    activity = AudioActivity(available=True, **{f"{direction}_pids": (123,)})
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(activity))
+    proc = _Process(name, port)
+    connection = _Connection(port)
+    connection.type = transport
+    with patch.object(proc, "net_connections", return_value=[connection]), \
+         patch("webex_obs.process_monitor.psutil.process_iter", return_value=[proc]), \
+         patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic call" if p is platform else None):
+        assert monitor.is_call_active() is True
+        assert monitor.current_platform is platform
+        assert monitor.current_call_title == "Synthetic call"
+        assert not monitor._active_media_streams(platform)
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+@pytest.mark.parametrize("sensor", ["audio", "window", "sockets"])
+def test_failed_sensor_is_unknown_and_does_not_end_or_rearm_call(platform, sensor):
+    monitor = ProcessMonitor(call_end_grace_seconds=0)
+    monitor.current_platform = platform
+    monitor.current_call_title = "Synthetic call"
+    monitor.bind_current_platform()
+    monitor.suppress_current_call_prompt()
+    # No positive corroboration can bypass the failed sensor in these cases.
+    audio = AudioActivity(available=True, input_pids=(123,))
+    if sensor == "audio":
+        audio = AudioActivity(available=True, failed_pids=(123,))
+    elif sensor == "sockets":
+        audio = AudioActivity(available=False)
+    with patch.object(monitor, "_audio_activity", return_value=audio), \
+         patch.object(monitor, "_active_media_streams", return_value=[],
+                      side_effect=OSError("synthetic denied") if sensor == "sockets" else None), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic call",
+                      side_effect=OSError("synthetic denied") if sensor == "window" else None):
+        assert monitor.is_call_active() is None
+        monitor._inactive_since = 100
+        assert not monitor.has_call_ended()
+        assert monitor._inactive_since is None
+        assert monitor.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+def test_supported_but_failed_audio_does_not_enable_udp_fallback(platform):
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(AudioActivity(available=True, failed_pids=(123,))))
+    monitor.current_platform = platform
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_active_media_streams", return_value=[("synthetic", 3478, False)]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic call"):
+        assert monitor.is_call_active() is None
+        monitor.audio_monitor.activity = AudioActivity(available=True)
+        assert monitor.is_call_active() is False
+        monitor.audio_monitor.activity = AudioActivity(available=False)
+        assert monitor.is_call_active() is True
+
+
+@pytest.mark.parametrize("sensor", ["window-exit", "window-timeout", "processes", "sockets"])
+def test_real_probe_errors_are_reported_in_diagnostics(sensor):
+    import subprocess
+    import psutil
+
+    monitor = ProcessMonitor()
+    proc = _Process("Webex", 5004)
+    with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[proc]) as processes, \
+         patch("webex_obs.process_monitor.subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="")) as windows, \
+         patch.object(proc, "net_connections", return_value=[]) as sockets:
+        if sensor == "window-exit":
+            windows.return_value.returncode = 1
+        elif sensor == "window-timeout":
+            windows.side_effect = subprocess.TimeoutExpired("osascript", 2)
+        elif sensor == "processes":
+            processes.side_effect = psutil.AccessDenied()
+        else:
+            sockets.side_effect = psutil.AccessDenied(pid=123)
+        row = monitor.diagnostic_snapshot()[0]
+        field = {"window-exit": "window_available", "window-timeout": "window_available",
+                 "processes": "processes_available", "sockets": "udp_available"}[sensor]
+        assert row[field] is False
+        if sensor == "processes":
+            assert row["audio_failed"]
+
+
+@pytest.mark.parametrize("direction", ["input", "output"])
+def test_positive_audio_and_window_survive_socket_failure(direction):
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(AudioActivity(available=True, **{f"{direction}_pids": (123,)})))
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_active_media_streams", side_effect=OSError("synthetic denied")), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic call"):
+        assert monitor.is_call_active() is True
+
+
+def test_unknown_poll_breaks_start_confirmation_and_skips_idle_maintenance():
+    from unittest.mock import Mock
+    monitor = ProcessMonitor(poll_interval=0)
+    monitor.on_idle = Mock()
+    with patch.object(monitor, "is_call_active", side_effect=[True, None, True, True]) as probe, \
+         patch("webex_obs.process_monitor.time.sleep"):
+        assert monitor.wait_for_state_change()
+    assert probe.call_count == 4
+    monitor.on_idle.assert_not_called()
+
+
+def test_start_confirmation_cannot_combine_different_platforms():
+    monitor = ProcessMonitor(poll_interval=0)
+    platforms = iter([WEBEX, ZOOM, ZOOM])
+
+    def probe():
+        monitor.current_platform = next(platforms)
+        return True
+
+    with patch.object(monitor, "is_call_active", side_effect=probe) as detect, \
+         patch("webex_obs.process_monitor.time.sleep"):
+        assert monitor.wait_for_state_change()
+    assert detect.call_count == 3
+    assert monitor.current_platform is ZOOM
+
+
+@pytest.mark.parametrize("origin,other", [(ZOOM, WEBEX), (WEBEX, TEAMS), (TEAMS, ZOOM)])
+def test_bound_call_ends_while_another_platform_remains_active_without_relabeling(origin, other):
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = origin
+    monitor.current_call_title = "Origin synthetic call"
+    monitor.bind_current_platform()
+    ended = False
+
+    def audio(platform):
+        active = platform is other or (platform is origin and not ended)
+        return AudioActivity(available=True, input_pids=(123,) if active else ())
+
+    def window(platform):
+        if platform is origin:
+            return "Origin synthetic call"
+        return "Other synthetic call" if platform is other else None
+
+    with patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_audio_activity", side_effect=audio), \
+         patch.object(monitor, "_active_call_window_for_platform", side_effect=window), \
+         patch("webex_obs.process_monitor.time.monotonic", side_effect=[100, 114, 115]):
+        assert monitor.is_call_active() is True
+        assert monitor.get_active_call_title() == "Origin synthetic call"
+        ended = True
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert monitor.has_call_ended()
+        assert monitor.current_platform is origin
+        assert monitor.current_call_title == "Origin synthetic call"
+        monitor.release_platform()
+        assert monitor.is_call_active() is True
+        assert monitor.current_platform is other
+        assert monitor.current_call_title == "Other synthetic call"
+
+
+def test_unknown_read_restarts_entire_end_grace_period():
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    with patch.object(monitor, "is_call_active", side_effect=[False, None, False, False, False]), \
+         patch("webex_obs.process_monitor.time.monotonic", side_effect=[100, 200, 214, 215]):
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert monitor.has_call_ended()
+
+
+def test_overlapping_declines_are_preserved_and_rearmed_per_platform():
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    for platform in (WEBEX, ZOOM):
+        monitor.current_platform = platform
+        monitor.current_call_title = "Synthetic call"
+        monitor.suppress_current_call_prompt()
+    monitor._platform_activity = {"webex": False, "zoom": True}
+    with patch("webex_obs.process_monitor.time.monotonic", side_effect=[100, 115]):
+        monitor._track_prompt_suppression(True)
+        monitor._track_prompt_suppression(True)
+    assert monitor.should_suppress_automatic_prompt()  # Zoom is still active.
+    monitor.current_platform = WEBEX
+    assert not monitor.should_suppress_automatic_prompt()
+
+
+def test_declined_platform_does_not_starve_an_overlapping_call():
+    from webex_obs.process_monitor import CallEvidence
+    monitor = ProcessMonitor()
+    monitor.current_platform = WEBEX
+    monitor.current_call_title = "Synthetic Webex call"
+    monitor.suppress_current_call_prompt()
+    with patch.object(monitor, "_call_evidence", side_effect=lambda p: CallEvidence(p is not TEAMS, f"Synthetic {p.key} call")):
+        assert monitor.is_call_active() is True
+        assert monitor.current_platform is ZOOM
+        assert not monitor.should_suppress_automatic_prompt()
+        monitor.current_platform = WEBEX
+        assert monitor.should_suppress_automatic_prompt()
+
+
+def test_state_change_wait_resets_grace_after_positive_poll():
+    monitor = ProcessMonitor(poll_interval=0, call_end_grace_seconds=15)
+    monitor.is_in_meeting = True
+    with patch.object(monitor, "is_call_active", side_effect=[False, True, False, False, False]) as probe, \
+         patch("webex_obs.process_monitor.time.monotonic", side_effect=[100, 200, 214, 215]), \
+         patch("webex_obs.process_monitor.time.sleep"):
+        assert monitor.wait_for_state_change() is False
+    assert probe.call_count == 5
+
+
+def test_failed_audio_and_sockets_cannot_confirm_absence_without_window():
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(AudioActivity(available=True, failed_pids=(123,))))
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_active_media_streams", side_effect=OSError("synthetic denied")), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None):
+        assert monitor.is_call_active() is None
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+@pytest.mark.parametrize("direction", ["input", "output"])
+def test_known_udp_without_window_obeys_platform_audio_requirements(platform, direction):
+    activity = AudioActivity(available=True, **{f"{direction}_pids": (123,)})
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(activity))
+    monitor.current_platform = platform
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_active_media_streams", return_value=[("synthetic", next(iter(platform.udp_ports)), False)]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None):
+        assert monitor.is_call_active() is (platform is not WEBEX or direction == "input")
+
+
+def test_unknown_read_restarts_decline_grace_period():
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = WEBEX
+    monitor.current_call_title = "Synthetic call"
+    monitor.suppress_current_call_prompt()
+    with patch("webex_obs.process_monitor.time.monotonic", side_effect=[100, 200, 214, 215]):
+        monitor._track_prompt_suppression(False)
+        monitor._track_prompt_suppression(None)
+        monitor._track_prompt_suppression(False)
+        monitor._track_prompt_suppression(False)
+        assert monitor.should_suppress_automatic_prompt()
+        monitor._track_prompt_suppression(False)
+    assert not monitor.should_suppress_automatic_prompt()

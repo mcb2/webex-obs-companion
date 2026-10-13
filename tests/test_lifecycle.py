@@ -272,3 +272,45 @@ def test_shutdown_interrupts_long_recording_poll_and_finalizes_capture(daemon):
     assert daemon.shutdown(2)
     daemon.recorder.stop_recording.assert_called_once()
     assert not daemon.failure
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_automatic_platform_binding_lasts_until_verified_stop(daemon, verified):
+    from webex_obs.process_monitor import ProcessMonitor, ZOOM
+
+    monitor = ProcessMonitor()
+    monitor.current_platform = ZOOM
+    monitor.current_call_title = "Synthetic Zoom call"
+    daemon.monitor = monitor
+    daemon._post_processing_worker = Mock()
+    daemon._new_recording_session = Mock(return_value=Mock(display_title="Synthetic Zoom call"))
+    daemon.recorder.is_video_recording = False
+    daemon.recorder.is_screen_recording = False
+    daemon.recorder.stop_verified = verified
+    monitor.wait_for_state_change = Mock(return_value=True)
+
+    def start(**kwargs):
+        assert monitor.bound_platform is ZOOM
+        daemon.recorder.is_recording = True
+        monitor.is_in_meeting = True
+        return True
+
+    def consent(**kwargs):
+        # Normal consent stays before waiting for automatic call end.
+        assert monitor.bound_platform is ZOOM
+        daemon._manual_stop_event.set()
+        return "ok"
+
+    def stop():
+        assert monitor.bound_platform is ZOOM
+        daemon.recorder.is_recording = not verified
+        daemon.request_shutdown()
+        return []
+
+    daemon.recorder.start_recording.side_effect = start
+    daemon.recorder.stop_recording.side_effect = stop
+    daemon.ui.show_startup_prompt.side_effect = consent
+    daemon.start()
+    daemon.ui.show_startup_prompt.assert_called_once()
+    daemon.ui.show_manual_consent_prompt.assert_not_called()
+    assert monitor.bound_platform is (None if verified else ZOOM)

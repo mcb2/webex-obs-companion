@@ -78,8 +78,8 @@ part of that window.
 - **Auto-Reconnection**: The daemon constantly monitors WebSocket health. If you stop or restart OBS manually, the companion automatically reconnects without needing a service restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Run `uv run webex-obs start` from the repository after every update so the service uses the new code.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
-- **Transport-independent detection**: Zoom and Teams calls can be detected through per-process Core Audio state even when media uses TCP or dynamic peer-to-peer ports. Run `uv run webex-obs diagnose-calls` during a call to inspect the process, window, audio, and UDP signals visible on your Mac.
-- **Call-end grace period**: A transient loss of meeting window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of continuous inactivity.
+- **Transport-independent detection**: Webex, Zoom, and Teams can use a non-idle call window plus per-process Core Audio input/output even with TCP-only or dynamic-port media. Unsupported Core Audio requires known UDP plus a window. Webex output-only also requires a non-attachment window. See the [per-platform requirements](README.md). `uv run --locked --no-sync webex-obs diagnose-calls` shows process, window, audio, and UDP evidence; failed reads display “Read failed (unknown).”
+- **Call-end grace period**: A transient loss of meeting window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of confirmed continuous inactivity on the originating platform. Unknown sensor reads reset this timer and retain the recording; persistent failures require manual Stop. Overlapping platforms cannot extend or rename the recording. Prompt declines remain suppressed per platform through title changes and sensor failures.
 
 ---
 
@@ -253,3 +253,49 @@ partial transcription preserve all session media for manual recovery. Changing
 or deleting the retention index disables cleanup of those files; it does not
 cause legacy files to be enrolled. Keep OBS's output directory aligned with
 `RECORDINGS_DIR`; files outside it are not cleaned automatically.
+
+
+## macOS manual-check plan
+
+These checks are a plan, not evidence of real-device validation. Do not record
+real calls, run the installed service, send Webex messages, or use personal media.
+Use an isolated checkout/test process, temporary recordings/transcripts/state,
+delivery disabled, idle maintenance disabled, and an injected recording backend
+that only writes synthetic test files. Keep AppKit on the main thread.
+
+1. **Idle sensor inspection:** with meeting clients idle, run
+   `uv run --locked --no-sync webex-obs diagnose-calls`. Confirm home windows and
+   idle audio do not constitute a call. Check a separate test process with
+   Accessibility/Automation access withheld: failed window reads must display
+   unknown, while unsupported Core Audio displays the UDP fallback. Do not
+   change permissions for the installed companion.
+2. **Synthetic lifecycle and consent:** inject the sensor sequences exercised in
+   `tests/test_process_monitor.py` into the isolated process. For each platform,
+   use audio plus a synthetic call title with TCP-only and dynamic UDP evidence,
+   then muted input and output-only states. Confirm capture begins only after
+   two positive polls for that platform and the automatic consent prompt keeps
+   its existing timeout/default/cancel behavior. Confirm the manual-start consent
+   reminder still appears immediately after the fake backend starts.
+3. **Overlap and suppression:** start a synthetic Zoom session, activate synthetic
+   Webex/Teams evidence, then end Zoom. Confirm the title stays Zoom and Stop
+   occurs after Zoom's grace period. Decline both synthetic Webex and Zoom calls;
+   confirm title changes and platform switches do not reprompt either until its
+   own confirmed inactivity reaches the grace period.
+4. **Failure and stop safety:** inject socket denial, AppleScript timeout, and
+   Core Audio translation/property failures. Confirm unknown evidence does not
+   start a session, stop an active session, or clear a decline. Restore sensors
+   and verify a full new grace period. Make the fake backend return an
+   unverified stop: the platform binding, pending action, and synthetic files
+   must remain until a verified stop retry.
+5. **Partial transcription:** use only generated test clips and local cached
+   models, with no downloads. Remove a temporary part and inject an inference
+   exception on another part. Inspect the incomplete banner, count, gap order,
+   and missing/failed filenames; confirm no outbound request or retention
+   eligibility. Restore the part and retry locally; the completed transcript
+   must no longer contain partial markers. Inspect MLX/diarization quality
+   separately if models/hardware are available.
+
+The mocked suite validates these state transitions without OBS or model inference.
+Actual app window naming, Core Audio behavior, transport fallback, permissions,
+and AppKit presentation still require this manual validation; synthetic sensor
+injection cannot establish the clients' real-device behavior.

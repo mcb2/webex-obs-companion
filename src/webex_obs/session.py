@@ -97,12 +97,15 @@ class RecordingSession:
     def rename_recordings(self, media_files: list[str]) -> list[str]:
         """Rename completed OBS segments while preserving order and extensions."""
         paths = list(dict.fromkeys(Path(path) for path in media_files))
-        existing_paths = [path for path in paths if path.exists()]
-        missing_paths = [path for path in paths if not path.exists()]
-        multiple = len(existing_paths) > 1
+        multiple = len(paths) > 1
         renamed: list[str] = []
 
-        for part_number, source in enumerate(existing_paths, start=1):
+        for part_number, source in enumerate(paths, start=1):
+            if not source.exists():
+                # Keep the gap in place so transcription reports the original
+                # part number rather than moving missing inputs to the end.
+                renamed.append(str(source))
+                continue
             part = f" - part-{part_number:02d}" if multiple else ""
             desired = source.with_name(f"{self.filename_stem}{part}{source.suffix}")
             destination = source if source == desired else unique_path(desired)
@@ -117,7 +120,4 @@ class RecordingSession:
                 logger.warning("Could not rename recording segment %s: %s", source, exc)
                 renamed.append(str(source))
 
-        # Preserve missing paths in the result so the transcriber can log/skip them
-        # consistently with its prior behavior.
-        renamed.extend(str(path) for path in missing_paths)
         return renamed

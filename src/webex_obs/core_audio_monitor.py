@@ -35,9 +35,12 @@ class AudioObjectPropertyAddress(Structure):
 
 @dataclass(frozen=True)
 class AudioActivity:
+    """API support and positive I/O; failed PID reads must never imply idle."""
+
     available: bool
     input_pids: tuple[int, ...] = ()
     output_pids: tuple[int, ...] = ()
+    failed_pids: tuple[int, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -112,7 +115,9 @@ class CoreAudioProcessMonitor:
             byref(size),
             byref(output),
         )
-        return int(output.value) if status == 0 and output.value else None
+        if status != 0:
+            raise OSError(f"Core Audio PID translation failed (status {status})")
+        return int(output.value) if output.value else None
 
     def _read_boolean(self, object_id: int, selector: int) -> bool:
         address = self._address(selector)
@@ -126,7 +131,9 @@ class CoreAudioProcessMonitor:
             byref(size),
             byref(output),
         )
-        return status == 0 and bool(output.value)
+        if status != 0:
+            raise OSError(f"Core Audio state read failed (status {status})")
+        return bool(output.value)
 
     def activity_for_pids(self, pids: list[int] | tuple[int, ...]) -> AudioActivity:
         if not self.available:
@@ -134,24 +141,28 @@ class CoreAudioProcessMonitor:
 
         input_pids = []
         output_pids = []
+        failed_pids = set()
         for pid in sorted(set(pids)):
             try:
                 object_id = self._translate_pid(pid)
                 if object_id is None:
                     continue
-                if self._read_boolean(
-                    object_id, K_AUDIO_PROCESS_PROPERTY_RUNNING_INPUT
-                ):
-                    input_pids.append(pid)
-                if self._read_boolean(
-                    object_id, K_AUDIO_PROCESS_PROPERTY_RUNNING_OUTPUT
-                ):
-                    output_pids.append(pid)
             except (OSError, TypeError, ValueError):
+                failed_pids.add(pid)
                 continue
+            for selector, active_pids in (
+                (K_AUDIO_PROCESS_PROPERTY_RUNNING_INPUT, input_pids),
+                (K_AUDIO_PROCESS_PROPERTY_RUNNING_OUTPUT, output_pids),
+            ):
+                try:
+                    if self._read_boolean(object_id, selector):
+                        active_pids.append(pid)
+                except (OSError, TypeError, ValueError):
+                    failed_pids.add(pid)
 
         return AudioActivity(
             available=True,
             input_pids=tuple(input_pids),
             output_pids=tuple(output_pids),
+            failed_pids=tuple(sorted(failed_pids)),
         )

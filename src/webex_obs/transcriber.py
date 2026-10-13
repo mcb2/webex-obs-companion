@@ -94,6 +94,8 @@ class Transcriber:
 
         all_text_segments = []
         incomplete = False
+        successful_segments = 0
+        has_speech = False
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         out_file = output_path or unique_path(
             self.transcripts_dir / f"{output_stem or ('meeting_' + timestamp)}.txt"
@@ -103,6 +105,10 @@ class Transcriber:
             if not os.path.exists(fpath):
                 logger.error("Recording segment is missing; retaining session media for recovery: %s", fpath)
                 incomplete = True
+                all_text_segments.append(
+                    f"## Part {idx}/{len(media_files)} — MISSING: {Path(fpath).name}\n"
+                    "Input unavailable. Restore this segment and retry transcription.\n"
+                )
                 continue
             logger.info(f"Transcribing segment {idx}/{len(media_files)}: {fpath} with {self.model_target}...")
 
@@ -119,6 +125,10 @@ class Transcriber:
                 segment_text = result.get("text", "").strip()
 
                 if not segment_text:
+                    all_text_segments.append(
+                        f"## Part {idx}/{len(media_files)} — No speech detected\n"
+                    )
+                    successful_segments += 1
                     continue
 
                 # Neural Diarization Pipeline (with graceful fallback)
@@ -157,9 +167,15 @@ class Transcriber:
                     all_text_segments.append(
                         f"# Meeting Transcript: {segment_heading}\n\n{segment_text}\n"
                     )
+                successful_segments += 1
+                has_speech = True
 
             except Exception as e:
                 incomplete = True
+                all_text_segments.append(
+                    f"## Part {idx}/{len(media_files)} — FAILED: {Path(fpath).name}\n"
+                    "Transcription failed. Input retained for retry; see the local log.\n"
+                )
                 logger.error(f"Failed to transcribe {fpath}: {e}")
                 if "ffmpeg" in str(e).lower():
                     logger.error("ffmpeg missing. Install via: brew install ffmpeg")
@@ -169,14 +185,27 @@ class Transcriber:
                         "Run 'uv run webex-obs prefetch-model' to pre-cache the model locally."
                     )
 
-        if not all_text_segments:
-            logger.warning("Transcription resulted in empty content.")
+        if not successful_segments:
+            logger.warning("No segments transcribed successfully; all inputs retained for retry.")
+            return None
+        if not has_speech:
+            logger.warning("Transcription resulted in no speech; session media retained for review.")
             return None
 
         full_transcript = "\n\n".join(all_text_segments)
+        if incomplete:
+            full_transcript = (
+                "# PARTIAL TRANSCRIPT — INCOMPLETE\n\n"
+                f"{successful_segments}/{len(media_files)} segments transcribed successfully. "
+                "Missing and failed parts are marked below in session order. "
+                "All available session media is retained for retry.\n\n"
+                + full_transcript
+            )
         atomic_write(out_file, full_transcript)
 
         logger.info(f"Transcript saved to: {out_file}")
+        if incomplete:
+            logger.warning("Partial transcript saved to %s; delivery and cleanup blocked.", out_file)
         # Keep a partial transcript for recovery, but never mark the session
         # successfully processed when a segment failed or went missing.
         return None if incomplete else out_file
