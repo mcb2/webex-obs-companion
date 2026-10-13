@@ -103,11 +103,20 @@ active OBS segment ledger; finalized checkpointed jobs alone resume automaticall
 ## Detection, maintenance, and post-processing
 
 `ProcessMonitor` combines native Webex/Zoom/Teams window evidence with
-per-process Core Audio input/output state and known UDP media sockets. Core
-Audio permits detection independently of media transport; UDP is an additional
-signal and fallback. Automatic start requires sustained evidence across two
-positive polls, and call end uses a configurable grace period (15 seconds by
-default). OBS preparation precedes slow window validation and title enrichment.
+per-process Core Audio input/output state and known UDP media sockets. All
+platforms accept audio plus a qualifying window independently of transport.
+Known UDP can replace the window for input streams and Zoom/Teams output;
+Webex output-only requires a non-attachment window. An unsupported Core Audio
+API uses window plus known UDP; a failed supported read never enables fallback.
+Sensor results distinguish active, inactive, and unknown. Unknown polls break
+start confirmation and reset the continuous-inactivity end grace timer.
+Automatic start requires two positive polls for the same platform. The daemon
+binds the detector before automatic capture and releases it only after verified
+completion (or a start failure with no unresolved capture). Bound polling and
+title enrichment cannot adopt another platform. Declines persist per platform
+until that platform's confirmed inactivity lasts the configurable grace period
+(15 seconds by default); unobserved/failed reads retain suppression. OBS
+preparation precedes slow window validation and title enrichment.
 
 `OBSRecordingBackend` delegates guarded idle restarts to `OBSMaintenance`.
 OBS stays open between recordings by default. The default 60-minute minimum
@@ -141,7 +150,12 @@ are attached as text files. My Agent forwarding is a manual user action.
 session and successful configured delivery (or disabled delivery). Queueing and
 processing revoke eligibility; failures, active segments and recovery segments
 stay protected. Partial transcripts can remain locally, but do not establish
-processing success or trigger delivery. Eligibility is persisted atomically per
+processing success or trigger delivery. They carry an incomplete banner,
+successful-part count, and ordered missing/failed input markers; silent successful
+parts are labeled explicitly. Segment renaming preserves missing-path positions.
+The existing Path-or-None result contract still returns None on incomplete work;
+failed checkpoints remain held, and available inputs remain for manual retry.
+No-speech-only output also remains protected. Eligibility is persisted atomically per
 file in `.webex-obs-retention/`, with device, inode, size, modification and change
 times; changed identities, symlinks, files outside the configured directory,
 legacy files and unrelated media are excluded. Cleanup at startup and after

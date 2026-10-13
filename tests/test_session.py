@@ -96,3 +96,17 @@ class SessionNamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_missing_segments_keep_original_positions_and_part_numbers(tmp_path):
+    files = [tmp_path / f"synthetic-{number}.mkv" for number in range(1, 5)]
+    for media in (files[1], files[3]):
+        media.write_bytes(b"synthetic media")
+    session = RecordingSession.create("Synthetic call")
+    renamed = session.rename_recordings([str(f) for f in files])
+    assert renamed[0] == str(files[0])
+    assert renamed[2] == str(files[2])
+    assert Path(renamed[1]).name.endswith("part-02.mkv")
+    assert Path(renamed[3]).name.endswith("part-04.mkv")
+    assert Path(renamed[1]).read_bytes() == b"synthetic media"
+    assert Path(renamed[3]).read_bytes() == b"synthetic media"

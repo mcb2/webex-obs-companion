@@ -469,7 +469,9 @@ def diagnose_calls():
     table.add_column("Known UDP media")
 
     for row in monitor.diagnostic_snapshot():
-        if not row["audio_available"]:
+        if row.get("audio_failed"):
+            audio = "Read failed (unknown)"
+        elif not row["audio_available"]:
             audio = "Unavailable (UDP fallback)"
         else:
             audio_parts = []
@@ -485,10 +487,13 @@ def diagnose_calls():
 
         table.add_row(
             str(row["platform"]),
-            "\n".join(row["processes"]) or "Not running",
-            str(row["window"] or "None"),
+            ("\n".join(row["processes"]) or "Not running")
+            if row.get("processes_available", True) else "Read failed (unknown)",
+            str(row["window"] or "None")
+            if row.get("window_available", True) else "Read failed (unknown)",
             audio,
-            "\n".join(row["udp_streams"]) or "None",
+            ("\n".join(row["udp_streams"]) or "None")
+            if row.get("udp_available", True) else "Read failed (unknown)",
         )
 
     console.print(table)

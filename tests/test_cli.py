@@ -192,3 +192,21 @@ def test_status_separates_loaded_job_from_application_health(tmp_path, monkeypat
     assert "LaunchAgent: loaded" in output.getvalue()
     assert expected in output.getvalue()
     assert "ACTIVE" not in output.getvalue()
+
+
+def test_diagnostics_distinguish_sensor_failure_from_idle(monkeypatch):
+    from webex_obs.process_monitor import ProcessMonitor
+    rows = [dict(platform="Synthetic failed", processes=[], window=None, udp_streams=[],
+                 processes_available=False, window_available=False, udp_available=False,
+                 audio_available=True, audio_failed=True, audio_input_pids=[], audio_output_pids=[]),
+            dict(platform="Synthetic idle", processes=[], window=None, udp_streams=[],
+                 audio_available=True, audio_failed=False, audio_input_pids=[], audio_output_pids=[]),
+            dict(platform="Synthetic unsupported", processes=[], window=None, udp_streams=[],
+                 audio_available=False, audio_failed=False, audio_input_pids=[], audio_output_pids=[])]
+    monkeypatch.setattr(ProcessMonitor, "diagnostic_snapshot", lambda _: rows)
+    output = io.StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=output, width=240, color_system=None))
+    cli.diagnose_calls()
+    assert output.getvalue().count("Read failed (unknown)") == 4
+    assert "Idle" in output.getvalue()
+    assert "Unavailable (UDP fallback)" in output.getvalue()
