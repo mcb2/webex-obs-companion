@@ -42,10 +42,14 @@ class _MenuTarget(Foundation.NSObject):
         self.ui.show_settings()
 
     def saveSettings_(self, sender):
-        AppKit.NSApp.stopModalWithCode_(1)
+        self.ui.save_settings()
 
     def cancelSettings_(self, sender):
-        AppKit.NSApp.stopModalWithCode_(0)
+        self.ui.close_settings()
+
+    def windowWillClose_(self, notification):
+        if notification.object() == self.ui._settings_window:
+            self.ui._clear_settings()
 
     def controlChoice_(self, sender):
         AppKit.NSApp.stopModalWithCode_(sender.tag())
@@ -100,6 +104,11 @@ class MacOSUI:
         self._unload_started = False
         self._unload_done = threading.Event()
         self._settings_saving = False
+        self._settings_window = None
+        self._settings_config = None
+        self._settings_inputs = {}
+        self._settings_panes = []
+        self._sidebar_source = None
 
     @staticmethod
     def _status_image(badge_symbol=None):
@@ -498,13 +507,24 @@ class MacOSUI:
     def show_settings(self):
         if self._settings_saving:
             return
+        if self._settings_window is not None:
+            AppKit.NSApp.activateIgnoringOtherApps_(True)
+            if self._settings_window.isMiniaturized():
+                self._settings_window.deminiaturize_(None)
+            self._settings_window.makeKeyAndOrderFront_(None)
+            return
         config = self.daemon.config
         sections = self._settings_sections()
         window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (800, 490)), AppKit.NSWindowStyleMaskTitled,
+            ((0, 0), (800, 490)),
+            AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
+            | AppKit.NSWindowStyleMaskMiniaturizable,
             AppKit.NSBackingStoreBuffered, False,
         )
         window.setTitle_("Webex OBS Companion Settings")
+        window.setReleasedWhenClosed_(False)
+        window.setDelegate_(self.target)
+        window.setLevel_(AppKit.NSNormalWindowLevel)
         window.setOpaque_(True)
         window.setAlphaValue_(1.0)
         window.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
@@ -585,19 +605,37 @@ class MacOSUI:
             button.setBezelStyle_(AppKit.NSBezelStyleRounded)
             button.setTarget_(self.target)
             button.setAction_(action)
+            button.setKeyEquivalent_("\x1b" if title == "Cancel" else "\r")
             content.addSubview_(button)
+        # Retain controls and their original values until an explicit action;
+        # a normal window returns immediately to the AppKit main run loop.
+        self._settings_window = window
+        self._settings_config = config
+        self._settings_inputs = inputs
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
-        try:
-            accepted = AppKit.NSApp.runModalForWindow_(window) == 1
-        finally:
-            window.orderOut_(None)
-            self._settings_panes = []
-            self._sidebar_source = None
-        if not accepted:
+
+    def _clear_settings(self):
+        self._settings_window = None
+        self._settings_config = None
+        self._settings_inputs = {}
+        self._settings_panes = []
+        self._sidebar_source = None
+
+    def close_settings(self):
+        """Cancel/close on AppKit without affecting any recording modal dialog."""
+        window = self._settings_window
+        if window is not None:
+            window.setDelegate_(None)
+            window.close()
+        self._clear_settings()
+
+    def save_settings(self):
+        if self._settings_window is None or self._settings_saving:
             return
+        config = self._settings_config
         values = {}
-        for key, (field, kind) in inputs.items():
+        for key, (field, kind) in self._settings_inputs.items():
             if kind == "bool":
                 value = bool(field.state())
             elif kind == "window_behavior":
@@ -607,6 +645,7 @@ class MacOSUI:
             original = getattr(config, key)
             if value != (bool(original) if kind == "bool" else ("" if original is None else str(original))):
                 values[key] = value
+        self.close_settings()
         if not values:
             return
         self._save_settings_async(values)
