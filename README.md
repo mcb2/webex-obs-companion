@@ -119,9 +119,15 @@ the application defaults. Values are literal (including `${...}` text), with
 and runtime settings; a rollback failure asks you to finish recording and restart.
 An active or unresolved recording retains its OBS connection until a stop is positively verified.
 Idle connection changes are applied on the next recording preparation/start,
-after the old OBS output is confirmed stopped. OBS still performs all
-capture: update its recording output path in OBS too if you change the
-recordings folder here. Tokens and passwords are masked in Settings.
+after the old OBS output is confirmed stopped. **Recordings folder** controls
+both the OBS save destination and retention cleanup. Before each recording start,
+the companion creates the folder, checks local write access, and applies and
+verifies the OBS recording directory. This requires OBS WebSocket 5.3+ when the
+directory needs changing. Folder changes during a session wait until the next
+session; recovery segments and retention keep the original folder. A rejected or
+unverified directory blocks recording with an error in the service log. Changes
+made directly in OBS are reconciled at the next start; existing files are not moved.
+Tokens and passwords are masked in Settings.
 Turn off **Deliver transcripts to Webex** to retain transcripts locally without
 sending them to the bot; recording and transcription continue as usual.
 **Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays

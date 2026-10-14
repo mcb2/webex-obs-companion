@@ -65,8 +65,15 @@ The OBS adapter queues settings behind a short configuration lock, without
 waiting for its OBS lifecycle lock. The lifecycle worker applies connection
 changes after a verified stop or during idle preparation/start once
 the old output reports stopped; no socket probe runs in Settings on the UI thread.
-LaunchAgent stdout/stderr paths and OBS's recording output path are managed by
-their respective applications.
+LaunchAgent stdout/stderr paths are managed by the service definition. The OBS
+adapter pins RECORDINGS_DIR for each session, deferring live directory changes
+until the next session, including across recovery and unresolved stops. Before
+each segment start, after confirming idle output and preparing the scene, the
+controller creates/checks the local directory, reads GetRecordDirectory, uses
+SetRecordDirectory (WebSocket 5.3+) if needed, and verifies by reading it back.
+Failure blocks StartRecord. Processing jobs retain the backend's session directory
+so live settings changes cannot redirect retention enrollment. Existing media is
+never moved by a directory setting change.
 
 During Webex video recording, `OBSController` enumerates capturable Webex
 windows through Quartz and the OBS source's window list. New windows must

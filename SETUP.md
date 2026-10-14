@@ -53,7 +53,7 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 3. Check **Enable WebSocket server**.
 4. Set Server Port to `4455`.
 5. Check **Enable Authentication** and set a password (or copy the generated password).
-6. Set your recording save path in **Settings ➔ Output ➔ Recording ➔ Recording Path** (e.g. `~/Movies` or `~/Movies/WebexRecordings`).
+6. Set **Recordings folder** in the companion settings (default `~/Movies/WebexRecordings`). The companion applies and verifies this directory in OBS before each recording start. Use OBS WebSocket 5.3+ to allow directory changes through the API.
 7. Create scenes named exactly **Webex-Audio** and **Webex-Video**. The companion switches between these names and does not create the scenes for you.
 8. Configure microphone and meeting/system-audio capture in both scenes, using OBS audio sources appropriate to your macOS version. Verify both sides of a test conversation are audible in an OBS recording; the companion controls recording but does not configure audio routing.
 9. In `Webex-Video`, add a **macOS Screen Capture** source named exactly `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
@@ -175,8 +175,13 @@ The macOS menu-bar icon shows recording status and offers controls and a
 **Settings…** dialog for the configuration offered by setup, including masked
 passwords and tokens, plus OBS host and polling interval. Clicking **OK**
 saves and applies changes without a service restart. OBS connection changes
-take effect after the current recording finishes. Keep the OBS recording
-output path aligned with the recordings folder you select here. LaunchAgent
+take effect after the current recording finishes. **Recordings folder** sets the
+OBS save destination and retention folder automatically before recording. Changes
+during a session apply to the next session; recovery segments and cleanup retain
+the original folder. The folder is created and checked for local write access.
+Recording is blocked if OBS rejects the directory or read-back verification fails;
+check the service log, folder permissions, and WebSocket 5.3+ support. Existing
+files are not moved. LaunchAgent
 stdout/stderr log paths are fixed by the installed service definition.
 
 Recording actions now live directly in the status menu. Only actions available

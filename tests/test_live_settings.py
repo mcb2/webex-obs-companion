@@ -958,3 +958,24 @@ def test_shutdown_during_settings_construction_prevents_listener_restart_and_res
     daemon.recorder.configure.assert_not_called()
     assert daemon.config is old
     assert path.read_text() == "ENABLE_DIARIZATION=false\n"
+
+
+def test_completed_job_keeps_backend_session_directory_after_live_change(tmp_path):
+    daemon = _daemon()
+    original, updated = tmp_path / "original", tmp_path / "updated"
+    original.mkdir()
+    media = original / "synthetic.mkv"
+    media.write_bytes(b"synthetic")
+    daemon.config = Config(_env_file=None, recordings_dir=updated, enable_diarization=False)
+    daemon.monitor = Mock(current_call_title="Synthetic meeting")
+    daemon._active_session = daemon._new_recording_session()
+    daemon._discard_requested = False
+    daemon._settings_lock = threading.Lock()
+    daemon.recorder = Mock(stop_verified=True, recording_directory=original)
+    daemon.recorder.stop_recording.return_value = [str(media)]
+    daemon.ui, daemon.transcriber, daemon.webex, daemon._post_processing_worker = Mock(), Mock(), Mock(), Mock()
+
+    assert daemon._finish_recording()
+    job = daemon._post_processing_worker.submit.call_args.args[0]
+    assert job.recordings_dir == original
+    assert all(Path(filename).parent == original for filename in job.media_files)
