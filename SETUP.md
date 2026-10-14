@@ -174,7 +174,10 @@ source-selection shortcut until the new setting is saved; there is no Menu hotke
 The macOS menu-bar icon shows recording status and offers controls and a
 **Settings…** dialog for the configuration offered by setup, including masked
 passwords and tokens, plus OBS host and polling interval. Clicking **OK**
-saves and applies changes without a service restart. OBS connection changes
+saves and applies changes without a service restart. Settings is nonmodal and can
+remain open while you use other apps or recording controls. Reopening Settings
+brings the existing window forward; **Cancel**, Escape, and the close button
+discard unsaved edits. OBS connection changes
 take effect after the current recording finishes. **Recordings folder** sets the
 OBS save destination and retention folder automatically before recording. Changes
 during a session apply to the next session; recovery segments and cleanup retain

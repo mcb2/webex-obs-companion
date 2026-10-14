@@ -112,6 +112,9 @@ uv run --locked --no-sync webex-obs setup
 Open **Settings…** from the menu-bar icon to edit delivery credentials, OBS
 connection, transcription, detection, and shortcuts. Changes are saved and
 applied in the background when you click **OK**, without restarting the service.
+Settings is a normal, nonmodal window: you can switch to OBS or other apps while
+it stays open. Opening Settings again brings the same window forward and keeps
+unsaved edits. **Cancel**, Escape, or the close button discard those edits.
 Setup and Settings share the validated atomic writer. Unedited keys, comments,
 legacy aliases, and explicit zero values are retained; new configurations use
 the application defaults. Values are literal (including `${...}` text), with

@@ -241,14 +241,17 @@ def test_settings_worker_keeps_main_thread_free_and_reports_completion_on_main(f
         ui._alert.assert_not_called()
 
 
-def test_accepting_unchanged_settings_with_zero_values_does_not_save():
+@pytest.fixture
+def settings_ui():
     from webex_obs.config import Config
     ui = MacOSUI(Mock())
     ui.daemon.config = Config(_env_file=None, retention_days=0,
                               call_end_grace_seconds=0, obs_idle_restart_minutes=0)
     ui.target = Mock()
     appkit, foundation = Mock(), Mock()
-    appkit.NSApp.runModalForWindow_.return_value = 1
+    appkit.NSWindowStyleMaskTitled = 1
+    appkit.NSWindowStyleMaskClosable = 2
+    appkit.NSWindowStyleMaskMiniaturizable = 4
     def field():
         control = Mock()
         saved = {}
@@ -263,7 +266,77 @@ def test_accepting_unchanged_settings_with_zero_values_does_not_save():
         getattr(appkit, name).alloc.return_value.initWithFrame_.side_effect = lambda *a: field()
     appkit.NSPopUpButton.alloc.return_value.initWithFrame_pullsDown_.side_effect = lambda *a: field()
     with patch("webex_obs.macos_ui.AppKit", appkit), \
-         patch("webex_obs.macos_ui.Foundation", foundation), \
-         patch.object(ui, "_save_settings_async") as save:
+         patch("webex_obs.macos_ui.Foundation", foundation):
+        yield ui, appkit
+
+
+def test_accepting_unchanged_settings_with_zero_values_does_not_save(settings_ui):
+    ui, appkit = settings_ui
+    with patch.object(ui, "_save_settings_async") as save:
         ui.show_settings()
+        appkit.NSApp.runModalForWindow_.assert_not_called()
+        assert ui._settings_window is not None
+        ui.save_settings()
     save.assert_not_called()
+    assert ui._settings_window is None
+
+
+def test_settings_is_normal_nonmodal_window_and_reopening_preserves_edits(settings_ui):
+    ui, appkit = settings_ui
+    ui.show_settings()
+    window = ui._settings_window
+    inputs = ui._settings_inputs
+    inputs["obs_ws_port"][0].setStringValue_("4456")
+    window.isMiniaturized.return_value = True
+    ui.show_settings()
+    assert ui._settings_window is window
+    assert ui._settings_inputs is inputs
+    assert inputs["obs_ws_port"][0].stringValue() == "4456"
+    appkit.NSWindow.alloc.assert_called_once()
+    window.makeKeyAndOrderFront_.assert_has_calls([call(None), call(None)])
+    window.deminiaturize_.assert_called_once_with(None)
+    window.setLevel_.assert_called_once_with(appkit.NSNormalWindowLevel)
+    appkit.NSApp.runModalForWindow_.assert_not_called()
+
+
+def test_ok_saves_only_edits_once_and_does_not_stop_another_modal(settings_ui):
+    ui, appkit = settings_ui
+    target = _MenuTarget.alloc().init()
+    target.configure(ui)
+    ui.show_settings()
+    ui._settings_inputs["obs_ws_port"][0].setStringValue_("4456")
+    ui._settings_inputs["webex_delivery_enabled"][0].setState_(False)
+    ui._settings_inputs["shared_window_behavior"][0].selectItemAtIndex_(1)
+    with patch.object(ui, "_save_settings_async") as save:
+        target.saveSettings_(None)
+        target.saveSettings_(None)
+    save.assert_called_once_with({"obs_ws_port": "4456", "webex_delivery_enabled": False,
+                                  "shared_window_behavior": "always_switch"})
+    assert ui._settings_window is None
+    assert ui._settings_inputs == {}
+    appkit.NSApp.stopModalWithCode_.assert_not_called()
+
+
+@pytest.mark.parametrize("native_close", [False, True])
+def test_cancel_and_native_close_discard_edits_and_allow_reopening(settings_ui, native_close):
+    ui, appkit = settings_ui
+    target = _MenuTarget.alloc().init()
+    target.configure(ui)
+    ui.show_settings()
+    window = ui._settings_window
+    ui._settings_inputs["obs_ws_port"][0].setStringValue_("4456")
+    with patch.object(ui, "_save_settings_async") as save:
+        if native_close:
+            notification = Mock()
+            notification.object.return_value = window
+            target.windowWillClose_(notification)
+        else:
+            target.cancelSettings_(None)
+            window.close.assert_called_once()
+        save.assert_not_called()
+    assert ui._settings_window is None
+    assert ui._settings_panes == []
+    assert ui._sidebar_source is None
+    ui.show_settings()
+    assert ui._settings_inputs["obs_ws_port"][0].stringValue() == "4455"
+    appkit.NSApp.stopModalWithCode_.assert_not_called()

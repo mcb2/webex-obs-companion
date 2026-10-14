@@ -58,6 +58,10 @@ Settings updates validate values, atomically change the existing `.env`, and
 replace the running detector, transcription, delivery, and hotkey configuration.
 Setup and native Settings share this writer; edits preserve comments and unknown
 keys. Dotenv values are loaded literally so paths and credentials round trip.
+Native Settings retains one normal, nonmodal window and its original config and
+controls until OK or Cancel/close. Reopening brings that window forward without
+replacing edits. Closing clears the retained controls and sidebar delegate.
+Settings actions do not stop recording-control modal dialogs.
 Native Settings collects controls on AppKit, then serializes saving and application
 on a background worker. Runtime failures restore changed components and exact
 original file bytes; rollback failures are surfaced without credential values.
