@@ -407,6 +407,7 @@ class WebexOBSDaemon:
             session.use_title_if_missing(self.monitor.current_call_title)
             recorded_files = session.rename_recordings(recorded_files)
             MediaCleaner.protect_recordings(recorded_files)
+            recording_directory = self.recorder.recording_directory
             with self._settings_lock:
                 job = PostProcessingJob(
                     media_files=tuple(recorded_files),
@@ -415,7 +416,8 @@ class WebexOBSDaemon:
                     transcriber=self.transcriber,
                     webex=self.webex,
                     delivery_enabled=self.config.webex_delivery_enabled,
-                    recordings_dir=self.config.recordings_dir,
+                    recordings_dir=(recording_directory if isinstance(recording_directory, Path)
+                                    else self.config.recordings_dir),
                     retention_days=self.config.retention_days,
                     journal=self._job_store,
                 )

@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     recordings_dir: Path = Field(
         default_factory=lambda: Path.home() / "Movies" / "WebexRecordings",
         validation_alias=AliasChoices("RECORDINGS_DIR", "recordings_dir"),
-        description="Directory where OBS saves recordings"
+        description="Recording directory applied to OBS before capture and used for retention"
     )
     transcripts_dir: Path = Field(
         default_factory=lambda: Path.home() / "Documents" / "WebexTranscripts",

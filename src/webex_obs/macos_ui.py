@@ -575,7 +575,7 @@ class MacOSUI:
         table.selectRowIndexes_byExtendingSelection_(Foundation.NSIndexSet.indexSetWithIndex_(0), False)
         self._select_settings_category(0)
         footer = AppKit.NSTextField.labelWithString_(
-            "Changes apply on OK. OBS connection changes wait for a recording to finish."
+            "OBS connection and recording folder changes apply to the next session."
         )
         footer.setFrame_(((20, 39), (550, 20)))
         content.addSubview_(footer)

@@ -1,6 +1,7 @@
 import logging
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,11 +42,13 @@ except ImportError:
 
 
 class OBSController:
-    def __init__(self, address: str = "localhost", port: int = 4455, password: str = "", exit_on_stop: bool = True):
+    def __init__(self, address: str = "localhost", port: int = 4455, password: str = "", exit_on_stop: bool = True,
+                 recording_directory: Path | None = None):
         self.address = address
         self.port = port
         self.password = password
         self.exit_on_stop = exit_on_stop
+        self.recording_directory = recording_directory
         self.ws: obsws | None = None
         self.is_connected = False
         self.is_recording = False
@@ -476,6 +479,31 @@ class OBSController:
                 logger.warning("Could not press macOS Audio Capture Restart Capture "
                                "(OBS disables it for healthy capture); continuing recording: %s", e)
 
+    def _apply_recording_directory(self) -> bool:
+        """Called only before a start with confirmed idle output, never on AppKit."""
+        if self.recording_directory is None:
+            return True
+        try:
+            directory = self.recording_directory.expanduser().resolve()
+            directory.mkdir(parents=True, exist_ok=True)
+            # Verify local write access without leaving a probe behind.
+            with tempfile.TemporaryFile(dir=directory):
+                pass
+            current = self._call(requests.GetRecordDirectory()).datain.get("recordDirectory")
+            if current != str(directory):
+                self._call(requests.SetRecordDirectory(recordDirectory=str(directory)))
+            verified = self._call(requests.GetRecordDirectory()).datain.get("recordDirectory")
+            if verified != str(directory):
+                raise RuntimeError("recording directory verification failed")
+        except Exception as exc:
+            logger.error(
+                "Recording folder could not be applied and verified (%s). "
+                "Check folder permissions and OBS WebSocket 5.3+ support; recording start blocked.",
+                type(exc).__name__,
+            )
+            return False
+        return True
+
     def start_recording(self, scene_name: str = "Webex-Audio") -> bool:
         for attempt in range(3):
             active = self._refresh_recording_status()
@@ -505,6 +533,8 @@ class OBSController:
                     if not self.bind_webex_video_window():
                         logger.warning("Video recording started without a bound Webex window.")
                 self._restart_audio_capture()
+                if not self._apply_recording_directory():
+                    return False
                 self.stop_verified = False
                 # A lost response is ambiguous, not authorization to adopt OBS.
                 self.is_recording = True

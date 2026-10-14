@@ -8,6 +8,7 @@ None (unknown); is_recording also stays True for unresolved owned sessions.
 
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Literal, Protocol
 
 from .config import Config
@@ -19,6 +20,11 @@ RecordingMode = Literal["audio", "video"]
 
 
 class RecordingBackend(Protocol):
+    @property
+    def recording_directory(self) -> Path | None:
+        """Directory retained for the current/most recently completed session."""
+        ...
+
     @property
     def is_recording(self) -> bool: ...
 
@@ -61,6 +67,7 @@ class OBSRecordingBackend:
         self._lifecycle_lock = threading.RLock()
         self._configuration_lock = threading.Lock()
         self._pending_exit_on_stop: bool | None = None
+        self._pending_recordings_dir: Path | None = None
         self._maintenance = OBSMaintenance()
         self.idle_restart_minutes = 60
 
@@ -68,6 +75,7 @@ class OBSRecordingBackend:
         """Queue settings without waiting for OBS work on AppKit's main thread."""
         with self._configuration_lock:
             self._pending_exit_on_stop = config.exit_obs_on_recording_stop
+            self._pending_recordings_dir = config.recordings_dir
             self.idle_restart_minutes = config.obs_idle_restart_minutes
             self._pending_connection = (config.obs_address, config.obs_port, config.obs_password)
 
@@ -88,6 +96,10 @@ class OBSRecordingBackend:
         if (self.controller.address, self.controller.port, self.controller.password) != (address, port, password):
             self.controller.disconnect()
             self.controller.address, self.controller.port, self.controller.password = address, port, password
+
+    @property
+    def recording_directory(self) -> Path | None:
+        return self.controller.recording_directory
 
     @property
     def is_recording(self) -> bool:
@@ -163,6 +175,13 @@ class OBSRecordingBackend:
             if (self._pending_connection is not None and not self.controller.is_recording
                     and self.controller._recording_active_status() is False):
                 self._apply_connection()
+            # Keep the directory pinned through recovery and unresolved stops.
+            # The controller verifies idle output before it sends directory RPCs.
+            if not self.controller.is_recording:
+                with self._configuration_lock:
+                    if self._pending_recordings_dir is not None:
+                        self.controller.recording_directory = self._pending_recordings_dir
+                        self._pending_recordings_dir = None
             return self.controller.start_recording(
                 scene_name="Webex-Video" if mode == "video" else "Webex-Audio",
             )
@@ -220,6 +239,7 @@ def create_recording_backend(config: Config) -> RecordingBackend:
         port=config.obs_port,
         password=config.obs_password,
         exit_on_stop=config.exit_obs_on_recording_stop,
+        recording_directory=config.recordings_dir,
     ))
     backend.idle_restart_minutes = config.obs_idle_restart_minutes
     return backend

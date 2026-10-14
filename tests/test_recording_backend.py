@@ -54,7 +54,8 @@ class BackendTests(unittest.TestCase):
             backend = create_recording_backend(config)
             self.assertIs(backend.controller, controller.return_value)
         controller.assert_called_once_with(address="example.test", port=4466,
-                                           password="secret", exit_on_stop=False)
+                                           password="secret", exit_on_stop=False,
+                                           recording_directory=config.recordings_dir)
 
     def test_modes_translate_to_existing_obs_scenes(self):
         from unittest.mock import Mock
