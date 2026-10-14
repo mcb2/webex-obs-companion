@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import subprocess
 import threading
@@ -106,6 +107,7 @@ class ProcessMonitor:
         self._suppressed_platform_key: str | None = None
         self._suppress_untitled_call = False
         self._suppression_inactive_since: float | None = None
+        self._sensor_warning_times: dict[tuple[str, str], float] = {}
         self.audio_monitor = audio_monitor or CoreAudioProcessMonitor()
         self.on_strong_evidence = None
         self.on_possible_evidence = None
@@ -190,7 +192,11 @@ class ProcessMonitor:
 
     def _active_window_name(self, platform: CallPlatform) -> str | None:
         """Return a non-idle window title exposed by the platform on macOS."""
-        failed = False
+        # Only successful enumeration can establish absence. A failed read
+        # must propagate as unknown, including during an active recording.
+        if not self._matching_processes(platform):
+            return None
+        failures = []
         for process_name in platform.apple_process_names:
             escaped_name = self._apple_script_process_name(process_name)
             apple_script = f"""
@@ -215,7 +221,13 @@ class ProcessMonitor:
                     check=False,
                 )
                 if result.returncode != 0:
-                    failed = True
+                    # stderr can contain window titles. Retain only numeric
+                    # error codes, never the AppleScript error text or output.
+                    error_code = re.search(r"\((-?\d{1,10})\)\s*$", result.stderr or "")
+                    detail = f"osascript exited {result.returncode}"
+                    if error_code:
+                        detail += f" (AppleScript error {error_code.group(1)})"
+                    failures.append(f"{process_name}: {detail}")
                     continue
                 if not result.stdout:
                     continue
@@ -226,10 +238,12 @@ class ProcessMonitor:
                         and window_name.casefold() not in platform.non_call_window_names
                     ):
                         return window_name
-            except (OSError, subprocess.SubprocessError):
-                failed = True
-        if failed:
-            raise OSError("Platform window inspection unavailable")
+            except subprocess.TimeoutExpired:
+                failures.append(f"{process_name}: osascript timed out after 2 seconds")
+            except (OSError, subprocess.SubprocessError) as exc:
+                failures.append(f"{process_name}: osascript failed ({type(exc).__name__})")
+        if failures:
+            raise OSError("Platform window inspection unavailable: " + "; ".join(failures))
         return None
 
     @staticmethod
@@ -342,15 +356,22 @@ class ProcessMonitor:
         key = self.current_platform.key if self.current_platform else ""
         return key in self._suppressed_platforms or "" in self._suppressed_platforms
 
-    @staticmethod
     def _read_sensor(
-        platform: CallPlatform, sensor: str, read: Callable[[], T]
+        self, platform: CallPlatform, sensor: str, read: Callable[[], T]
     ) -> tuple[T | None, bool]:
+        key = (platform.key, sensor)
         try:
-            return read(), True
+            value = read()
         except (OSError, psutil.Error, subprocess.SubprocessError) as exc:
-            logger.warning("%s %s sensor failed: %s", platform.display_name, sensor, exc)
+            now = time.monotonic()
+            last_warning = self._sensor_warning_times.get(key)
+            if last_warning is None or now - last_warning >= 60.0:
+                logger.warning("%s %s sensor failed: %s", platform.display_name, sensor, exc)
+                self._sensor_warning_times[key] = now
             return None, False
+        # A new outage after a successful read warrants an immediate warning.
+        self._sensor_warning_times.pop(key, None)
+        return value, True
 
     def _call_evidence(self, platform: CallPlatform) -> CallEvidence:
         streams, streams_ok = self._read_sensor(

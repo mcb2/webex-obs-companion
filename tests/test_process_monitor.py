@@ -160,7 +160,8 @@ class ProcessMonitorTests(unittest.TestCase):
             stdout="",
             stderr="",
         )
-        with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
+        with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
+             patch("webex_obs.process_monitor.subprocess.run", return_value=result):
             self.assertIsNone(monitor._active_call_window_name())
 
     def test_lightweight_webex_window_probe_returns_meeting_title(self):
@@ -170,7 +171,8 @@ class ProcessMonitorTests(unittest.TestCase):
             stdout="Weekly Sync\n",
             stderr="",
         )
-        with patch("webex_obs.process_monitor.subprocess.run", return_value=result):
+        with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
+             patch("webex_obs.process_monitor.subprocess.run", return_value=result):
             self.assertEqual(monitor._active_call_window_name(), "Weekly Sync")
 
     def test_call_start_requires_two_consecutive_checks(self):
@@ -471,7 +473,7 @@ def test_real_probe_errors_are_reported_in_diagnostics(sensor):
     monitor = ProcessMonitor()
     proc = _Process("Webex", 5004)
     with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[proc]) as processes, \
-         patch("webex_obs.process_monitor.subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="")) as windows, \
+         patch("webex_obs.process_monitor.subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")) as windows, \
          patch.object(proc, "net_connections", return_value=[]) as sockets:
         if sensor == "window-exit":
             windows.return_value.returncode = 1
@@ -644,3 +646,81 @@ def test_unknown_read_restarts_decline_grace_period():
         assert monitor.should_suppress_automatic_prompt()
         monitor._track_prompt_suppression(False)
     assert not monitor.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+def test_absent_platform_skips_applescript_in_detection_and_diagnostics(platform):
+    monitor = ProcessMonitor()
+    monitor.current_platform = platform
+    monitor.bind_current_platform()
+    with patch("webex_obs.process_monitor.subprocess.run") as windows:
+        assert monitor.is_call_active() is False
+        row = next(row for row in monitor.diagnostic_snapshot()
+                   if row["platform"] == platform.display_name)
+    windows.assert_not_called()
+    assert row["processes_available"] is True
+    assert row["window_available"] is True
+    assert row["window"] is None
+
+
+def test_failed_process_enumeration_does_not_establish_window_absence():
+    monitor = ProcessMonitor()
+    monitor.current_platform = ZOOM
+    monitor.bind_current_platform()
+    monitor.suppress_current_call_prompt()
+    with patch.object(monitor, "_matching_processes", side_effect=OSError("Process enumeration unavailable")), \
+         patch("webex_obs.process_monitor.subprocess.run") as windows:
+        assert monitor.is_call_active() is None
+        assert not monitor.has_call_ended()
+        assert monitor.should_suppress_automatic_prompt()
+        row = monitor.diagnostic_snapshot()[1]
+    windows.assert_not_called()
+    assert row["window_available"] is False
+
+
+@pytest.mark.parametrize("failure, expected", [
+    ("timeout", "timed out after 2 seconds"),
+    ("exit", "osascript exited 1 (AppleScript error -1743)"),
+    ("launch", "osascript failed (OSError)"),
+])
+def test_window_failure_details_exclude_private_output(failure, expected, caplog):
+    import subprocess
+
+    monitor = ProcessMonitor()
+    private_title = "Synthetic private window title"
+    result = types.SimpleNamespace(returncode=1, stdout=private_title,
+                                   stderr=f"{private_title}: access denied (-1743)\n")
+    error = None
+    if failure == "timeout":
+        error = subprocess.TimeoutExpired("osascript", 2, output=private_title, stderr=private_title)
+    elif failure == "launch":
+        error = OSError(private_title)
+    with patch.object(monitor, "_matching_processes", return_value=[_Process("zoom.us", 8801)]), \
+         patch("webex_obs.process_monitor.subprocess.run", return_value=result, side_effect=error):
+        value, available = monitor._read_sensor(ZOOM, "window", lambda: monitor._active_window_name(ZOOM))
+    assert value is None
+    assert available is False
+    assert expected in caplog.text
+    assert private_title not in caplog.text
+
+
+def test_sensor_warnings_are_throttled_independently_and_reset_after_recovery(caplog):
+    monitor = ProcessMonitor()
+
+    def fail():
+        raise OSError("Synthetic sensor failure")
+
+    with patch("webex_obs.process_monitor.time.monotonic", return_value=100) as now:
+        assert monitor._read_sensor(ZOOM, "window", fail) == (None, False)
+        now.return_value = 159
+        assert monitor._read_sensor(ZOOM, "window", fail) == (None, False)
+        assert len(caplog.records) == 1
+        assert monitor._read_sensor(TEAMS, "window", fail) == (None, False)
+        assert monitor._read_sensor(ZOOM, "sockets", fail) == (None, False)
+        assert len(caplog.records) == 3
+        now.return_value = 160
+        assert monitor._read_sensor(ZOOM, "window", fail) == (None, False)
+        assert len(caplog.records) == 4
+        assert monitor._read_sensor(ZOOM, "window", lambda: None) == (None, True)
+        assert monitor._read_sensor(ZOOM, "window", fail) == (None, False)
+        assert len(caplog.records) == 5

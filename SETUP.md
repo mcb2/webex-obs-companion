@@ -92,6 +92,16 @@ if you want delivery/error notices. Missing sensor access is reported as unknown
 not evidence that a call ended; stop manually if detection remains unknown.
 Permission grants and actual audio/video quality require the manual checks below.
 
+Window probes are skipped when process enumeration confirms the meeting app is
+not running. For running apps, window warnings distinguish a two-second
+AppleScript timeout, a nonzero exit (including a numeric AppleScript error code
+when present), and a launch failure without including window titles or raw error
+output. Repeated sensor failures warn at most once per minute per platform and
+sensor during a continuous outage; a successful read resets that limit. A timeout
+alone does not establish a permissions problem. For access errors, check the
+hosting process's Accessibility and Automation access above. Failed reads remain
+unknown even when repeated warnings are suppressed.
+
 ### OBS Lifecycle & Auto-Reconnection
 - **Audio capture restart**: Before each manual or automatic audio/video recording start, including recovery segments and start retries, the companion requests **Restart Capture** for all macOS Audio Capture sources (`sck_audio_capture`) in OBS, regardless of source name or scene. Microphone and screen-capture sources are unaffected. OBS disables this button unless it has flagged capture as failed; rejected requests and enumeration failures are logged without blocking recording. An accepted request does not verify audio health. No new configuration is required. For a manual check, use synthetic audio in both recording modes, confirm both sides are audible, and check that a disabled button does not prevent recording; if a failed source is available, confirm its enabled button is requested before recording starts.
 - **Startup check**: The service launches/connects OBS, verifies WebSocket connectivity, and leaves OBS running, including when exit-after-recording is enabled. If startup connectivity cannot be verified, a recording request retries the connection.
