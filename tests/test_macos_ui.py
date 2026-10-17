@@ -369,8 +369,13 @@ def test_retention_setup_note_is_present_in_gui(settings_ui):
     ui, appkit = settings_ui
     ui.show_settings()
     labels = [call.args[0] for call in appkit.NSTextField.labelWithString_.call_args_list]
-    assert any("0 = delete recordings after successful transcription, before delivery" in label
-               for label in labels)
+    assert "0 = Do not retain recordings." in labels
+    entries = dict(ui._settings_sections())["Files and detection"]
+    assert entries[:3] == [
+        ("Recordings folder", "recordings_dir", "text"),
+        ("Recording retention", "retention_days", "text"),
+        ("Transcripts folder", "transcripts_dir", "text"),
+    ]
 
 
 def test_menu_action_captures_session_generation_before_background_dispatch():
