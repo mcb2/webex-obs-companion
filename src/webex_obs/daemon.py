@@ -67,6 +67,7 @@ class WebexOBSDaemon:
         self._manual_start_event = threading.Event()
         self._manual_start_mode = "audio"
         self._discard_requested = False
+        self._delete_after_transcription = False
         self._stop_pending = False
         self._active_session: RecordingSession | None = None
         self._settings_lock = threading.Lock()
@@ -322,7 +323,9 @@ class WebexOBSDaemon:
         record = job.journal.read(job.job_id) if job.journal else None
         if record and record["state"] not in {"queued", "ready", "delivered"}:
             return
-        if record and record["state"] != "delivered":
+        if record and record["state"] != "delivered" and not (
+            record["state"] == "ready" and job.retention_days == 0
+        ):
             if identities != record["identities"]:
                 job.journal.update(job.job_id, state="failed")
                 logger.error("Job media changed or is missing; manual recovery required.")
@@ -347,6 +350,12 @@ class WebexOBSDaemon:
             return
         if record and record["state"] == "queued":
             job.journal.update(job.job_id, state="ready")
+        if job.retention_days == 0:
+            # The ready checkpoint must precede deletion so restart can deliver
+            # the saved transcript without requiring the intentionally removed media.
+            MediaCleaner.mark_processed(files, job.recordings_dir,
+                                       identities=record["identities"] if record else identities)
+            MediaCleaner.prune_old_recordings(job.recordings_dir, 0, media_files=files)
         if self._shutdown_event.is_set():
             return
         if not record or record["state"] != "delivered":
@@ -361,15 +370,17 @@ class WebexOBSDaemon:
                 if job.journal:
                     state = "uncertain" if job.webex.last_delivery_outcome == "uncertain" else "failed"
                     job.journal.update(job.job_id, state=state)
-                logger.warning("Delivery incomplete; media remains protected for recovery.")
+                logger.warning("Delivery incomplete; transcript retained for recovery.")
                 return
             if job.journal:
                 job.journal.update(job.job_id, state="delivered")
-        MediaCleaner.mark_processed(files, job.recordings_dir,
-                                   identities=record["identities"] if record else identities)
+        if job.retention_days != 0:
+            MediaCleaner.mark_processed(files, job.recordings_dir,
+                                       identities=record["identities"] if record else identities)
         if job.journal:
             job.journal.update(job.job_id, state="complete")
-        MediaCleaner.prune_old_recordings(job.recordings_dir, job.retention_days)
+        if job.retention_days != 0:
+            MediaCleaner.prune_old_recordings(job.recordings_dir, job.retention_days)
 
     def _finish_recording(self) -> bool:
         """Finalize only on positive stop evidence; retain the pending action otherwise."""
@@ -418,7 +429,8 @@ class WebexOBSDaemon:
                     delivery_enabled=self.config.webex_delivery_enabled,
                     recordings_dir=(recording_directory if isinstance(recording_directory, Path)
                                     else self.config.recordings_dir),
-                    retention_days=self.config.retention_days,
+                    retention_days=(0 if getattr(self, "_delete_after_transcription", False)
+                                    else self.config.retention_days),
                     journal=self._job_store,
                 )
             if self._shutdown_event.is_set() and job.journal is not None:
@@ -428,6 +440,7 @@ class WebexOBSDaemon:
             logger.info("Queued recording session for background post-processing: '%s'.", session.display_title)
         with self._recording_request_lock:
             self._discard_requested = False
+            self._delete_after_transcription = False
             self._active_session = None
             self._stop_pending = False
             self.monitor.release_platform()
@@ -441,6 +454,16 @@ class WebexOBSDaemon:
         session = RecordingSession.create(title)
         logger.info("Recording session title: '%s'.", session.display_title)
         return session
+
+    def toggle_delete_after_transcription(self, generation: int) -> None:
+        """Change only the clicked session; reject delayed actions after stop/start."""
+        with self._recording_request_lock:
+            if (generation != self._window_session_generation
+                    or self._active_session is None or self.recorder.is_recording is not True
+                    or self._stop_pending or self._manual_stop_event.is_set()
+                    or self._shutdown_event.is_set() or self.config.retention_days == 0):
+                return
+            self._delete_after_transcription = not self._delete_after_transcription
 
     def _handle_stop_transcribe_request(self):
         """Handle Cmd+Shift+S hotkey to immediately stop recording and start transcription."""
@@ -663,6 +686,7 @@ class WebexOBSDaemon:
                         continue
 
                     self._discard_requested = False
+                    self._delete_after_transcription = False
                     self._manual_stop_event.clear()
                     if not manual:
                         self.monitor.bind_current_platform()

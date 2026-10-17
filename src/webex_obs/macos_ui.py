@@ -30,9 +30,10 @@ class _MenuTarget(Foundation.NSObject):
         self.ui = ui
 
     def recordingAction_(self, sender):
+        generation = self.ui.daemon._window_session_generation
         threading.Thread(
             target=self.ui.perform_recording_action,
-            args=(str(sender.representedObject()),), name="recording-menu-action", daemon=True,
+            args=(str(sender.representedObject()), generation), name="recording-menu-action", daemon=True,
         ).start()
 
     def menuNeedsUpdate_(self, menu):
@@ -185,7 +186,8 @@ class MacOSUI:
         self.recording_items = {}
         for label, choice in (recording_menu_choices(False)
                               + recording_menu_choices(True)
-                              + (("Select Video Source…", "select_window"),)):
+                              + (("Select Video Source…", "select_window"),
+                                 ("Delete Recording After Transcription", "delete_after_transcription"))):
             item = self._add(menu, label, "recordingAction:")
             item.setRepresentedObject_(choice)
             self.recording_items[choice] = item
@@ -273,24 +275,34 @@ class MacOSUI:
             or self.daemon._manual_stop_event.is_set()
             or (self.daemon._active_session is not None and not recording)
         )
-        return recording_menu_choices(
+        choices = recording_menu_choices(
             recording, self.daemon.recorder.is_video_recording is True,
             transitioning, self.daemon._window_prompt_pending.is_set(),
-        ), transitioning
+        )
+        if (recording and not transitioning and not self.daemon._stop_pending
+                and self.daemon.config.retention_days != 0):
+            choices += (("Delete Recording After Transcription", "delete_after_transcription"),)
+        return choices, transitioning
 
     def _update_recording_menu(self):
         choices, transitioning = self._available_recording_choices()
         available = {choice for _, choice in choices}
         for choice, item in self.recording_items.items():
             item.setHidden_(choice not in available)
+            if choice == "delete_after_transcription":
+                item.setState_(bool(self.daemon._delete_after_transcription))
         self.quit_item.setHidden_(self.daemon.recorder.is_recording or transitioning)
 
-    def perform_recording_action(self, choice):
+    def perform_recording_action(self, choice: str, generation: int | None = None) -> None:
         choices, _ = self._available_recording_choices()
         if choice not in {action for _, action in choices}:
             return
         if choice == "stop_discard":
             self.daemon.request_discard_confirmation()
+        elif choice == "delete_after_transcription":
+            self.daemon.toggle_delete_after_transcription(
+                self.daemon._window_session_generation if generation is None else generation
+            )
         else:
             self.daemon._handle_control_choice(choice)
 
@@ -589,6 +601,13 @@ class MacOSUI:
                     value = getattr(config, key)
                     field.setStringValue_("" if value is None else str(value))
                 pane.addSubview_(field)
+                if key == "retention_days":
+                    note = AppKit.NSTextField.labelWithString_(
+                        "0 = delete recordings after successful transcription, before delivery."
+                    )
+                    note.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+                    note.setFrame_(((15, y - 20), (530, 18)))
+                    pane.addSubview_(note)
                 inputs[key] = (field, kind)
 
         table.reloadData()

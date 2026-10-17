@@ -17,6 +17,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **Live Video Source Selection**: Choose whether a newly opened Webex window is selected automatically or offered in a picker during video recording. The video-only menu command lets you select a Webex window or an entire screen at any time; screen capture pauses automatic window following.
 - **macOS Status Menu**: The menu icon shows no badge while idle, a microphone badge for audio recording, and a camera badge for video recording. Provides recording controls, Stop & Transcribe while recording, and Settings. Its tooltip shows the recording mode and current meeting; the automatic recording confirmation retains the 15-second audio default and consent notice.
 - Recording controls are directly in the status menu. Idle: Start Audio Recording, Start Video Recording, Settings, and Quit. Recording audio: Switch to Video, Stop & Transcribe, Stop & Discard, and Settings. Recording video: Select Video Source, Stop & Transcribe, Stop & Discard, and Settings. Unavailable actions are hidden, never grayed out. Source selection remains a separate window-or-screen picker; Stop & Discard requires a separate confirmation defaulting to No.
+- While recording with nonzero retention, **Delete Recording After Transcription** toggles immediate deletion for that session only. A checkmark shows the selection; click again to undo. It keeps recording until the usual stop, resets for the next session, and is hidden when retention is already 0.
 - Manual audio/video starts (including the Video hotkey while idle) show a two-party/all-party consent reminder after recording begins. **OK** is the default; the notice dismisses after 10 seconds and keeps recording. **Cancel & Discard** stops the session and deletes its segments only after OBS confirms recording has stopped, without transcription. The existing automatically detected-call prompt remains unchanged.
 - **Descriptive Session Filenames**: Recording segments and transcripts include the call-start date, time, and a filesystem-safe version of the detected call-window title.
 
@@ -266,9 +267,13 @@ when OBS supplies neither a changed path nor a decreased output duration.
 at startup and after successful processing, using file identity records in
 `.webex-obs-retention/` inside the configured recordings directory. Only media
 from verified completed app sessions, with successful transcription and any
-enabled Webex delivery, becomes eligible. **0 deletes eligible media immediately
-after success**. Active, queued, failed, recoverable, unrelated, and legacy media
-without these records is retained. Modified/replaced files and symlinks are
+enabled Webex delivery, becomes eligible under positive retention values.
+**0 deletes that session's recordings immediately after complete successful
+transcription, before Webex delivery**, even if delivery later fails. Transcripts
+are kept. The recording-menu option applies this zero-day policy only to the
+current session without changing Settings or other sessions' retention.
+Active media, failed/partial transcription, unrelated, and legacy media
+without success records is retained. Modified/replaced files and symlinks are
 excluded. Missing/failed segments retain all session media; a partial transcript
 may remain locally for recovery and is not delivered automatically. It starts
 with **PARTIAL TRANSCRIPT — INCOMPLETE**, includes the successful-segment count,

@@ -26,9 +26,14 @@ def menu_ui(recording=False, video=False):
     daemon._manual_stop_event = threading.Event()
     daemon._window_prompt_pending = threading.Event()
     daemon._active_session = None
+    daemon._stop_pending = False
+    daemon.config.retention_days = 14
+    daemon._delete_after_transcription = False
+    daemon._window_session_generation = 7
     ui = MacOSUI(daemon)
     ui.recording_items = {choice: Mock() for choice in (
-        "start_audio", "start_video", "switch_video", "select_window", "stop_transcribe", "stop_discard"
+        "start_audio", "start_video", "switch_video", "select_window", "stop_transcribe", "stop_discard",
+        "delete_after_transcription",
     )}
     ui.quit_item = Mock()
     return ui
@@ -36,8 +41,8 @@ def menu_ui(recording=False, video=False):
 
 @pytest.mark.parametrize("recording,video,visible", [
     (False, False, {"start_audio", "start_video"}),
-    (True, False, {"switch_video", "stop_transcribe", "stop_discard"}),
-    (True, True, {"select_window", "stop_transcribe", "stop_discard"}),
+    (True, False, {"switch_video", "stop_transcribe", "stop_discard", "delete_after_transcription"}),
+    (True, True, {"select_window", "stop_transcribe", "stop_discard", "delete_after_transcription"}),
 ])
 def test_native_menu_hides_unavailable_actions_instead_of_disabling(recording, video, visible):
     ui = menu_ui(recording, video)
@@ -340,3 +345,40 @@ def test_cancel_and_native_close_discard_edits_and_allow_reopening(settings_ui, 
     ui.show_settings()
     assert ui._settings_inputs["obs_ws_port"][0].stringValue() == "4455"
     appkit.NSApp.stopModalWithCode_.assert_not_called()
+
+
+@pytest.mark.parametrize("recording,retention,selected,visible", [
+    (False, 14, False, False), (True, 0, False, False),
+    (True, 0, True, False), (True, 14, False, True), (True, 14, True, True),
+])
+def test_session_retention_menu_visibility_checkmark_and_dispatch(recording, retention, selected, visible):
+    ui = menu_ui(recording)
+    ui.daemon.config.retention_days = retention
+    ui.daemon._delete_after_transcription = selected
+    ui._update_recording_menu()
+    item = ui.recording_items["delete_after_transcription"]
+    item.setHidden_.assert_called_once_with(not visible)
+    item.setState_.assert_called_once_with(selected)
+    ui.perform_recording_action("delete_after_transcription", 7)
+    assert ui.daemon.toggle_delete_after_transcription.call_count == int(visible)
+    if visible:
+        ui.daemon.toggle_delete_after_transcription.assert_called_once_with(7)
+
+
+def test_retention_setup_note_is_present_in_gui(settings_ui):
+    ui, appkit = settings_ui
+    ui.show_settings()
+    labels = [call.args[0] for call in appkit.NSTextField.labelWithString_.call_args_list]
+    assert any("0 = delete recordings after successful transcription, before delivery" in label
+               for label in labels)
+
+
+def test_menu_action_captures_session_generation_before_background_dispatch():
+    ui = menu_ui(True)
+    target = _MenuTarget.alloc().init()
+    target.configure(ui)
+    sender = Mock()
+    sender.representedObject.return_value = "delete_after_transcription"
+    with patch("webex_obs.macos_ui.threading.Thread") as thread:
+        target.recordingAction_(sender)
+    assert thread.call_args.kwargs["args"] == ("delete_after_transcription", 7)

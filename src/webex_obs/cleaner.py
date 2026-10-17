@@ -89,17 +89,22 @@ class MediaCleaner:
                     logger.warning("Could not mark processed media eligible for retention: %s", exc)
 
     @classmethod
-    def prune_old_recordings(cls, recordings_dir: Path, retention_days: int = 14) -> None:
+    def prune_old_recordings(
+        cls, recordings_dir: Path, retention_days: int = 14,
+        *, media_files: list[str] | None = None,
+    ) -> None:
         """Prune eligible identities only; zero means immediately after success.
 
         No media directory scan or filename pattern establishes ownership. Files
         without a persisted success marker (including legacy files) are retained.
+        media_files restricts cleanup to one job without changing other sessions.
         """
         if retention_days < 0:
             raise ValueError("Retention days must be nonnegative")
         root = cls._path(recordings_dir)
         index = root / cls._index_name
         cutoff = time.time() - retention_days * 86400
+        selected = {cls._path(name) for name in media_files} if media_files is not None else None
         with cls._lock:
             try:
                 if index.is_symlink() or not index.is_dir():
@@ -117,6 +122,8 @@ class MediaCleaner:
                     if not isinstance(name, str) or Path(name).name != name:
                         continue
                     path = root / name
+                    if selected is not None and path not in selected:
+                        continue
                     if marker != cls._marker(path) or path in cls._protected:
                         continue
                     identity = cls._identity(path)
@@ -125,7 +132,7 @@ class MediaCleaner:
                         # again; never delete it just because a name matches.
                         marker.unlink()
                         continue
-                    if path.stat().st_mtime <= cutoff:
+                    if retention_days == 0 or path.stat().st_mtime <= cutoff:
                         path.unlink()
                         marker.unlink()
                         logger.info("Pruned successfully processed recording (%s days): %s", retention_days, path.name)

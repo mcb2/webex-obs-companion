@@ -226,9 +226,15 @@ def test_setup_preserves_unedited_keys_aliases_zero_and_application_defaults(tmp
     monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
     monkeypatch.setattr(cli.Confirm, "ask", lambda *a, **kw:
                         False if "Enable Neural" in a[0] else kw["default"])
-    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw:
-                        r"synthetic 'password' \ ${HOME}" if "OBS WebSocket password" in a[0] else kw.get("default", ""))
+    prompts = []
+    def answer(*args, **kwargs):
+        prompts.append(args[0])
+        return (r"synthetic 'password' \ ${HOME}" if "OBS WebSocket password" in args[0]
+                else kwargs.get("default", ""))
+    monkeypatch.setattr(cli.Prompt, "ask", answer)
     cli.setup()
+    assert any("0 = delete recordings after successful transcription, before delivery" in prompt
+               for prompt in prompts)
     loaded = Config(_env_file=path)
     assert loaded.obs_ws_password == r"synthetic 'password' \ ${HOME}"
     assert loaded.exit_obs_on_recording_stop is False
