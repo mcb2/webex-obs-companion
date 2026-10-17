@@ -496,8 +496,8 @@ class MacOSUI:
             ]),
             ("Files and detection", [
                 ("Recordings folder", "recordings_dir", "text"),
+                ("Recording retention", "retention_days", "text"),
                 ("Transcripts folder", "transcripts_dir", "text"),
-                ("Retention (days)", "retention_days", "text"),
                 ("Poll interval (seconds)", "poll_interval", "text"),
                 ("Call-end grace (seconds)", "call_end_grace_seconds", "text"),
             ]),
@@ -603,7 +603,7 @@ class MacOSUI:
                 pane.addSubview_(field)
                 if key == "retention_days":
                     note = AppKit.NSTextField.labelWithString_(
-                        "0 = delete recordings after successful transcription, before delivery."
+                        "0 = Do not retain recordings."
                     )
                     note.setFont_(AppKit.NSFont.systemFontOfSize_(11))
                     note.setFrame_(((15, y - 20), (530, 18)))
