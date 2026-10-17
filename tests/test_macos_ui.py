@@ -373,7 +373,7 @@ def test_retention_setup_note_is_present_in_gui(settings_ui):
     entries = dict(ui._settings_sections())["Files and detection"]
     assert entries[:3] == [
         ("Recordings folder", "recordings_dir", "text"),
-        ("Recording retention", "retention_days", "text"),
+        ("Recording retention (days)", "retention_days", "text"),
         ("Transcripts folder", "transcripts_dir", "text"),
     ]
 

@@ -496,7 +496,7 @@ class MacOSUI:
             ]),
             ("Files and detection", [
                 ("Recordings folder", "recordings_dir", "text"),
-                ("Recording retention", "retention_days", "text"),
+                ("Recording retention (days)", "retention_days", "text"),
                 ("Transcripts folder", "transcripts_dir", "text"),
                 ("Poll interval (seconds)", "poll_interval", "text"),
                 ("Call-end grace (seconds)", "call_end_grace_seconds", "text"),
