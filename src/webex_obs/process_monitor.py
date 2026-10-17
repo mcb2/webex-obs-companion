@@ -74,6 +74,8 @@ class CallEvidence:
     active: bool | None
     title: str | None = None
     reason: str = ""
+    # All three sensors successfully observed absence, not just lost corroboration.
+    fully_idle: bool = False
 
 
 # Backward-compatible constants used by older integrations and diagnostics.
@@ -101,6 +103,8 @@ class ProcessMonitor:
         self.current_platform: CallPlatform | None = None
         self.bound_platform: CallPlatform | None = None
         self._platform_activity: dict[str, bool | None] = {}
+        self._departed_platforms: dict[str, int] = {}
+        self._restarted_platforms: set[str] = set()
         self._candidate_platform_key: str | None = None
         self._suppressed_platforms: dict[str, float | None] = {}
         self._suppressed_call_title: str | None = None
@@ -318,6 +322,7 @@ class ProcessMonitor:
         self._suppress_untitled_call = call_title is None
         self._suppression_inactive_since = None
         self._suppressed_platforms[self._suppressed_platform_key or ""] = None
+        self._departed_platforms.pop(self._suppressed_platform_key or "", None)
 
     def _clear_prompt_suppression(self) -> None:
         self._suppressed_call_title = None
@@ -325,6 +330,15 @@ class ProcessMonitor:
         self._suppress_untitled_call = False
         self._suppression_inactive_since = None
         self._suppressed_platforms.clear()
+        self._departed_platforms.clear()
+
+    def _rearm_prompt(self, key: str) -> None:
+        self._suppressed_platforms.pop(key, None)
+        if key == (self._suppressed_platform_key or ""):
+            self._suppressed_call_title = None
+            self._suppressed_platform_key = None
+            self._suppress_untitled_call = False
+            self._suppression_inactive_since = None
 
     def _track_prompt_suppression(self, call_active: bool | None) -> None:
         """Only confirmed inactivity on the declined platform rearms its prompt."""
@@ -343,13 +357,8 @@ class ProcessMonitor:
             if key == (self._suppressed_platform_key or ""):
                 self._suppression_inactive_since = inactive_since
             if now - inactive_since >= self.call_end_grace_seconds:
-                del self._suppressed_platforms[key]
+                self._rearm_prompt(key)
                 logger.info("Declined %s call has ended; automatic prompts rearmed.", key or "meeting")
-                if key == (self._suppressed_platform_key or ""):
-                    self._suppressed_call_title = None
-                    self._suppressed_platform_key = None
-                    self._suppress_untitled_call = False
-                    self._suppression_inactive_since = None
 
     def should_suppress_automatic_prompt(self) -> bool:
         """Title changes and overlapping platforms do not undo a decline."""
@@ -411,7 +420,9 @@ class ProcessMonitor:
                     reason += f" and call window '{window}'"
                 return CallEvidence(True, window, reason)
             if not audio.active and not audio.failed_pids:
-                return CallEvidence(False)
+                return CallEvidence(False, fully_idle=(
+                    window_ok and not window and streams_ok and not streams
+                ))
             if not window_ok or (not streams_ok and (
                 audio.input_pids or audio.failed_pids or not platform.require_window_for_output
             )):
@@ -445,11 +456,48 @@ class ProcessMonitor:
 
     def release_platform(self) -> None:
         self.bound_platform = None
+        self._departed_platforms = {
+            key: count for key, count in self._departed_platforms.items()
+            if key in self._suppressed_platforms
+        }
+        self._restarted_platforms.clear()
+
+    def _track_platform_transitions(
+        self, evidence: list[tuple[CallPlatform, CallEvidence]]
+    ) -> None:
+        """Recognize a quick return only after a complete, successful idle read.
+
+        Keep the end grace for missing evidence. A fully observed departure
+        followed by two positive polls instead establishes a new call, even
+        with the same title. Unknown reads invalidate this shorter path.
+        """
+        self._restarted_platforms.clear()
+        observed = {platform.key for platform, _ in evidence}
+        for key in list(self._departed_platforms):
+            if key not in observed:
+                del self._departed_platforms[key]
+        for platform, row in evidence:
+            key = platform.key
+            tracked = platform is self.bound_platform or key in self._suppressed_platforms
+            if not tracked:
+                self._departed_platforms.pop(key, None)
+            elif row.active is False and row.fully_idle:
+                self._departed_platforms[key] = 0
+            elif row.active is True and key in self._departed_platforms:
+                self._departed_platforms[key] += 1
+                if self._departed_platforms[key] >= 2:
+                    del self._departed_platforms[key]
+                    self._restarted_platforms.add(key)
+                    self._rearm_prompt(key)
+                    logger.info("New %s call confirmed after a fully idle gap.", platform.display_name)
+            else:
+                self._departed_platforms.pop(key, None)
 
     def is_call_active(self) -> bool | None:
         """Return active, inactive, or unknown for the bound call (or candidates)."""
         platforms = (self.bound_platform,) if self.bound_platform else SUPPORTED_PLATFORMS
         evidence = [(platform, self._call_evidence(platform)) for platform in platforms]
+        self._track_platform_transitions(evidence)
         self._platform_activity = {platform.key: row.active for platform, row in evidence}
         positives = [(platform, row) for platform, row in evidence if row.active is True]
         if positives:
@@ -520,6 +568,10 @@ class ProcessMonitor:
         return self._track_call_end(active)
 
     def _track_call_end(self, active: bool | None) -> bool:
+        if self.bound_platform and self.bound_platform.key in self._restarted_platforms:
+            self._restarted_platforms.discard(self.bound_platform.key)
+            self._inactive_since = None
+            return True
         if active is not False:
             self._inactive_since = None
             return False

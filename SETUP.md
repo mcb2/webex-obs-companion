@@ -353,7 +353,16 @@ that only writes synthetic test files. Keep AppKit on the main thread.
    Webex/Teams evidence, then end Zoom. Confirm the title stays Zoom and Stop
    occurs after Zoom's grace period. Decline both synthetic Webex and Zoom calls;
    confirm title changes and platform switches do not reprompt either until its
-   own confirmed inactivity reaches the grace period.
+   own confirmed inactivity reaches the grace period. Also cancel a synthetic
+   Webex recording, keep its evidence active for two polls, then inject one fully
+   idle poll (supported Core Audio idle, no call window, no known UDP sockets)
+   followed by two active polls inside 15 seconds. Confirm the next call gets a
+   new recording and consent prompt, including when it has the same title.
+   Repeat without cancellation and confirm the original recording stops with
+   verification before the next starts. Partial evidence loss or failed reads
+   must not trigger this shortcut. In an authorized test call on macOS, repeat
+   the cancel/leave/rejoin sequence with Webex and verify actual detection and
+   separate recording files; a gap entirely between polls may be missed.
 4. **Failure and stop safety:** inject socket denial, AppleScript timeout, and
    Core Audio translation/property failures. Confirm unknown evidence does not
    start a session, stop an active session, or clear a decline. Restore sensors

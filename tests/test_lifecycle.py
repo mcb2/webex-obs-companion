@@ -314,3 +314,46 @@ def test_automatic_platform_binding_lasts_until_verified_stop(daemon, verified):
     daemon.ui.show_startup_prompt.assert_called_once()
     daemon.ui.show_manual_consent_prompt.assert_not_called()
     assert monitor.bound_platform is (None if verified else ZOOM)
+
+
+@pytest.mark.parametrize("cancel_first", [True, False])
+def test_quick_webex_transition_starts_new_recording_after_verified_stop(daemon, monkeypatch, cancel_first):
+    from webex_obs.process_monitor import CallEvidence, ProcessMonitor, WEBEX
+
+    monitor = ProcessMonitor(poll_interval=0, call_end_grace_seconds=15)
+    daemon.monitor = monitor
+    active = CallEvidence(True, "Synthetic meeting")
+    # With cancellation, also observe the original call still active: this
+    # must stay suppressed until a complete idle gap and confirmed return.
+    rows = iter([active, active] + ([active, active] if cancel_first else []) + [
+        CallEvidence(False, fully_idle=True), active, active, active, active,
+    ])
+    monkeypatch.setattr(monitor, "_call_evidence", lambda p:
+                        next(rows) if p is WEBEX else CallEvidence(False))
+    monkeypatch.setattr(monitor, "get_active_call_title", lambda: "Synthetic meeting")
+    monkeypatch.setattr("webex_obs.process_monitor.time.monotonic", lambda: 100.0)
+    events = []
+
+    def start(**kwargs):
+        events.append("start")
+        daemon.recorder.is_recording = True
+        return True
+
+    def stop():
+        events.append("stop")
+        daemon.recorder.is_recording = False
+        return []
+
+    def consent(**kwargs):
+        if daemon.ui.show_startup_prompt.call_count == 1:
+            return "cancel" if cancel_first else "ok"
+        daemon.request_shutdown()
+        return "ok"
+
+    daemon.recorder.start_recording.side_effect = start
+    daemon.recorder.stop_recording.side_effect = stop
+    daemon.ui.show_startup_prompt.side_effect = consent
+    daemon.start()
+    assert not daemon.failure
+    assert daemon.ui.show_startup_prompt.call_count == 2
+    assert events == ["start", "stop", "start", "stop"]

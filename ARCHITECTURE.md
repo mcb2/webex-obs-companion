@@ -139,6 +139,16 @@ until that platform's confirmed inactivity lasts the configurable grace period
 (15 seconds by default); unobserved/failed reads retain suppression. OBS
 preparation precedes slow window validation and title enrichment.
 
+A fully idle supported Core Audio read, successful absence of a call window,
+and successful absence of known UDP sockets together mark a possible departure
+for a bound or suppressed platform. Two consecutive positive polls after that
+gap establish a new call even within the end grace period, clearing only that
+platform's suppression. Bound recordings then complete through the existing
+verified-stop path before another automatic start. Unknown or partially inactive
+reads invalidate the shortcut; title changes alone never establish a departure.
+The shortcut requires supported Core Audio and an observed gap; transitions
+entirely between polls cannot be distinguished from a continuous call.
+
 `OBSRecordingBackend` delegates guarded idle restarts to `OBSMaintenance`.
 OBS stays open between recordings by default. The default 60-minute minimum
 uptime, two quiet minutes, safe local-hour windows, output-idle checks, and
