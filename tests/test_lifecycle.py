@@ -357,3 +357,64 @@ def test_quick_webex_transition_starts_new_recording_after_verified_stop(daemon,
     assert not daemon.failure
     assert daemon.ui.show_startup_prompt.call_count == 2
     assert events == ["start", "stop", "start", "stop"]
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_session_delete_override_is_queued_only_after_verified_stop_and_resets(daemon, verified):
+    from webex_obs.session import RecordingSession
+
+    daemon._active_session = RecordingSession.create("Synthetic meeting")
+    daemon.recorder.is_recording = True
+    daemon.toggle_delete_after_transcription(daemon._window_session_generation)
+    assert daemon._delete_after_transcription
+    assert daemon.config.retention_days == 14
+    daemon.config.recordings_dir.mkdir()
+    media = daemon.config.recordings_dir / "synthetic.mkv"
+    media.write_bytes(b"synthetic recording")
+    daemon.recorder.stop_verified = verified
+    daemon.recorder.stop_recording.return_value = [str(media)]
+    daemon._post_processing_worker.submit = Mock()
+    assert daemon._finish_recording() is verified
+    if not verified:
+        assert daemon._delete_after_transcription
+        assert media.exists()
+        daemon._post_processing_worker.submit.assert_not_called()
+        daemon.recorder.stop_verified = True
+        assert daemon._finish_recording()
+    job = daemon._post_processing_worker.submit.call_args.args[0]
+    assert job.retention_days == 0
+    assert not daemon._delete_after_transcription
+    assert daemon.config.retention_days == 14
+    daemon._active_session = RecordingSession.create("Synthetic next meeting")
+    next_media = daemon.config.recordings_dir / "synthetic-next.mkv"
+    next_media.write_bytes(b"synthetic next recording")
+    daemon.recorder.stop_recording.return_value = [str(next_media)]
+    assert daemon._finish_recording()
+    assert daemon._post_processing_worker.submit.call_args.args[0].retention_days == 14
+
+
+@pytest.mark.parametrize("blocked", ["stale", "idle", "stopping", "zero", "shutdown"])
+def test_session_delete_override_rejects_unavailable_or_stale_requests(daemon, blocked):
+    daemon._active_session = Mock()
+    daemon.recorder.is_recording = True
+    generation = daemon._window_session_generation
+    if blocked == "stale":
+        generation -= 1
+    elif blocked == "idle":
+        daemon._active_session = None
+    elif blocked == "stopping":
+        daemon._stop_pending = True
+    elif blocked == "zero":
+        daemon.config.retention_days = 0
+    else:
+        daemon.request_shutdown()
+    daemon.toggle_delete_after_transcription(generation)
+    assert not daemon._delete_after_transcription
+
+
+def test_session_delete_override_can_be_toggled_off(daemon):
+    daemon._active_session = Mock()
+    daemon.recorder.is_recording = True
+    daemon.toggle_delete_after_transcription(daemon._window_session_generation)
+    daemon.toggle_delete_after_transcription(daemon._window_session_generation)
+    assert not daemon._delete_after_transcription

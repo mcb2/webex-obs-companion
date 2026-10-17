@@ -156,7 +156,7 @@ class Settings(BaseSettings):
         default=14,
         ge=0,
         validation_alias=AliasChoices("RETENTION_DAYS", "retention_days"),
-        description="Days to keep successfully processed owned media; 0 prunes immediately after success"
+        description="Days to keep processed owned media; 0 deletes after successful transcription, before delivery"
     )
 
     # Polling settings

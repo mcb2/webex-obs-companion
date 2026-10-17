@@ -106,6 +106,6 @@ class PostProcessingWorker:
                             "uncertain" if record["state"] == "delivering" else
                             "delivered" if record["state"] == "delivered" else "failed"
                         ))
-                    logger.exception("Post-processing failed for job %s; files retained.", item.job_id)
+                    logger.exception("Post-processing failed for job %s; inspect retained transcript/media.", item.job_id)
             finally:
                 self._queue.task_done()

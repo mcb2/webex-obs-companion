@@ -170,7 +170,8 @@ state-directory file lock prevents overlapping consumers. `queued`/interrupted
 `transcribing` jobs resume, `ready` reuses the transcript, and `delivered` only
 finishes retention. A pre-request `delivering` checkpoint recovers as `uncertain`;
 network/server errors also require review, never an automatic resend. Failed and
-blocked jobs remain protected. Transcript publication uses fsync and atomic
+blocked jobs retain their transcripts and any media not already removed by
+zero-day retention. Transcript publication uses fsync and atomic
 replacement at a stable per-job path. Completed checkpoints retain delivery
 completion evidence while call monitoring continues. `Transcriber` uses MLX Whisper
 and optionally `NeuralDiarizer` (pyannote, with a rough acoustic fallback).
@@ -181,9 +182,17 @@ the synchronous request and closes on success, rejection, or exception. HTTP
 200/201 confirms API delivery; network/server errors remain uncertain. Notifications
 describe transcript delivery. My Agent forwarding and summary requests are manual
 user actions.
-`MediaCleaner` only enrolls media after successful transcription of the complete
-session and successful configured delivery (or disabled delivery). Queueing and
-processing revoke eligibility; failures, active segments and recovery segments
+`MediaCleaner` enrolls media after successful transcription of the complete
+session and, for positive retention values, successful configured delivery
+(or disabled delivery). Zero-day retention enrolls and deletes only the current
+job's exact media immediately after successful transcription, before delivery
+or the post-transcription shutdown check. Its durable `ready` checkpoint precedes
+deletion; recovery can deliver the saved transcript without the removed media.
+Delivery failures still retain the transcript and never automatically resend.
+The recording menu can override retention to zero for the active session only;
+the generation-checked toggle resets at completion/new start, survives unresolved
+stops, and is hidden when global retention is zero. Queueing and
+processing revoke eligibility; transcription failures, active segments and recovery segments
 stay protected. Partial transcripts can remain locally, but do not establish
 processing success or trigger delivery. They carry an incomplete banner,
 successful-part count, and ordered missing/failed input markers; silent successful
@@ -195,8 +204,10 @@ file in `.webex-obs-retention/`, with device, inode, size, modification and chan
 times; changed identities, symlinks, files outside the configured directory,
 legacy files and unrelated media are excluded. Cleanup at startup and after
 success uses media modification time and `RETENTION_DAYS` (default 14). Zero
-means delete eligible media immediately after success. Failed sessions are
-retained for manual recovery, including across daemon restarts.
+means delete the job's eligible media immediately after successful transcription,
+regardless of modification time. Failed transcription preserves media for manual
+recovery, including across daemon restarts; zero-day deletion is independent of
+delivery success.
 
 Package initialization disables Hugging Face, pyannote, and OpenTelemetry
 telemetry before dependency imports. Neural diarization uses pyannote.audio 4's

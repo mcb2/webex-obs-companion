@@ -142,3 +142,13 @@ def test_failed_index_write_preserves_processed_media(tmp_path):
     MediaCleaner.prune_old_recordings(tmp_path, 0)
     assert path.exists()
     assert not MediaCleaner._marker(path).exists()
+
+
+def test_immediate_session_cleanup_is_scoped_and_ignores_future_timestamp(tmp_path):
+    selected = media(tmp_path, "selected.mkv")
+    other = media(tmp_path, "other.mkv")
+    os.utime(selected, (4102444800, 4102444800))
+    MediaCleaner.mark_processed([str(selected), str(other)], tmp_path)
+    MediaCleaner.prune_old_recordings(tmp_path, 0, media_files=[str(selected)])
+    assert not selected.exists()
+    assert other.exists()

@@ -636,7 +636,7 @@ def test_failed_processing_never_becomes_retention_eligible_even_after_other_job
     job = PostProcessingJob(
         media_files=(str(failed_media),), meeting_title="Synthetic failed job", output_stem="synthetic",
         transcriber=transcriber, webex=Mock(), delivery_enabled=True,
-        recordings_dir=tmp_path, retention_days=0,
+        recordings_dir=tmp_path, retention_days=14,
     )
     if failure.endswith("exception"):
         with pytest.raises(RuntimeError):

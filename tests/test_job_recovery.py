@@ -16,7 +16,7 @@ def context(tmp_path, speech_modules, monkeypatch):
     from webex_obs.webex_client import WebexClient
     from webex_obs.cleaner import MediaCleaner
 
-    monkeypatch.setattr(MediaCleaner, "prune_old_recordings", Mock())
+    monkeypatch.setattr(MediaCleaner, "prune_old_recordings", Mock(wraps=MediaCleaner.prune_old_recordings))
     monkeypatch.setattr("webex_obs.transcriber.shutil.which", lambda _: "/synthetic/ffmpeg")
     media = tmp_path / "synthetic.mkv"
     media.write_bytes(b"synthetic media")
@@ -215,3 +215,93 @@ def test_partial_transcription_checkpoint_blocks_delivery_and_retention(context,
     app.deliver_transcript.assert_not_called()
     eligible.assert_not_called()
     assert all(recovered.job_id != job.job_id for recovered in store.recover(config))
+
+
+@pytest.mark.parametrize("outcome", ["delivered", "rejected", "uncertain", "exception"])
+def test_zero_retention_deletes_before_delivery_and_keeps_transcript(context, outcome):
+    from webex_obs.cleaner import MediaCleaner
+    app, store, original, config = context
+    job = replace(original, job_id="d" * 32, retention_days=0)
+    store.create(job)
+    other = job.recordings_dir / "other-processed.mkv"
+    other.write_bytes(b"synthetic other session")
+    MediaCleaner.mark_processed([str(other)], job.recordings_dir)
+
+    def send(transcript, *args, **kwargs):
+        assert Path(transcript).is_file()
+        assert not Path(job.media_files[0]).exists()
+        assert other.exists()
+        if outcome == "exception":
+            raise RuntimeError("synthetic delivery failure")
+        return outcome == "delivered"
+
+    app.deliver_transcript.side_effect = send
+    job.webex.last_delivery_outcome = outcome
+    if outcome == "exception":
+        with pytest.raises(RuntimeError):
+            app._process_post_processing_job(job)
+    else:
+        app._process_post_processing_job(job)
+    assert not Path(job.media_files[0]).exists()
+    assert Path(store.read(job.job_id)["transcript"]).exists()
+    assert other.exists()
+
+
+def test_zero_retention_ready_checkpoint_recovers_without_deleted_media(context):
+    app, store, original, config = context
+    job = replace(original, job_id="e" * 32, retention_days=0)
+    store.create(job)
+    transcript = Path(store.read(job.job_id)["transcript"])
+
+    def transcribe(*args, **kwargs):
+        transcript.parent.mkdir(exist_ok=True)
+        transcript.write_text("Synthetic complete transcript")
+        app._shutdown_event.set()
+        return transcript
+
+    job = replace(job, transcriber=Mock(transcribe_files=transcribe))
+    app._process_post_processing_job(job)
+    assert store.read(job.job_id)["state"] == "ready"
+    assert not Path(job.media_files[0]).exists()
+    app.deliver_transcript.assert_not_called()
+    app._shutdown_event.clear()
+    recovered = next(j for j in store.recover(config) if j.job_id == job.job_id)
+    assert recovered.retention_days == 0
+    app._process_post_processing_job(recovered)
+    assert store.read(job.job_id)["state"] == "complete"
+    app.deliver_transcript.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["partial", "exception", "changed-media"])
+def test_zero_retention_keeps_media_when_transcription_fails_or_identity_changes(context, failure):
+    app, store, original, _ = context
+    job = replace(original, job_id="f" * 32, retention_days=0)
+    store.create(job)
+    if failure == "changed-media":
+        Path(job.media_files[0]).write_bytes(b"synthetic replacement")
+    elif failure == "partial":
+        job = replace(job, transcriber=Mock(transcribe_files=Mock(return_value=None)))
+    else:
+        job = replace(job, transcriber=Mock(transcribe_files=Mock(side_effect=RuntimeError("synthetic"))))
+    if failure == "exception":
+        with pytest.raises(RuntimeError):
+            app._process_post_processing_job(job)
+    else:
+        app._process_post_processing_job(job)
+    assert Path(job.media_files[0]).exists()
+    app.deliver_transcript.assert_not_called()
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_zero_retention_applies_to_all_segments_with_delivery_disabled(context, complete):
+    app, store, original, _ = context
+    second = original.recordings_dir / "synthetic-second.mkv"
+    second.write_bytes(b"synthetic second segment")
+    job = replace(original, job_id="1" * 32, retention_days=0, delivery_enabled=False,
+                  media_files=(*original.media_files, str(second)))
+    store.create(job)
+    if not complete:
+        job = replace(job, transcriber=Mock(transcribe_files=Mock(return_value=None)))
+    app._process_post_processing_job(job)
+    assert all(Path(name).exists() is (not complete) for name in job.media_files)
+    assert store.read(job.job_id)["state"] == ("complete" if complete else "failed")

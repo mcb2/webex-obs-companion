@@ -316,11 +316,20 @@ the recording directory. Custom output plugins and missing file-split events
 may require manual recovery. Segment tracking does not survive restarting the
 companion itself.
 
-`RETENTION_DAYS=0` deletes only eligible media immediately after successful
-transcription and any enabled delivery. Positive values retain eligible media
+`RETENTION_DAYS=0` deletes that session's recordings immediately after complete
+successful transcription, before any enabled Webex delivery; delivery failure
+does not preserve these recordings. Transcripts are kept. The setup CLI and
+Settings → Files and detection explain this zero-day behavior.
+While recording with nonzero retention, select **Delete Recording After
+Transcription** in the status menu to apply it to the current session only.
+The checked option can be toggled off before stopping; it does not stop capture
+or change Settings, and resets for the next session. It is hidden while idle
+and whenever global retention is 0.
+
+Positive values retain eligible media after transcription and enabled delivery
 until its modification time is that many days old (default 14). Cleanup uses
 persisted exact file identities in `.webex-obs-retention/`, never a media-folder
-scan or matching filename pattern. Active, queued, failed, recoverable, unrelated,
+scan or matching filename pattern. Active, untranscribed, unrelated,
 and legacy media without success records stays on disk. Missing segments or
 partial transcription preserve all session media for manual recovery. Changing
 or deleting the retention index disables cleanup of those files; it does not

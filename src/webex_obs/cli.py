@@ -340,7 +340,10 @@ def setup():
     console.print("\n[bold]4. File & Storage Paths[/bold]")
     recordings_dir = Prompt.ask("Recordings Directory (applied to OBS before recording)", default=existing_recordings_dir)
     transcripts_dir = Prompt.ask("Transcripts Directory (where meeting text is stored)", default=existing_transcripts_dir)
-    retention_days = Prompt.ask("Retention Days (for auto-pruning raw recordings)", default=existing_retention_days)
+    retention_days = Prompt.ask(
+        "Retention Days (0 = delete recordings after successful transcription, before delivery)",
+        default=existing_retention_days,
+    )
     call_end_grace_seconds = Prompt.ask(
         "Seconds call evidence must be absent before recording stops",
         default=existing_call_end_grace_seconds,
