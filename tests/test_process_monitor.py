@@ -724,3 +724,136 @@ def test_sensor_warnings_are_throttled_independently_and_reset_after_recovery(ca
         assert monitor._read_sensor(ZOOM, "window", lambda: None) == (None, True)
         assert monitor._read_sensor(ZOOM, "window", fail) == (None, False)
         assert len(caplog.records) == 5
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+@pytest.mark.parametrize("same_title", [True, False])
+def test_quick_next_call_rearms_canceled_recording(platform, same_title):
+    monitor = ProcessMonitor(poll_interval=0, call_end_grace_seconds=15)
+    monitor.current_platform = platform
+    monitor.current_call_title = "Synthetic original"
+    monitor.suppress_current_call_prompt()
+    next_title = "Synthetic original" if same_title else "Synthetic next"
+    states = iter(["idle", "active", "active"])
+    state = "active"
+
+    def poll():
+        nonlocal state
+        state = next(states)
+
+    monitor.on_poll = poll
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(
+        available=True, input_pids=(123,) if p is platform and state == "active" else ()
+    )), patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p:
+                      next_title if p is platform and state == "active" else None), \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100), \
+         patch("webex_obs.process_monitor.time.sleep"):
+        assert monitor.wait_for_state_change()
+    assert monitor.current_platform is platform
+    assert monitor.current_call_title == next_title
+    assert not monitor.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("platform", [WEBEX, ZOOM, TEAMS])
+def test_quick_next_call_ends_bound_session_before_grace(platform):
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = platform
+    monitor.current_call_title = "Synthetic call"
+    monitor.bind_current_platform()
+    audio = _AudioMonitor(AudioActivity(available=True))
+    monitor.audio_monitor = audio
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p: audio.activity), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window, \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100):
+        assert not monitor.has_call_ended()
+        audio.activity = AudioActivity(available=True, input_pids=(123,))
+        window.return_value = "Synthetic call"
+        assert not monitor.has_call_ended()
+        assert monitor.has_call_ended()
+        monitor.release_platform()
+        assert not monitor._departed_platforms
+        assert not monitor._restarted_platforms
+
+
+@pytest.mark.parametrize("incomplete", [
+    "audio", "window", "sockets", "unsupported", "failed-audio",
+    "window-retained", "sockets-retained", "audio-retained",
+])
+@pytest.mark.parametrize("suppressed", [True, False])
+def test_partial_idle_or_sensor_failure_cannot_split_or_rearm_call(incomplete, suppressed):
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = WEBEX
+    monitor.current_call_title = "Synthetic original"
+    monitor.bind_current_platform()
+    if suppressed:
+        monitor.suppress_current_call_prompt()
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True)) as audio, \
+         patch.object(monitor, "_active_media_streams", return_value=[]) as streams, \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window, \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100):
+        if incomplete == "audio":
+            audio.side_effect = OSError("synthetic failure")
+        elif incomplete == "window":
+            window.side_effect = OSError("synthetic failure")
+        elif incomplete == "sockets":
+            streams.side_effect = OSError("synthetic failure")
+        elif incomplete == "unsupported":
+            audio.return_value = AudioActivity(available=False)
+        elif incomplete == "failed-audio":
+            audio.return_value = AudioActivity(available=True, failed_pids=(123,))
+        elif incomplete == "window-retained":
+            window.return_value = "Synthetic original"
+        elif incomplete == "sockets-retained":
+            streams.return_value = [("synthetic", 5004, True)]
+        else:
+            audio.return_value = AudioActivity(available=True, input_pids=(123,))
+        assert not monitor.has_call_ended()
+        audio.side_effect = window.side_effect = streams.side_effect = None
+        streams.return_value = []
+        audio.return_value = AudioActivity(available=True, input_pids=(123,))
+        window.return_value = "Synthetic different title"
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert monitor.should_suppress_automatic_prompt() is suppressed
+
+
+@pytest.mark.parametrize("interruption", ["unknown", "window-retained", "sockets-retained"])
+def test_short_gap_transition_requires_uninterrupted_confirmation(interruption):
+    from webex_obs.process_monitor import CallEvidence
+
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    monitor.suppress_current_call_prompt("Synthetic call")
+    interrupted = CallEvidence(None if interruption == "unknown" else False)
+    rows = [CallEvidence(False, fully_idle=True), CallEvidence(True), interrupted,
+            CallEvidence(True), CallEvidence(True)]
+    with patch.object(monitor, "_call_evidence", side_effect=rows), \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100):
+        for _ in rows:
+            assert not monitor.has_call_ended()
+            assert monitor.should_suppress_automatic_prompt()
+
+
+def test_quick_transition_only_rearms_its_own_platform():
+    from webex_obs.process_monitor import CallEvidence
+
+    monitor = ProcessMonitor()
+    for platform in (WEBEX, ZOOM):
+        monitor.current_platform = platform
+        monitor.suppress_current_call_prompt("Synthetic call")
+    state = CallEvidence(False, fully_idle=True)
+    with patch.object(monitor, "_call_evidence", side_effect=lambda p:
+                      state if p is WEBEX else CallEvidence(True)):
+        monitor.is_call_active()
+        monitor._track_prompt_suppression(True)
+        state = CallEvidence(True, "Synthetic next")
+        monitor.is_call_active()
+        assert "webex" in monitor._suppressed_platforms
+        monitor.is_call_active()
+    assert monitor.current_platform is WEBEX
+    assert not monitor.should_suppress_automatic_prompt()
+    monitor.current_platform = ZOOM
+    assert monitor.should_suppress_automatic_prompt()

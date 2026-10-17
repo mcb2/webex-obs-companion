@@ -44,7 +44,17 @@ has verifiably stopped; an overlapping call cannot extend or relabel the session
 Declining or manually stopping a detected call suppresses that platform until
 its evidence has been absent for the full grace period. Title changes and
 activity on another platform do not erase the decline. Dynamic OBS video-window
-binding remains Webex-specific. See the [macOS manual-check plan](SETUP.md#macos-manual-check-plan).
+binding remains Webex-specific.
+
+For back-to-back calls, a successful poll showing no Core Audio streams, no call
+window, and no known UDP media sockets, followed by two positive polls on that
+platform, also establishes a new call. This clears the previous call's decline
+or manual-stop suppression even inside the grace period. An active recording
+is stopped and verified before the new call starts its own recording and consent
+prompt. Failed sensor reads, unsupported Core Audio, title changes alone, and
+partial evidence loss do not enable this shortcut. A transition entirely between
+polls can still be missed; use manual Start if the new call is not detected.
+See the [macOS manual-check plan](SETUP.md#macos-manual-check-plan).
 The `Webex-Video` scene needs a macOS Screen Capture source named
 `Webex-Meeting-Window` configured for Window Capture. Switching its window
 while recording keeps the same OBS recording active.
