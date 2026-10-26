@@ -398,3 +398,25 @@ The mocked suite validates these state transitions without OBS or model inferenc
 Actual app window naming, Core Audio behavior, transport fallback, permissions,
 and AppKit presentation still require this manual validation; synthetic sensor
 injection cannot establish the clients' real-device behavior.
+
+### Diagnostic call-transition manual checks
+
+Finish any active recording before relaunching with
+`uv run --locked --no-sync webex-obs start --detection-diagnostics`.
+Use synthetic test calls and the normal consent process.
+
+- Verify the diagnostic confirmation has Yes / No / Not sure; let one expire
+  after 30 seconds and close another. Neither should add a confirmation record.
+  Confirm detection/recording continues while the diagnostic window is open and
+  normal consent and stop controls still work.
+- Mark starts and ends from the status menu while idle and recording. Test Just
+  now, a time 45 minutes ago, invalid input, and a time older than 60 minutes.
+  Invalid input should keep the dialog open. Cancel should add no annotation.
+- Leave a marker unreported, then mark a later event. No missing event should be
+  inferred. Confirm marker event times differ from submission times for late entries.
+- Leave and immediately join another Webex test call, including one with the
+  same title. Correlate manual markers with the JSONL sensor history, automatic
+  detection IDs, and confirmations. Recording boundaries remain controlled by
+  the existing detector, never by diagnostic answers.
+- Relaunch without the switch; confirm diagnostic menu items and popups disappear.
+  Diagnostic logs remain local under LOG_DIR. See README for fields and rotation.

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class WebexOBSDaemon:
-    def __init__(self, config: Config | None = None, backend: RecordingBackend | None = None, ui=None):
+    def __init__(self, config: Config | None = None, backend: RecordingBackend | None = None, ui=None, *, detection_diagnostics: bool = False):
         self.config = config or settings
         self.recorder = backend or create_recording_backend(self.config)
         # UI is injected so the lifecycle can run without AppKit (including tests).
@@ -41,6 +41,12 @@ class WebexOBSDaemon:
             poll_interval=self.config.poll_interval,
             call_end_grace_seconds=self.config.call_end_grace_seconds,
         )
+        self.diagnostics = None
+        if detection_diagnostics:
+            from .detection_diagnostics import DetectionDiagnostics
+
+            self.diagnostics = DetectionDiagnostics(self.config.log_dir)
+            self.monitor.diagnostics = self.diagnostics
         self.transcriber = Transcriber(
             model_name=self.config.whisper_model,
             transcripts_dir=self.config.transcripts_dir,
@@ -107,6 +113,15 @@ class WebexOBSDaemon:
         self.request_shutdown()
 
     def _pulse(self) -> None:
+        if getattr(self, "diagnostics", None):
+            self.diagnostics.record(
+                "lifecycle", state=self.lifecycle_state,
+                recording=self.recorder.is_recording is True,
+                stop_pending=self._stop_pending,
+                manual_start_pending=self._manual_start_event.is_set(),
+                manual_stop_pending=self._manual_stop_event.is_set(),
+                session_generation=self._window_session_generation,
+            )
         if self._runtime is not None:
             self._runtime.report(self.lifecycle_state, self.config.poll_interval)
 
@@ -128,6 +143,8 @@ class WebexOBSDaemon:
             if self._runtime is not None:
                 self._runtime.acquire()
                 acquired = True
+            if getattr(self, "diagnostics", None):
+                self.diagnostics.start()
             self._pulse()
             self._run_lifecycle()
             if not self._shutdown_event.is_set():
@@ -176,6 +193,8 @@ class WebexOBSDaemon:
                 self.lifecycle_state = "failed"
                 logger.exception(self.failure)
             finally:
+                if getattr(self, "diagnostics", None):
+                    self.diagnostics.close()
                 self._stopped_event.set()
             # Retain ownership until process exit, including any inference/network
             # worker still running after the bounded wait.
@@ -822,14 +841,14 @@ class WebexOBSDaemon:
             self.request_shutdown()
 
 
-def main():
+def main(*, detection_diagnostics: bool = False):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True,
     )
-    daemon = WebexOBSDaemon()
+    daemon = WebexOBSDaemon(detection_diagnostics=detection_diagnostics)
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: daemon.request_shutdown())
     if sys.platform == "darwin":
@@ -856,4 +875,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--detection-diagnostics", action="store_true")
+    main(detection_diagnostics=parser.parse_args().detection_diagnostics)

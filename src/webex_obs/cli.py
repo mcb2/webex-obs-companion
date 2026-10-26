@@ -439,15 +439,19 @@ def diagnose_calls():
 
 
 @app.command()
-def run():
+def run(
+    detection_diagnostics: bool = typer.Option(
+        False, "--detection-diagnostics", help="Log call evidence and enable diagnostic confirmation/markers."
+    ),
+):
     """Run the companion daemon in the foreground (interactive / debug mode)."""
     _check_ffmpeg()
     from webex_obs.daemon import main as daemon_main
-    daemon_main()
+    daemon_main(detection_diagnostics=detection_diagnostics)
 
 
 @app.command()
-def install_service():
+def install_service(detection_diagnostics: bool = False):
     """Install and load the background daemon as a macOS LaunchAgent."""
     _check_ffmpeg()
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -475,6 +479,8 @@ def install_service():
         "StandardOutPath": str(stdout_log),
         "StandardErrorPath": str(stderr_log),
     }
+    if detection_diagnostics:
+        plist_content["ProgramArguments"].append("--detection-diagnostics")
     with PLIST_PATH.open("wb") as f:
         plistlib.dump(plist_content, f)
 
@@ -489,12 +495,22 @@ def install_service():
 
 
 @app.command()
-def start():
+def start(detection_diagnostics: bool = False):
     """Start the background LaunchAgent service."""
     if not PLIST_PATH.exists():
         console.print("[yellow]Service not installed yet. Running install-service first...[/yellow]")
-        install_service()
+        install_service(detection_diagnostics=detection_diagnostics)
         return
+
+    with PLIST_PATH.open("rb") as f:
+        plist_content = plistlib.load(f)
+    arguments = [arg for arg in plist_content["ProgramArguments"] if arg != "--detection-diagnostics"]
+    if detection_diagnostics:
+        arguments.append("--detection-diagnostics")
+    if arguments != plist_content["ProgramArguments"]:
+        plist_content["ProgramArguments"] = arguments
+        with PLIST_PATH.open("wb") as f:
+            plistlib.dump(plist_content, f)
 
     subprocess.run(["launchctl", "unload", str(PLIST_PATH)], capture_output=True)
     res = subprocess.run(["launchctl", "load", str(PLIST_PATH)], capture_output=True, text=True)

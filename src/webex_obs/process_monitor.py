@@ -117,6 +117,7 @@ class ProcessMonitor:
         self.on_possible_evidence = None
         self.on_idle = None
         self.on_poll = None
+        self.diagnostics = None
 
     @property
     def current_platform_name(self) -> str | None:
@@ -161,10 +162,15 @@ class ProcessMonitor:
             try:
                 pname = (proc.info.get("name") or "").lower()
                 pexe = (proc.info.get("exe") or "").lower()
+                udp_connections = []
                 for connection in proc.net_connections(kind="inet"):
                     if connection.type != socket.SOCK_DGRAM:
                         continue
                     remote_port = self._remote_port(connection)
+                    if self.diagnostics:
+                        local = getattr(connection, "laddr", None)
+                        local_port = getattr(local, "port", 0) if local else 0
+                        udp_connections.append(dict(local_port=local_port, remote_port=remote_port))
                     if not platform.uses_udp_port(remote_port):
                         continue
                     is_media_process = any(
@@ -172,6 +178,9 @@ class ProcessMonitor:
                         for target in platform.media_process_names
                     )
                     streams.append((pname or pexe, remote_port, is_media_process))
+                if self.diagnostics:
+                    self.diagnostics.record("udp_connections", platform=platform.key,
+                                            pid=proc.info.get("pid"), connections=udp_connections)
             except (psutil.Error, OSError):
                 failed = True
         if failed and not streams:
@@ -334,6 +343,8 @@ class ProcessMonitor:
 
     def _rearm_prompt(self, key: str) -> None:
         self._suppressed_platforms.pop(key, None)
+        if self.diagnostics:
+            self.diagnostics.ended(key)
         if key == (self._suppressed_platform_key or ""):
             self._suppressed_call_title = None
             self._suppressed_platform_key = None
@@ -369,6 +380,7 @@ class ProcessMonitor:
         self, platform: CallPlatform, sensor: str, read: Callable[[], T]
     ) -> tuple[T | None, bool]:
         key = (platform.key, sensor)
+        started = time.monotonic() if self.diagnostics else 0.0
         try:
             value = read()
         except (OSError, psutil.Error, subprocess.SubprocessError) as exc:
@@ -377,9 +389,13 @@ class ProcessMonitor:
             if last_warning is None or now - last_warning >= 60.0:
                 logger.warning("%s %s sensor failed: %s", platform.display_name, sensor, exc)
                 self._sensor_warning_times[key] = now
+            if self.diagnostics:
+                self.diagnostics.sensor(platform.key, sensor, None, False, time.monotonic() - started)
             return None, False
         # A new outage after a successful read warrants an immediate warning.
         self._sensor_warning_times.pop(key, None)
+        if self.diagnostics:
+            self.diagnostics.sensor(platform.key, sensor, value, True, time.monotonic() - started)
         return value, True
 
     def _call_evidence(self, platform: CallPlatform) -> CallEvidence:
@@ -489,6 +505,8 @@ class ProcessMonitor:
                     del self._departed_platforms[key]
                     self._restarted_platforms.add(key)
                     self._rearm_prompt(key)
+                    if self.diagnostics:
+                        self.diagnostics.detected(key, restart=True)
                     logger.info("New %s call confirmed after a fully idle gap.", platform.display_name)
             else:
                 self._departed_platforms.pop(key, None)
@@ -498,6 +516,15 @@ class ProcessMonitor:
         platforms = (self.bound_platform,) if self.bound_platform else SUPPORTED_PLATFORMS
         evidence = [(platform, self._call_evidence(platform)) for platform in platforms]
         self._track_platform_transitions(evidence)
+        if self.diagnostics:
+            self.diagnostics.record(
+                "poll", bound=self.bound_platform.key if self.bound_platform else None,
+                evidence=[dict(platform=p.key, active=r.active, fully_idle=r.fully_idle)
+                          for p, r in evidence],
+                grace_started=self._inactive_since, grace_seconds=self.call_end_grace_seconds,
+                start_count=self._active_poll_count, departed=dict(self._departed_platforms),
+                suppressed=dict(self._suppressed_platforms),
+            )
         self._platform_activity = {platform.key: row.active for platform, row in evidence}
         positives = [(platform, row) for platform, row in evidence if row.active is True]
         if positives:
@@ -586,12 +613,18 @@ class ProcessMonitor:
                 platform_name,
                 self.call_end_grace_seconds,
             )
-            return self.call_end_grace_seconds == 0
+            if self.call_end_grace_seconds == 0:
+                if self.diagnostics:
+                    self.diagnostics.ended(self.current_platform.key if self.current_platform else "unknown")
+                return True
+            return False
 
         if now - self._inactive_since < self.call_end_grace_seconds:
             return False
 
         self._inactive_since = None
+        if self.diagnostics:
+            self.diagnostics.ended(self.current_platform.key if self.current_platform else "unknown")
         logger.info("%s call / meeting media stream has ended.", platform_name)
         return True
 
@@ -623,6 +656,8 @@ class ProcessMonitor:
                 self._active_poll_count += 1
                 if self._active_poll_count >= 2:
                     self.is_in_meeting = True
+                    if self.diagnostics:
+                        self.diagnostics.detected(key or "unknown")
                     self._active_poll_count = 0
                     self._idle_poll_count = 0
                     self._inactive_since = None

@@ -4,6 +4,7 @@ import unittest
 import threading
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -857,3 +858,65 @@ def test_quick_transition_only_rearms_its_own_platform():
     assert not monitor.should_suppress_automatic_prompt()
     monitor.current_platform = ZOOM
     assert monitor.should_suppress_automatic_prompt()
+
+
+def test_diagnostics_observes_existing_probes_without_changing_detection():
+    from unittest.mock import Mock
+    from webex_obs.detection_diagnostics import DetectionDiagnostics
+
+    monitor = ProcessMonitor(poll_interval=0)
+    monitor.diagnostics = DetectionDiagnostics(Path("/unused"))
+    monitor.diagnostics.record = Mock()
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))) as audio, \
+         patch.object(monitor, "_active_media_streams", return_value=[]) as sockets, \
+         patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic meeting") as window:
+        assert monitor.wait_for_state_change()
+        assert audio.call_count == sockets.call_count == window.call_count == 6
+    event = monitor.diagnostics.prompts.get_nowait()
+    assert event["platform"] == "webex"
+    assert monitor.is_in_meeting
+
+
+def test_diagnostics_quick_restart_only_prompts_once_before_next_session():
+    from unittest.mock import Mock
+    from webex_obs.detection_diagnostics import DetectionDiagnostics
+    from webex_obs.process_monitor import CallEvidence
+
+    monitor = ProcessMonitor()
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    monitor.diagnostics = DetectionDiagnostics(Path("/unused"))
+    monitor.diagnostics.record = Mock()
+    monitor.diagnostics.detected("webex")
+    monitor.diagnostics.prompts.get_nowait()
+    with patch.object(monitor, "_call_evidence", side_effect=[
+        CallEvidence(False, fully_idle=True), CallEvidence(True), CallEvidence(True),
+    ]):
+        assert not monitor.has_call_ended()
+        assert not monitor.has_call_ended()
+        assert monitor.has_call_ended()
+    event = monitor.diagnostics.prompts.get_nowait()
+    assert event["restart"] is True
+    monitor.diagnostics.detected("webex")
+    assert monitor.diagnostics.prompts.empty()
+
+
+def test_diagnostics_keeps_unrecognized_udp_port_changes_without_addresses():
+    from unittest.mock import Mock
+
+    monitor = ProcessMonitor()
+    monitor.diagnostics = Mock()
+    connection = types.SimpleNamespace(
+        type=socket.SOCK_DGRAM,
+        laddr=types.SimpleNamespace(ip="192.0.2.1", port=54321),
+        raddr=types.SimpleNamespace(ip="192.0.2.2", port=12345),
+    )
+    process = _Process("Synthetic private process", 12345)
+    process.net_connections = Mock(return_value=[connection])
+    with patch.object(monitor, "_matching_processes", return_value=[process]):
+        assert monitor._active_media_streams(WEBEX) == []
+    monitor.diagnostics.record.assert_called_once_with(
+        "udp_connections", platform="webex", pid=123,
+        connections=[{"local_port": 54321, "remote_port": 12345}],
+    )
+    process.net_connections.assert_called_once_with(kind="inet")
