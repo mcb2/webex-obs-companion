@@ -387,3 +387,87 @@ def test_menu_action_captures_session_generation_before_background_dispatch():
     with patch("webex_obs.macos_ui.threading.Thread") as thread:
         target.recordingAction_(sender)
     assert thread.call_args.kwargs["args"] == ("delete_after_transcription", 7)
+
+
+@pytest.mark.parametrize("response", ["yes", "no", "not_sure", None, "late"])
+def test_nonmodal_diagnostic_response_and_timeout(response):
+    import queue
+
+    daemon = Mock()
+    daemon._shutdown_event = threading.Event()
+    daemon.diagnostics.prompts = queue.Queue()
+    event = {"platform": "webex", "event_id": "synthetic", "detected_at": 100}
+    daemon.diagnostics.prompts.put(event)
+    ui = MacOSUI(daemon)
+    ui.target = Mock()
+    appkit = Mock()
+    appkit.NSApp.modalWindow.return_value = None
+    # Mock bitmask constants as real ints.
+    appkit.NSWindowStyleMaskTitled = 1
+    appkit.NSWindowStyleMaskClosable = 2
+    with patch("webex_obs.macos_ui.AppKit", appkit), \
+         patch("webex_obs.macos_ui.time.monotonic", return_value=100) as clock:
+        ui._tick_diagnostics()
+        assert len(ui._diagnostic_windows) == 1
+        assert ui._diagnostic_windows[0][1] == 130
+        callbacks = list(ui._diagnostic_actions.values())
+        if response is None:
+            clock.return_value = 130
+            ui._tick_diagnostics()
+        elif response == "late":
+            clock.return_value = 130
+            callbacks[0]()
+        else:
+            callbacks[{"yes": 0, "no": 1, "not_sure": 2}[response]]()
+        if response in {None, "late"}:
+            daemon.diagnostics.answer.assert_not_called()
+        else:
+            daemon.diagnostics.answer.assert_called_once_with(event, response)
+        assert not ui._diagnostic_windows
+        assert not ui._diagnostic_actions
+        appkit.NSApp.runModalForWindow_.assert_not_called()
+        appkit.NSApp.stopModalWithCode_.assert_not_called()
+        daemon.recorder.assert_not_called()
+
+
+def test_manual_diagnostic_marker_validates_time_before_closing():
+    daemon = Mock()
+    daemon._shutdown_event = threading.Event()
+    ui = MacOSUI(daemon)
+    ui.target = Mock()
+    appkit = Mock()
+    appkit.NSWindowStyleMaskTitled = 1
+    appkit.NSWindowStyleMaskClosable = 2
+    field = appkit.NSTextField.alloc.return_value.initWithFrame_.return_value
+    with patch("webex_obs.macos_ui.AppKit", appkit):
+        ui.show_diagnostic_marker("start")
+        callbacks = list(ui._diagnostic_actions.values())
+        field.stringValue.return_value = "invalid"
+        callbacks[1]()
+        daemon.diagnostics.marker.assert_not_called()
+        assert len(ui._diagnostic_windows) == 1
+        callbacks[0]()
+        assert daemon.diagnostics.marker.call_args.args[0] == "start"
+        assert not ui._diagnostic_windows
+        daemon._handle_control_choice.assert_not_called()
+
+
+def test_diagnostic_prompt_waits_for_consent_and_closes_on_shutdown():
+    import queue
+
+    daemon = Mock()
+    daemon._shutdown_event = threading.Event()
+    daemon.diagnostics.prompts = queue.Queue()
+    daemon.diagnostics.prompts.put({"platform": "webex", "detected_at": 100})
+    ui = MacOSUI(daemon)
+    ui._control_modal_active = True
+    with patch("webex_obs.macos_ui.AppKit", Mock()):
+        ui._tick_diagnostics()
+        assert not daemon.diagnostics.prompts.empty()
+        assert not ui._diagnostic_windows
+        window = Mock()
+        ui._diagnostic_windows.append((window, 1000, []))
+        daemon._shutdown_event.set()
+        ui._tick_diagnostics()
+        window.close.assert_called_once()
+        daemon.diagnostics.answer.assert_not_called()

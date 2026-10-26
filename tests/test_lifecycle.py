@@ -181,7 +181,7 @@ def test_sigterm_uses_shutdown_path_without_operating_service(speech_modules, mo
 
     app.request_shutdown.side_effect = shutdown_request
     app.start_background.side_effect = lambda: handlers[signal.SIGTERM](signal.SIGTERM, None)
-    monkeypatch.setattr(module, "WebexOBSDaemon", lambda: app)
+    monkeypatch.setattr(module, "WebexOBSDaemon", lambda **kwargs: app)
     monkeypatch.setattr(module.signal, "signal", lambda number, handler: handlers.update({number: handler}))
     monkeypatch.setattr(module.sys, "platform", "synthetic-headless")
     monkeypatch.setattr(module.logging, "basicConfig", Mock())
@@ -197,7 +197,7 @@ def test_main_exits_nonzero_after_shutdown_deadline(speech_modules, monkeypatch)
     app._stopped_event.wait.return_value = False
     app._shutdown_event.is_set.return_value = True
     app.shutdown.return_value = False
-    monkeypatch.setattr(module, "WebexOBSDaemon", lambda: app)
+    monkeypatch.setattr(module, "WebexOBSDaemon", lambda **kwargs: app)
     monkeypatch.setattr(module.signal, "signal", Mock())
     monkeypatch.setattr(module.sys, "platform", "synthetic-headless")
     monkeypatch.setattr(module.logging, "basicConfig", Mock())
@@ -418,3 +418,18 @@ def test_session_delete_override_can_be_toggled_off(daemon):
     daemon.toggle_delete_after_transcription(daemon._window_session_generation)
     daemon.toggle_delete_after_transcription(daemon._window_session_generation)
     assert not daemon._delete_after_transcription
+
+
+def test_diagnostic_writer_is_closed_on_lifecycle_shutdown(daemon):
+    from webex_obs.detection_diagnostics import DetectionDiagnostics
+
+    daemon.diagnostics = DetectionDiagnostics(daemon.config.log_dir)
+    daemon._run_lifecycle = daemon.request_shutdown
+    daemon.start()
+    assert daemon._stopped_event.is_set()
+    assert not daemon.diagnostics._worker.is_alive()
+    assert daemon.diagnostics.path.exists()
+    records = [json.loads(line) for line in daemon.diagnostics.path.read_text().splitlines()]
+    assert records[0]["kind"] == "enabled"
+    assert records[-1]["state"] == "stopped"
+    daemon.recorder.start_recording.assert_not_called()

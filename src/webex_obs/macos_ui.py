@@ -8,6 +8,7 @@ import queue
 import threading
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 import AppKit
@@ -36,6 +37,14 @@ class _MenuTarget(Foundation.NSObject):
             args=(str(sender.representedObject()), generation), name="recording-menu-action", daemon=True,
         ).start()
 
+    def diagnosticMarker_(self, sender):
+        self.ui.show_diagnostic_marker(str(sender.representedObject()))
+
+    def diagnosticChoice_(self, sender):
+        callback = self.ui._diagnostic_actions.get(sender.tag())
+        if callback:
+            callback()
+
     def menuNeedsUpdate_(self, menu):
         self.ui._update_recording_menu()
 
@@ -49,6 +58,7 @@ class _MenuTarget(Foundation.NSObject):
         self.ui.close_settings()
 
     def windowWillClose_(self, notification):
+        self.ui._forget_diagnostic_window(notification.object())
         if notification.object() == self.ui._settings_window:
             self.ui._clear_settings()
 
@@ -110,6 +120,9 @@ class MacOSUI:
         self._settings_inputs = {}
         self._settings_panes = []
         self._sidebar_source = None
+        self._diagnostic_windows = []
+        self._diagnostic_actions = {}
+        self._diagnostic_tag = 0
 
     @staticmethod
     def _status_image(badge_symbol=None):
@@ -191,6 +204,10 @@ class MacOSUI:
             item = self._add(menu, label, "recordingAction:")
             item.setRepresentedObject_(choice)
             self.recording_items[choice] = item
+        if self.daemon.diagnostics is not None:
+            for label, kind in (("Diagnostic: New call started…", "start"),
+                                ("Diagnostic: Call ended…", "end")):
+                self._add(menu, label, "diagnosticMarker:").setRepresentedObject_(kind)
         self._add(menu, "Settings…", "settings:")
         self.quit_item = self._add(menu, "Quit (stop service)", "quit:")
         self._update_recording_menu()
@@ -211,6 +228,7 @@ class MacOSUI:
         return item
 
     def _tick(self):
+        self._tick_diagnostics()
         if self.daemon._shutdown_event.is_set():
             self._tick_shutdown()
         try:
@@ -337,6 +355,123 @@ class MacOSUI:
         alert.window().setTitle_(title)
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         return alert.runModal() - AppKit.NSAlertFirstButtonReturn
+
+    def _forget_diagnostic_window(self, window):
+        for entry in list(self._diagnostic_windows):
+            if entry[0] == window:
+                self._diagnostic_windows.remove(entry)
+                for tag in entry[2]:
+                    self._diagnostic_actions.pop(tag, None)
+
+    def _close_diagnostic_window(self, window):
+        self._forget_diagnostic_window(window)
+        window.close()
+
+    def _diagnostic_window(self, heading, detail, *, timeout=None):
+        # Nonmodal: lifecycle polling and recording controls remain independent.
+        window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (590, 250)),
+            AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable,
+            AppKit.NSBackingStoreBuffered, False,
+        )
+        window.setReleasedWhenClosed_(False)
+        window.setTitle_(heading)
+        window.setDelegate_(self.target)
+        window.center()
+        label = AppKit.NSTextField.labelWithString_(detail)
+        label.setFrame_(((20, 125), (550, 105)))
+        label.setUsesSingleLineMode_(False)
+        label.cell().setWraps_(True)
+        window.contentView().addSubview_(label)
+        self._diagnostic_windows.append(
+            (window, time.monotonic() + timeout if timeout else None, [])
+        )
+        return window
+
+    def _diagnostic_button(self, window, label, x, callback):
+        self._diagnostic_tag += 1
+        tag = self._diagnostic_tag
+        self._diagnostic_actions[tag] = callback
+        next(entry for entry in self._diagnostic_windows if entry[0] == window)[2].append(tag)
+        button = AppKit.NSButton.alloc().initWithFrame_(((x, 20), (170, 32)))
+        button.setTitle_(label)
+        button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        button.setTarget_(self.target)
+        button.setAction_("diagnosticChoice:")
+        button.setTag_(tag)
+        window.contentView().addSubview_(button)
+
+    def _tick_diagnostics(self):
+        diagnostics = getattr(self.daemon, "diagnostics", None)
+        if diagnostics is None:
+            return
+        stopping = self.daemon._shutdown_event.is_set()
+        for window, deadline, _ in list(self._diagnostic_windows):
+            if stopping or (deadline is not None and time.monotonic() >= deadline):
+                self._close_diagnostic_window(window)
+        if stopping or self._control_modal_active or AppKit.NSApp.modalWindow():
+            return
+        try:
+            event = diagnostics.prompts.get_nowait()
+        except queue.Empty:
+            return
+        detected = datetime.fromtimestamp(event["detected_at"]).strftime("%H:%M:%S")
+        window = self._diagnostic_window(
+            "Call detection diagnostics",
+            f"Did a new {event['platform']} call start around {detected}?\n\n"
+            "This only annotates the diagnostic log; recording is unchanged.\n"
+            "Closes after 30 seconds. No response is assumed if unanswered.",
+            timeout=30,
+        )
+
+        def answer(response):
+            # Reject a queued click arriving after expiry, before the next tick.
+            entry = next((e for e in self._diagnostic_windows if e[0] == window), None)
+            if entry and time.monotonic() < entry[1]:
+                diagnostics.answer(event, response)
+            self._close_diagnostic_window(window)
+
+        for index, (label, response) in enumerate((("Yes", "yes"), ("No", "no"),
+                                                  ("Not sure", "not_sure"))):
+            self._diagnostic_button(window, label, 20 + index * 190,
+                                    lambda response=response: answer(response))
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
+
+    def show_diagnostic_marker(self, kind):
+        diagnostics = self.daemon.diagnostics
+        if diagnostics is None or self.daemon._shutdown_event.is_set():
+            return
+        window = self._diagnostic_window(
+            "New call started" if kind == "start" else "Call ended",
+            "When did it happen? Choose Just now, or enter a local 24-hour time.\n"
+            "Use HH:MM or HH:MM:SS, within the past 60 minutes.\n"
+            "Missed markers are OK. This does not change recording or detection.",
+        )
+        field = AppKit.NSTextField.alloc().initWithFrame_(((20, 90), (180, 26)))
+        field.setStringValue_(datetime.now().strftime("%H:%M:%S"))
+        window.contentView().addSubview_(field)
+        error = AppKit.NSTextField.labelWithString_("")
+        error.setFrame_(((20, 55), (550, 30)))
+        window.contentView().addSubview_(error)
+
+        def save(just_now):
+            from .detection_diagnostics import resolve_event_time
+
+            now = datetime.now().astimezone()
+            try:
+                occurred = now if just_now else resolve_event_time(str(field.stringValue()), now)
+                diagnostics.marker(kind, occurred)
+            except ValueError as exc:
+                error.setStringValue_(str(exc))
+                return
+            self._close_diagnostic_window(window)
+
+        self._diagnostic_button(window, "Just now", 20, lambda: save(True))
+        self._diagnostic_button(window, "Save entered time", 210, lambda: save(False))
+        self._diagnostic_button(window, "Cancel", 400, lambda: self._close_diagnostic_window(window))
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
 
     def show_startup_prompt(self, meeting_title="Webex Session"):
         spec = startup_dialog(meeting_title)

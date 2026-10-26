@@ -149,6 +149,17 @@ reads invalidate the shortcut; title changes alone never establish a departure.
 The shortcut requires supported Core Audio and an observed gap; transitions
 entirely between polls cannot be distinguished from a continuous call.
 
+Opt-in `--detection-diagnostics` observes existing sensor results without changing
+classification or recording state. `DetectionDiagnostics` queues sanitized JSONL
+records to a bounded background writer with private rotating files. Detector
+start/end hooks deduplicate repeated suppressed candidates and identify quick-gap
+restarts. AppKit drains a separate prompt queue into nonmodal panels, after any
+recording-control modal; each automatic panel expires after 30 seconds without
+an inferred answer. Start/end menu markers accept a local event time within one
+hour or Just now, independently of detector state. Late annotations correlate
+with previously written evidence; missing markers carry no meaning. Shutdown
+closes panels without answers and gives the log writer a bounded drain period.
+
 `OBSRecordingBackend` delegates guarded idle restarts to `OBSMaintenance`.
 OBS stays open between recordings by default. The default 60-minute minimum
 uptime, two quiet minutes, safe local-hour windows, output-idle checks, and

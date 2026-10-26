@@ -275,3 +275,30 @@ def test_setup_does_not_overwrite_invalid_existing_configuration(tmp_path, monke
         cli.setup()
     assert path.read_text() == original
     assert "synthetic secret" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_start_explicitly_sets_diagnostic_mode_without_changing_other_service_fields(tmp_path, monkeypatch, enabled):
+    path = tmp_path / "agent.plist"
+    arguments = ["python", "-u", "-m", "webex_obs.daemon", "--detection-diagnostics"]
+    original = {"ProgramArguments": arguments, "KeepAlive": True, "WorkingDirectory": "/synthetic"}
+    path.write_bytes(plistlib.dumps(original))
+    monkeypatch.setattr(cli, "PLIST_PATH", path)
+    monkeypatch.setattr(cli.subprocess, "run", Mock(return_value=Mock(returncode=0)))
+    cli.start(detection_diagnostics=enabled)
+    updated = plistlib.loads(path.read_bytes())
+    assert updated["ProgramArguments"].count("--detection-diagnostics") == int(enabled)
+    assert updated["KeepAlive"] is True
+    assert updated["WorkingDirectory"] == "/synthetic"
+
+
+def test_foreground_cli_forwards_diagnostic_switch(monkeypatch, speech_modules):
+    from typer.testing import CliRunner
+    import webex_obs.daemon as module
+
+    main = Mock()
+    monkeypatch.setattr(module, "main", main)
+    monkeypatch.setattr(cli, "_check_ffmpeg", lambda: True)
+    result = CliRunner().invoke(cli.app, ["run", "--detection-diagnostics"])
+    assert result.exit_code == 0, result.output
+    main.assert_called_once_with(detection_diagnostics=True)

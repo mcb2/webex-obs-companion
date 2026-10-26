@@ -72,6 +72,48 @@ to window capture. If that reset fails, the next video start or audio-to-video
 switch requires an accepted reset or a successful Webex-window binding. Recovery
 segments within an unfinished session retain its source selection.
 
+### Call detection diagnostics
+
+To investigate missed back-to-back calls, finish any active recording, then run:
+
+```bash
+uv run --locked --no-sync webex-obs start --detection-diagnostics
+```
+
+For a foreground session, stop the background service first with
+`uv run --locked --no-sync webex-obs stop`, then use
+`uv run --locked --no-sync webex-obs run --detection-diagnostics`.
+
+Diagnostic mode adds a nonmodal **Yes / No / Not sure** confirmation for each
+new detector call, including quick-gap transitions and calls suppressed after a
+decline. It closes after 30 seconds onscreen. Timeout or closing the window
+records no confirmation response; normal evidence logging continues. Existing
+recording/consent prompts take priority. Responses only annotate logs.
+
+The status menu adds **Diagnostic: New call started…** and
+**Diagnostic: Call ended…**, available while idle or recording. Choose **Just
+now**, or enter the local 24-hour time (`HH:MM` or `HH:MM:SS`) when the event
+occurred, within the past 60 minutes. Midnight is handled automatically. Cancel
+adds nothing. Markers can be missed: their absence never means a call did or did
+not start/end. Markers do not split recordings or change detection.
+
+Evidence and annotations are saved locally in `LOG_DIR/detection-diagnostics.jsonl`
+(default `~/Library/Logs/WebexOBS/`). Records include wall-clock and monotonic
+timestamps, audio process IDs/directions, UDP local/remote ports (including unrecognized ports), window presence
+and a per-run opaque title token, probe failures/durations, detector state, and
+recording lifecycle state. No extra probes, speech processing, or outbound
+requests are added. The diagnostic file omits raw meeting titles, process names,
+network addresses, and credentials; ordinary application logs retain their existing
+behavior. Files use mode 0600 and rotate at 20 MB with five backups. Continuous
+logging provides context for late markers, subject to rotation or explicitly
+reported dropped evidence if the write queue fills.
+
+Disable diagnostics by relaunching with `uv run --locked --no-sync webex-obs start`
+without the switch. The selected service mode persists through launchd restarts
+until the next `start` or `install-service` invocation. Existing diagnostic files
+remain available for review.
+
+
 ---
 
 ## Quick Start
