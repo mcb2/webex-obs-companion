@@ -256,6 +256,8 @@ def settings_ui():
     appkit, foundation = Mock(), Mock()
     appkit.NSWindowStyleMaskTitled = 1
     appkit.NSWindowStyleMaskClosable = 2
+    appkit.NSScreen.mainScreen.return_value.visibleFrame.return_value = ((0, 0), (1440, 900))
+    appkit.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value.frame.return_value = ((0, 0), (590, 273))
     appkit.NSWindowStyleMaskMiniaturizable = 4
     def field():
         control = Mock()
@@ -405,6 +407,8 @@ def test_nonmodal_diagnostic_response_and_timeout(response):
     # Mock bitmask constants as real ints.
     appkit.NSWindowStyleMaskTitled = 1
     appkit.NSWindowStyleMaskClosable = 2
+    appkit.NSScreen.mainScreen.return_value.visibleFrame.return_value = ((0, 0), (1440, 900))
+    appkit.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value.frame.return_value = ((0, 0), (590, 273))
     with patch("webex_obs.macos_ui.AppKit", appkit), \
          patch("webex_obs.macos_ui.time.monotonic", return_value=100) as clock:
         ui._tick_diagnostics()
@@ -438,6 +442,8 @@ def test_manual_diagnostic_marker_validates_time_before_closing():
     appkit = Mock()
     appkit.NSWindowStyleMaskTitled = 1
     appkit.NSWindowStyleMaskClosable = 2
+    appkit.NSScreen.mainScreen.return_value.visibleFrame.return_value = ((0, 0), (1440, 900))
+    appkit.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value.frame.return_value = ((0, 0), (590, 273))
     field = appkit.NSTextField.alloc.return_value.initWithFrame_.return_value
     with patch("webex_obs.macos_ui.AppKit", appkit):
         ui.show_diagnostic_marker("start")
@@ -471,3 +477,20 @@ def test_diagnostic_prompt_waits_for_consent_and_closes_on_shutdown():
         ui._tick_diagnostics()
         window.close.assert_called_once()
         daemon.diagnostics.answer.assert_not_called()
+
+
+@pytest.mark.parametrize("bounds,expected", [
+    (((0, 0), (1440, 900)), (830, 607)),
+    (((-1440, 50), (1440, 900)), (-610, 657)),
+    (((0, 0), (600, 400)), (0, 107)),
+])
+def test_diagnostic_position_uses_upper_right_of_visible_screen(bounds, expected):
+    ui = MacOSUI(Mock())
+    window = Mock()
+    window.frame.return_value = ((0, 0), (590, 273))
+    appkit = Mock()
+    appkit.NSScreen.mainScreen.return_value.visibleFrame.return_value = bounds
+    with patch("webex_obs.macos_ui.AppKit", appkit):
+        ui._position_diagnostic_window(window)
+    window.setFrameOrigin_.assert_called_once_with(expected)
+    window.center.assert_not_called()

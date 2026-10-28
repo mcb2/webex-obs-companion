@@ -429,7 +429,5 @@ def test_diagnostic_writer_is_closed_on_lifecycle_shutdown(daemon):
     assert daemon._stopped_event.is_set()
     assert not daemon.diagnostics._worker.is_alive()
     assert daemon.diagnostics.path.exists()
-    records = [json.loads(line) for line in daemon.diagnostics.path.read_text().splitlines()]
-    assert records[0]["kind"] == "enabled"
-    assert records[-1]["state"] == "stopped"
+    assert list(daemon.diagnostics.path.iterdir()) == []
     daemon.recorder.start_recording.assert_not_called()
