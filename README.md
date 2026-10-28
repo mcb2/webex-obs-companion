@@ -87,7 +87,7 @@ For a foreground session, stop the background service first with
 Diagnostic mode adds a nonmodal **Yes / No / Not sure** confirmation for each
 new detector call, including quick-gap transitions and calls suppressed after a
 decline. It closes after 30 seconds onscreen. Timeout or closing the window
-records no confirmation response; normal evidence logging continues. Existing
+records no confirmation response; evidence buffering continues. Existing
 recording/consent prompts take priority. Responses only annotate logs.
 
 The status menu adds **Diagnostic: New call started…** and
@@ -97,21 +97,47 @@ occurred, within the past 60 minutes. Midnight is handled automatically. Cancel
 adds nothing. Markers can be missed: their absence never means a call did or did
 not start/end. Markers do not split recordings or change detection.
 
-Evidence and annotations are saved locally in `LOG_DIR/detection-diagnostics.jsonl`
-(default `~/Library/Logs/WebexOBS/`). Records include wall-clock and monotonic
-timestamps, audio process IDs/directions, UDP local/remote ports (including unrecognized ports), window presence
-and a per-run opaque title token, probe failures/durations, detector state, and
-recording lifecycle state. No extra probes, speech processing, or outbound
-requests are added. The diagnostic file omits raw meeting titles, process names,
-network addresses, and credentials; ordinary application logs retain their existing
-behavior. Files use mode 0600 and rotate at 20 MB with five backups. Continuous
-logging provides context for late markers, subject to rotation or explicitly
-reported dropped evidence if the write queue fills.
+Diagnostics keep a rolling 65-minute history in memory, capped at 16 MiB of
+serialized evidence. They no longer write a continuous diagnostic log. **Yes**,
+timeouts, and matching manual markers generate no report; absent manual markers
+never imply a disagreement.
+
+Special reports appear in `LOG_DIR/detection-reports/` (default
+`~/Library/Logs/WebexOBS/detection-reports/`) when:
+
+- You answer **No**: a suspected false start.
+- You answer **Not sure**: an uncertain case, not a confirmed error.
+- A manual start/end has no corresponding detector event within **60 seconds**
+  before or after its reported time. A Just now marker may take up to a minute
+  to resolve, allowing the detector to catch up.
+
+Each dated JSON report starts with a readable summary, your annotation, and nearby
+detection times, followed by compressed evidence covering **two minutes before
+and after the event**. Repeated unchanged states are collapsed with observation
+counts and timing. Reports update every five seconds while following context is
+collected. Shutdown saves partial context; a manual marker without complete
+matching-window coverage is labeled unverified rather than a confirmed miss.
+Coverage flags identify history missing because diagnostics started late, the
+buffer filled, or the write queue overflowed.
+Late markers use the reported event time, not the submission time.
+
+Evidence includes audio process IDs/directions, UDP local/remote ports, window
+presence and a per-run opaque title token, probe failures/durations, detector
+state, and recording lifecycle state. No extra probes or outbound requests are
+added. Reports omit raw meeting titles, process names, network addresses, and
+credentials; ordinary application logs retain their existing behavior. Reports
+use mode 0600. Attach the relevant report JSON to share a case for examination.
+The memory buffer resets when the app restarts; saved reports and older diagnostic
+logs remain on disk until you remove them.
+
+Diagnostic panels open near the **upper-right corner** of the active screen's
+usable area, rather than in the center with recording/consent dialogs. Multiple
+diagnostic panels cascade slightly and remain within the usable area.
 
 Disable diagnostics by relaunching with `uv run --locked --no-sync webex-obs start`
 without the switch. The selected service mode persists through launchd restarts
-until the next `start` or `install-service` invocation. Existing diagnostic files
-remain available for review.
+until the next `start` or `install-service` invocation. Existing reports remain
+available for review.
 
 
 ---

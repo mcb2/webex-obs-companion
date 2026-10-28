@@ -367,6 +367,19 @@ class MacOSUI:
         self._forget_diagnostic_window(window)
         window.close()
 
+    def _position_diagnostic_window(self, window):
+        screen = AppKit.NSScreen.mainScreen()
+        if screen is None:
+            return
+        (sx, sy), (sw, sh) = screen.visibleFrame()
+        (_, _), (width, height) = window.frame()
+        # Keep diagnostic panels in the upper-right, away from centered consent.
+        # Cascade multiple panels and clamp to the usable area (excluding Dock).
+        offset = 32 * (len(self._diagnostic_windows) % 4)
+        x = max(sx, sx + sw - width - 20 - offset)
+        y = max(sy, sy + sh - height - 20 - offset)
+        window.setFrameOrigin_((x, y))
+
     def _diagnostic_window(self, heading, detail, *, timeout=None):
         # Nonmodal: lifecycle polling and recording controls remain independent.
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -377,7 +390,7 @@ class MacOSUI:
         window.setReleasedWhenClosed_(False)
         window.setTitle_(heading)
         window.setDelegate_(self.target)
-        window.center()
+        self._position_diagnostic_window(window)
         label = AppKit.NSTextField.labelWithString_(detail)
         label.setFrame_(((20, 125), (550, 105)))
         label.setUsesSingleLineMode_(False)

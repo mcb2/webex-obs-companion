@@ -406,17 +406,24 @@ Finish any active recording before relaunching with
 Use synthetic test calls and the normal consent process.
 
 - Verify the diagnostic confirmation has Yes / No / Not sure; let one expire
-  after 30 seconds and close another. Neither should add a confirmation record.
+  after 30 seconds and close another. Neither should create a special report.
   Confirm detection/recording continues while the diagnostic window is open and
   normal consent and stop controls still work.
 - Mark starts and ends from the status menu while idle and recording. Test Just
   now, a time 45 minutes ago, invalid input, and a time older than 60 minutes.
   Invalid input should keep the dialog open. Cancel should add no annotation.
+  Confirm diagnostic panels appear near the upper-right, away from centered
+  recording prompts. Check placement with multiple displays and a small screen.
 - Leave a marker unreported, then mark a later event. No missing event should be
   inferred. Confirm marker event times differ from submission times for late entries.
+  Matching markers and Yes answers should create no reports. Unmatched markers
+  allow up to 60 seconds for detection, then save a dated report. No answers save
+  suspected false starts; Not sure saves uncertain cases.
 - Leave and immediately join another Webex test call, including one with the
-  same title. Correlate manual markers with the JSONL sensor history, automatic
+  same title. Correlate manual markers with the report sensor context, automatic
   detection IDs, and confirmations. Recording boundaries remain controlled by
   the existing detector, never by diagnostic answers.
 - Relaunch without the switch; confirm diagnostic menu items and popups disappear.
-  Diagnostic logs remain local under LOG_DIR. See README for fields and rotation.
+  Reports remain local under LOG_DIR/detection-reports. Verify no new continuous
+  detection-diagnostics.jsonl is written; older files are left untouched. See README
+  for the matching tolerance, context window, buffer limits, and partial coverage.
