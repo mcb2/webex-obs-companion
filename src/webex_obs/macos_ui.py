@@ -429,10 +429,18 @@ class MacOSUI:
         except queue.Empty:
             return
         detected = datetime.fromtimestamp(event["detected_at"]).strftime("%H:%M:%S")
+        category = event.get("category", "new_call")
+        if category == "startup_discovery":
+            question = f"Call activity found at startup. Was a {event['platform']} call already in progress at {detected}?"
+        elif category == "suspected_transition":
+            question = f"Possible call change around {detected}. Did a different {event['platform']} call start?"
+        else:
+            question = f"Did a new {event['platform']} call start around {detected}?"
+        if event.get("blocked"):
+            question += " Recording remains declined."
         window = self._diagnostic_window(
-            "Call detection diagnostics",
-            f"Did a new {event['platform']} call start around {detected}?\n\n"
-            "This only annotates the diagnostic log; recording is unchanged.\n"
+            "Call detection diagnostics", question + "\n\n"
+            "This only annotates diagnostics; recording is unchanged.\n"
             "Closes after 30 seconds. No response is assumed if unanswered.",
             timeout=30,
         )

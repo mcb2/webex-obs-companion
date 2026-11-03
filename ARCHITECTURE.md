@@ -146,8 +146,30 @@ gap establish a new call even within the end grace period, clearing only that
 platform's suppression. Bound recordings then complete through the existing
 verified-stop path before another automatic start. Unknown or partially inactive
 reads invalidate the shortcut; title changes alone never establish a departure.
-The shortcut requires supported Core Audio and an observed gap; transitions
+For Webex, input alone may remain open at departure; the window, output audio,
+and known media sockets must all be successfully absent, with no failed audio
+PIDs. The shortcut requires supported Core Audio and an observed gap; transitions
 entirely between polls cannot be distinguished from a continuous call.
+
+Platform suppression flags persist atomically in detection-state.json (0600),
+without titles or credentials. The lifecycle worker restores them only after
+RuntimeState ownership is acquired. Corrupt/unreadable state fails startup;
+write failures surface rather than claiming the decline was saved. Offline
+changes cannot rearm prompting. The existing observed-inactivity and confirmed
+transition paths clear both memory and persisted flags.
+
+Untracked, unsuppressed Teams skips window probes when supported audio is
+successfully idle and known UDP is successfully absent. This is inactive evidence
+but never a fully-idle transition claim without a window read. Other Teams states
+retain normal probing. No asynchronous or stale sensor results are introduced.
+
+Diagnostic-only Webex suspicion compares a recent output-positive baseline with
+an input-only output interruption and two returning output-positive polls within
+30 seconds. Both title and known local media endpoint signatures must change.
+Unknown reads reset the candidate. A suspicion never alters lifecycle state or
+suppression. Startup discovery, confirmed transitions, and suspicions have
+distinct diagnostic categories and UI wording; reports identify blocked starts
+and detector decision rules.
 
 Opt-in `--detection-diagnostics` observes existing sensor results without changing
 classification or recording state. `DetectionDiagnostics` queues sanitized JSONL

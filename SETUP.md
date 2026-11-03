@@ -427,3 +427,27 @@ Use synthetic test calls and the normal consent process.
   Reports remain local under LOG_DIR/detection-reports. Verify no new continuous
   detection-diagnostics.jsonl is written; older files are left untouched. See README
   for the matching tolerance, context window, buffer limits, and partial coverage.
+
+### Detection regression checks after transition updates
+
+Use synthetic calls and obtain recording consent as usual.
+
+- Decline a Webex recording, finish any active recording, and restart the
+  companion. Confirm the decline remains in effect and startup diagnostics ask
+  about an ongoing call rather than a new call. Manual Start remains available.
+- Leave and promptly join another Webex call. If microphone input stays open,
+  successful absence of the window, output stream, and known media connections,
+  followed by two active polls, should rearm prompting. Verify the old recording
+  stops before the new one starts and both sessions' media remains intact.
+- Test a window/output interruption within one continuing call and watch for
+  false splits. Test output-only/listen-only calls and muted microphone input.
+- With diagnostics enabled, test a suspected change involving an output pause
+  and changed ports/title: confirmation responses must only create reports,
+  never split recording or clear a decline. Check Yes, No, Not sure, and timeout.
+- Verify manual start reports distinguish suppression-blocked activity from a
+  missed start and include blocking rules. Startup discovery should be separate.
+- With Teams open but audio inactive, check diagnostic probe-skipped entries
+  and Webex responsiveness. Verify actual Teams calls still detect correctly.
+- Review LOG_DIR/detection-state.json permissions (0600) and absence of titles.
+  It stores platform declines until a confirmed observed end or transition;
+  changes occurring while the companion is offline cannot clear them safely.

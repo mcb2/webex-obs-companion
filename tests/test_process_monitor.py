@@ -780,7 +780,7 @@ def test_quick_next_call_ends_bound_session_before_grace(platform):
 
 @pytest.mark.parametrize("incomplete", [
     "audio", "window", "sockets", "unsupported", "failed-audio",
-    "window-retained", "sockets-retained", "audio-retained",
+    "window-retained", "sockets-retained", "output-retained",
 ])
 @pytest.mark.parametrize("suppressed", [True, False])
 def test_partial_idle_or_sensor_failure_cannot_split_or_rearm_call(incomplete, suppressed):
@@ -809,7 +809,7 @@ def test_partial_idle_or_sensor_failure_cannot_split_or_rearm_call(incomplete, s
         elif incomplete == "sockets-retained":
             streams.return_value = [("synthetic", 5004, True)]
         else:
-            audio.return_value = AudioActivity(available=True, input_pids=(123,))
+            audio.return_value = AudioActivity(available=True, input_pids=(123,), output_pids=(123,))
         assert not monitor.has_call_ended()
         audio.side_effect = window.side_effect = streams.side_effect = None
         streams.return_value = []
@@ -920,3 +920,164 @@ def test_diagnostics_keeps_unrecognized_udp_port_changes_without_addresses():
         connections=[{"local_port": 54321, "remote_port": 12345}],
     )
     process.net_connections.assert_called_once_with(kind="inet")
+
+
+@pytest.mark.parametrize("bound,suppressed", [(True, False), (True, True), (False, True)])
+def test_webex_input_only_departure_confirms_next_call_after_two_polls(bound, suppressed):
+    monitor = ProcessMonitor()
+    monitor.current_platform = WEBEX
+    if bound:
+        monitor.bind_current_platform()
+    if suppressed:
+        monitor.suppress_current_call_prompt("Synthetic old")
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window:
+        row = monitor._call_evidence(WEBEX)
+        assert row.webex_departure and not row.fully_idle
+        assert monitor.is_call_active() is False
+        assert monitor._departed_platforms == {"webex": 0}
+        window.return_value = "Synthetic next"
+        assert monitor.is_call_active() is True
+        assert "webex" not in monitor._restarted_platforms
+        assert monitor.is_call_active() is True
+        assert "webex" in monitor._restarted_platforms
+        assert "webex" not in monitor._suppressed_platforms
+        if bound:
+            assert monitor._track_call_end(True)
+
+
+@pytest.mark.parametrize("platform", [ZOOM, TEAMS])
+def test_retained_input_is_not_a_departure_for_other_platforms(platform):
+    monitor = ProcessMonitor()
+    monitor.current_platform = platform
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None):
+        row = monitor._call_evidence(platform)
+    assert not row.webex_departure and not row.fully_idle
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_idle_teams_window_probe_is_skipped_except_for_tracked_calls(tracked):
+    monitor = ProcessMonitor()
+    if tracked:
+        monitor.current_platform = TEAMS
+        monitor.bind_current_platform()
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True)), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", side_effect=OSError("slow synthetic Teams")) as window:
+        row = monitor._call_evidence(TEAMS)
+    assert row.active is False
+    assert window.call_count == int(tracked)
+    assert not row.fully_idle
+
+
+def test_recording_decline_survives_restart_and_only_observed_departure_clears_it(tmp_path):
+    import json
+    import stat
+
+    path = tmp_path / "detection-state.json"
+    original = ProcessMonitor()
+    original.restore_prompt_suppression(path)
+    original.current_platform = WEBEX
+    original.suppress_current_call_prompt("Synthetic private title")
+    assert "Synthetic private" not in path.read_text()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    restored = ProcessMonitor()
+    restored.restore_prompt_suppression(path)
+    restored.current_platform = WEBEX
+    assert restored.should_suppress_automatic_prompt()
+    with patch.object(restored, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, input_pids=(123,) if p is WEBEX else ())), \
+         patch.object(restored, "_active_media_streams", return_value=[]), \
+         patch.object(restored, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic other title" if p is WEBEX else None) as window:
+        for _ in range(3):
+            restored.is_call_active()
+        assert restored.should_suppress_automatic_prompt()
+        window.side_effect = lambda p: None
+        restored.is_call_active()
+        window.side_effect = lambda p: "Synthetic next" if p is WEBEX else None
+        restored.is_call_active()
+        restored.is_call_active()
+    assert json.loads(path.read_text())["suppressed"] == []
+    after = ProcessMonitor()
+    after.restore_prompt_suppression(path)
+    after.current_platform = WEBEX
+    assert not after.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("text", ["bad-json", '{}', '{"version":1,"suppressed":[42]}'])
+def test_invalid_saved_declines_fail_closed(tmp_path, text):
+    path = tmp_path / "detection-state.json"
+    path.write_text(text)
+    with pytest.raises(RuntimeError, match="declines|detection-state"):
+        ProcessMonitor().restore_prompt_suppression(path)
+    assert path.read_text() == text
+
+
+def test_failed_decline_write_is_reported(tmp_path):
+    monitor = ProcessMonitor()
+    monitor.restore_prompt_suppression(tmp_path / "detection-state.json")
+    monitor.current_platform = WEBEX
+    with patch("webex_obs.process_monitor.write_json", side_effect=OSError("synthetic disk full")):
+        with pytest.raises(RuntimeError, match="Cannot save recording declines"):
+            monitor.suppress_current_call_prompt("Synthetic")
+    assert monitor.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("change", ["both", "title", "ports", "unknown", "interrupted", "expired"])
+def test_weaker_webex_transition_only_requests_diagnostics(change):
+    from unittest.mock import Mock
+    from webex_obs.process_monitor import CallEvidence
+
+    monitor = ProcessMonitor()
+    monitor.diagnostics = Mock()
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    monitor.suppress_current_call_prompt("Synthetic original")
+    row = CallEvidence(True)
+
+    def sample(output, title, ports, now, valid=True):
+        monitor._webex_observation = dict(
+            audio=AudioActivity(available=True, input_pids=(1,), output_pids=(1,) if output else ()),
+            window=title, signature=ports, valid=valid,
+        )
+        with patch("webex_obs.process_monitor.time.monotonic", return_value=now):
+            monitor._track_webex_suspicions(row)
+
+    sample(True, "Synthetic original", ((1, 50000, 5004),), 100)
+    sample(False, "Synthetic intermediate", ((1, 50001, 5004),), 103)
+    if change == "unknown":
+        sample(False, None, (), 104, valid=False)
+    title = "Synthetic original" if change == "ports" else "Synthetic next"
+    ports = ((1, 50000 if change == "title" else 50002, 5004),)
+    sample(True, title, ports, 140 if change == "expired" else 106)
+    monitor.diagnostics.suspected.assert_not_called()
+    if change == "interrupted":
+        sample(False, title, ports, 107)
+    sample(True, title, ports, 143 if change == "expired" else 109)
+    assert monitor.diagnostics.suspected.call_count == int(change == "both")
+    assert monitor.should_suppress_automatic_prompt()
+    assert not monitor._restarted_platforms
+
+
+def test_startup_discovery_is_classified_and_keeps_decline(tmp_path):
+    from unittest.mock import Mock
+
+    path = tmp_path / "detection-state.json"
+    original = ProcessMonitor()
+    original.restore_prompt_suppression(path)
+    original.current_platform = WEBEX
+    original.suppress_current_call_prompt("Synthetic")
+    monitor = ProcessMonitor(poll_interval=0)
+    monitor.restore_prompt_suppression(path)
+    monitor.diagnostics = Mock()
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, input_pids=(1,) if p is WEBEX else ())), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic" if p is WEBEX else None):
+        assert monitor.wait_for_state_change()
+    monitor.diagnostics.detected.assert_called_once_with(
+        "webex", restart=False, category="startup_discovery", blocked=True, blocking_rule="recording_declined",
+    )
+    assert monitor.should_suppress_automatic_prompt()

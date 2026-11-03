@@ -97,9 +97,18 @@ class DetectionDiagnostics:
             self._evicted_until = max(self._evicted_until, old["observed_at"])
         if payload["kind"] == "manual_marker":
             self._pending.append(payload)
-        elif payload["kind"] == "confirmation" and payload["response"] in {"no", "not_sure"}:
-            self._new_case(payload, "false_start" if payload["response"] == "no" else "uncertain_start",
-                           payload["detected_at"])
+        elif payload["kind"] == "confirmation":
+            category = payload.get("category", "new_call")
+            response = payload["response"]
+            reason = None
+            if category == "suspected_transition":
+                reason = {"yes": "confirmed_suspected_transition", "no": "dismissed_suspected_transition",
+                          "not_sure": "uncertain_transition"}.get(response)
+            elif response in {"no", "not_sure"}:
+                suffix = "startup_discovery" if category == "startup_discovery" else "start"
+                reason = ("false_" if response == "no" else "uncertain_") + suffix
+            if reason:
+                self._new_case(payload, reason, payload["detected_at"])
 
     def _new_case(self, annotation: dict, reason: str, when: float) -> None:
         stamp = datetime.fromtimestamp(when).strftime("%Y-%m-%d_%H-%M-%S")
@@ -123,10 +132,25 @@ class DetectionDiagnostics:
             if not closing and now < when + self.MATCH_SECONDS:
                 continue
             kind = "detected_start" if marker["event"] == "start" else "detected_end"
-            matches = [row for row, _ in self._history if row["kind"] == kind and
-                       abs(row.get("detected_at", row["observed_at"]) - when) <= self.MATCH_SECONDS]
+            nearby = [row for row, _ in self._history
+                      if abs(row.get("detected_at", row["observed_at"]) - when) <= self.MATCH_SECONDS]
+            matches = [row for row in nearby if row["kind"] == kind and
+                       not row.get("blocked") and row.get("category") != "startup_discovery"]
             if not matches:
                 reason = ("missed_" if self._matching_window_complete(when, now) else "unverified_") + marker["event"]
+                if marker["event"] == "start":
+                    polls = [row for row in nearby if row["kind"] == "poll"]
+                    closest = min(polls, key=lambda row: abs(row["observed_at"] - when), default={})
+                    blocked = [p for p in closest.get("evidence", []) if p.get("active") is True and
+                               (p["platform"] in closest.get("suppressed", {}) or
+                                "" in closest.get("suppressed", {}))]
+                    if blocked or any(row["kind"] == "detected_start" and row.get("blocked") for row in nearby):
+                        reason = "suppression_blocked_start"
+                    elif any(row["kind"] == "detected_start" and row.get("category") == "startup_discovery"
+                             for row in nearby):
+                        reason = "startup_rediscovery"
+                    elif any(row["kind"] == "suspected_transition" for row in nearby):
+                        reason = "confirmed_suspected_transition"
                 self._new_case(marker, reason, when)
             self._pending.remove(marker)
         for case in list(self._cases):
@@ -176,12 +200,31 @@ class DetectionDiagnostics:
             "missed_end": "User reported a call end with no detected end within 60 seconds.",
             "unverified_start": "Insufficient diagnostic coverage to verify the reported call start.",
             "unverified_end": "Insufficient diagnostic coverage to verify the reported call end.",
+            "suppression_blocked_start": "User reported a start while call activity was suppressed by a recording decline.",
+            "startup_rediscovery": "Reported start coincides with call activity found at companion startup.",
+            "false_startup_discovery": "User denied that a call was in progress when startup discovered activity.",
+            "uncertain_startup_discovery": "User was unsure whether startup activity represented an ongoing call.",
+            "confirmed_suspected_transition": "User confirmed a suspected call change; no automatic recording split was made.",
+            "dismissed_suspected_transition": "User rejected the weaker call-transition heuristic.",
+            "uncertain_transition": "User was unsure about a suspected call transition.",
         }
         nearby = [dict(kind=row["kind"], platform=row.get("platform"),
-                       at=row.get("detected_at", row["observed_at"]))
-                  for row in rows if row["kind"] in {"detected_start", "detected_end"}]
+                       at=row.get("detected_at", row["observed_at"]),
+                       category=row.get("category", "new_call"), blocked=row.get("blocked", False))
+                  for row in rows if row["kind"] in {"detected_start", "detected_end", "suspected_transition"}]
+        blocking_rules = set()
+        for row in rows:
+            if row["kind"] == "poll":
+                for evidence in row.get("evidence", []):
+                    if evidence.get("active") is not True and evidence.get("decision_rule"):
+                        blocking_rules.add(evidence["platform"] + ":" + evidence["decision_rule"])
+                for platform in row.get("suppressed", {}):
+                    blocking_rules.add((platform or "all") + ":recording_declined")
+                if row.get("departed"):
+                    blocking_rules.add("awaiting_two_positive_return_polls")
         report = dict(
             summary=descriptions[case["reason"]], reason=case["reason"], run_id=self.run_id,
+            blocking_rules=sorted(blocking_rules),
             event_time=datetime.fromtimestamp(when).astimezone().isoformat(),
             event_at=when, annotation=case["annotation"], matching_tolerance_seconds=self.MATCH_SECONDS,
             nearby_detections=nearby, context_seconds=self.CONTEXT_SECONDS,
@@ -225,15 +268,23 @@ class DetectionDiagnostics:
             fields["ports"] = [port for _, port, _ in value]
         self.record("sensor", **fields)
 
-    def detected(self, platform: str, *, restart: bool = False) -> None:
+    def detected(self, platform: str, *, restart: bool = False, category: str = "new_call",
+                 blocked: bool = False, blocking_rule: str | None = None) -> None:
         # Declining recording causes repeated candidate confirmation. Ask once per
         # detector call, rearmed only by a verified end or the quick-gap shortcut.
         if platform in self._announced and not restart:
             return
         self._announced.add(platform)
         event = dict(event_id=uuid.uuid4().hex, platform=platform,
-                     detected_at=time.time(), restart=restart)
+                     detected_at=time.time(), restart=restart, category=category,
+                     blocked=blocked, blocking_rule=blocking_rule)
         self.record("detected_start", **event)
+        self.prompts.put(event)
+
+    def suspected(self, platform: str, *, blocked: bool, rule: str) -> None:
+        event = dict(event_id=uuid.uuid4().hex, platform=platform, detected_at=time.time(),
+                     category="suspected_transition", blocked=blocked, blocking_rule=rule)
+        self.record("suspected_transition", **event)
         self.prompts.put(event)
 
     def ended(self, platform: str) -> None:

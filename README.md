@@ -43,18 +43,36 @@ Automatic start requires two consecutive positive polls for the same platform.
 The recording and title enrichment stay bound to that platform until recording
 has verifiably stopped; an overlapping call cannot extend or relabel the session.
 Declining or manually stopping a detected call suppresses that platform until
-its evidence has been absent for the full grace period. Title changes and
-activity on another platform do not erase the decline. Dynamic OBS video-window
+its evidence has been absent for the full grace period or a confirmed transition
+is observed. Declines are saved privately in `LOG_DIR/detection-state.json` and
+restored before detection starts after a companion restart. Only platform flags
+are stored, without meeting titles or participant information. Title changes and
+activity on another platform do not erase the decline. If a call changed while
+the companion was offline, suppression remains until an end/transition is
+observed; use manual Start when needed. Unreadable or invalid saved state blocks
+startup rather than silently forgetting declines. Dynamic OBS video-window
 binding remains Webex-specific.
 
-For back-to-back calls, a successful poll showing no Core Audio streams, no call
-window, and no known UDP media sockets, followed by two positive polls on that
-platform, also establishes a new call. This clears the previous call's decline
-or manual-stop suppression even inside the grace period. An active recording
-is stopped and verified before the new call starts its own recording and consent
-prompt. Failed sensor reads, unsupported Core Audio, title changes alone, and
-partial evidence loss do not enable this shortcut. A transition entirely between
-polls can still be missed; use manual Start if the new call is not detected.
+For back-to-back calls, a successful poll showing no call window and no known
+UDP media sockets, with supported Core Audio idle, followed by two positive
+polls on that platform, establishes a new call. **Webex may retain microphone
+input during this gap**: successfully observed absence of audio output, its call
+window, and known media sockets is sufficient. Failed/incomplete sensor reads,
+remaining output activity, a retained window or media connection, and unsupported
+Core Audio do not enable this shortcut. An active recording is stopped and
+verified before the next call starts its own recording and consent prompt.
+
+Idle, untracked Teams with successfully inactive audio and no known media
+connections skips window inspection, avoiding unrelated slow System Events
+queries during Webex detection. Tracked or suppressed Teams retains full probes;
+audio failures and unsupported Core Audio retain the existing window fallback.
+
+With diagnostic mode enabled, a weaker Webex pattern—an output interruption
+while input remains open, followed within 30 seconds by two output-positive
+polls with a changed title and changed local media endpoints—asks whether a
+different call started. It does not automatically split recording or clear
+suppression. Title or port changes alone are insufficient. A transition entirely
+between polls can still be missed; use manual Start if needed.
 See the [macOS manual-check plan](SETUP.md#macos-manual-check-plan).
 The `Webex-Video` scene needs a macOS Screen Capture source named
 `Webex-Meeting-Window` configured for Window Capture. Switching its window
@@ -86,7 +104,10 @@ For a foreground session, stop the background service first with
 
 Diagnostic mode adds a nonmodal **Yes / No / Not sure** confirmation for each
 new detector call, including quick-gap transitions and calls suppressed after a
-decline. It closes after 30 seconds onscreen. Timeout or closing the window
+decline. Initial call activity found at startup is explicitly labeled as startup
+discovery and asks whether a call was already in progress. Suspected transitions
+ask whether a different call started. The dialog also says when recording is
+still declined. It closes after 30 seconds onscreen. Timeout or closing the window
 records no confirmation response; evidence buffering continues. Existing
 recording/consent prompts take priority. Responses only annotate logs.
 
@@ -98,21 +119,28 @@ adds nothing. Markers can be missed: their absence never means a call did or did
 not start/end. Markers do not split recordings or change detection.
 
 Diagnostics keep a rolling 65-minute history in memory, capped at 16 MiB of
-serialized evidence. They no longer write a continuous diagnostic log. **Yes**,
-timeouts, and matching manual markers generate no report; absent manual markers
-never imply a disagreement.
+serialized evidence. They no longer write a continuous diagnostic log. **Yes**
+to a normal/startup prompt, timeouts, and matching manual markers generate no
+report; absent manual markers never imply a disagreement. Suspected-transition
+responses are retained separately to evaluate the weaker heuristic.
 
 Special reports appear in `LOG_DIR/detection-reports/` (default
 `~/Library/Logs/WebexOBS/detection-reports/`) when:
 
-- You answer **No**: a suspected false start.
+- You answer **No**: a suspected false start, separately labeled for startup discovery.
 - You answer **Not sure**: an uncertain case, not a confirmed error.
+- You answer a suspected-transition prompt: Yes confirms the suspected change,
+  No rejects the heuristic, and Not sure retains an uncertain case. Timeout saves nothing.
 - A manual start/end has no corresponding detector event within **60 seconds**
   before or after its reported time. A Just now marker may take up to a minute
-  to resolve, allowing the detector to catch up.
+  to resolve, allowing the detector to catch up. Activity blocked by a decline
+  is classified as a suppression-blocked start. Startup rediscovery is reported
+  separately and does not count as observing a fresh transition.
 
 Each dated JSON report starts with a readable summary, your annotation, and nearby
-detection times, followed by compressed evidence covering **two minutes before
+detection times, relevant blocking rules (for example recording declined,
+missing corroboration, a failed sensor, or waiting for return confirmation),
+followed by compressed evidence covering **two minutes before
 and after the event**. Repeated unchanged states are collapsed with observation
 counts and timing. Reports update every five seconds while following context is
 collected. Shutdown saves partial context; a manual marker without complete

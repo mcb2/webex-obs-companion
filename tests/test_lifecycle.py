@@ -431,3 +431,89 @@ def test_diagnostic_writer_is_closed_on_lifecycle_shutdown(daemon):
     assert daemon.diagnostics.path.exists()
     assert list(daemon.diagnostics.path.iterdir()) == []
     daemon.recorder.start_recording.assert_not_called()
+
+
+def test_declines_restore_after_ownership_before_detection(daemon):
+    events = []
+    acquire = daemon._runtime.acquire
+    daemon._runtime.acquire = lambda: (acquire(), events.append("ownership"))
+    daemon.monitor.restore_prompt_suppression.side_effect = lambda path: events.append("restore")
+    daemon._run_lifecycle = lambda: (events.append("detection"), daemon.request_shutdown())
+    daemon.start()
+    assert events == ["ownership", "restore", "detection"]
+    daemon.monitor.restore_prompt_suppression.assert_called_once_with(daemon.config.log_dir / "detection-state.json")
+
+
+def test_bad_decline_state_blocks_detection_and_recording(daemon):
+    daemon.monitor.restore_prompt_suppression.side_effect = RuntimeError("synthetic invalid saved declines")
+    daemon._run_lifecycle = Mock()
+    daemon.start()
+    assert daemon.failure
+    daemon._run_lifecycle.assert_not_called()
+    daemon.recorder.start_recording.assert_not_called()
+
+
+def test_retained_input_transition_stops_and_preserves_old_session_before_next_start(daemon, monkeypatch):
+    from webex_obs.core_audio_monitor import AudioActivity
+    from webex_obs.process_monitor import ProcessMonitor, WEBEX
+
+    monitor = ProcessMonitor(poll_interval=0.01)
+    daemon.monitor = monitor
+    trace = []
+    polled = 0
+    starts = 0
+    files = []
+    daemon.config.recordings_dir.mkdir()
+    for index in range(2):
+        media = daemon.config.recordings_dir / f"synthetic-{index}.mkv"
+        media.write_bytes(b"synthetic test media")
+        files.append(media)
+    daemon._post_processing_worker.start = Mock()
+    daemon._post_processing_worker.submit = Mock()
+
+    def wait(event):
+        monitor.current_platform = WEBEX
+        monitor.current_call_title = "Synthetic first" if starts == 0 else "Synthetic next"
+        monitor.is_in_meeting = True
+        if starts:
+            assert trace == ["start", "verified_stop"]
+            assert not daemon.recorder.is_recording
+        return True
+
+    def start(mode):
+        nonlocal starts
+        starts += 1
+        trace.append("start")
+        daemon.recorder.is_recording = True
+        if starts == 2:
+            daemon.request_shutdown()
+        return True
+
+    def stop():
+        daemon.recorder.is_recording = False
+        daemon.recorder.stop_verified = True
+        trace.append("verified_stop")
+        return [str(files[starts - 1])]
+
+    def audio(platform):
+        nonlocal polled
+        polled += 1
+        return AudioActivity(available=True, input_pids=(1,), output_pids=(1,) if polled > 1 else ())
+
+    monkeypatch.setattr(monitor, "wait_for_state_change", wait)
+    monkeypatch.setattr(monitor, "get_active_call_title", lambda: monitor.current_call_title)
+    monkeypatch.setattr(monitor, "_audio_activity", audio)
+    monkeypatch.setattr(monitor, "_active_media_streams", lambda platform: [])
+    monkeypatch.setattr(monitor, "_active_call_window_for_platform", lambda platform:
+                        "Synthetic next" if polled > 1 else None)
+    daemon.recorder.start_recording.side_effect = start
+    daemon.recorder.stop_recording.side_effect = stop
+    daemon.ui.show_startup_prompt.return_value = "keep_audio"
+    daemon.start()
+    assert not daemon.failure
+    assert trace == ["start", "verified_stop", "start", "verified_stop"]
+    assert polled == 3
+    saved = list(daemon.config.recordings_dir.glob("*.mkv"))
+    assert len(saved) == 2
+    assert all(path.read_bytes() == b"synthetic test media" for path in saved)
+    daemon._post_processing_worker.submit.assert_called_once()

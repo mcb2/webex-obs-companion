@@ -143,6 +143,7 @@ class WebexOBSDaemon:
             if self._runtime is not None:
                 self._runtime.acquire()
                 acquired = True
+            self.monitor.restore_prompt_suppression(self.config.log_dir / "detection-state.json")
             if getattr(self, "diagnostics", None):
                 self.diagnostics.start()
             self._pulse()
