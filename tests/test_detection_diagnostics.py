@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import stat
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -180,3 +181,71 @@ def test_marker_from_before_diagnostic_start_is_unverified_not_a_missed_detectio
     assert report["reason"] == "unverified_end"
     assert not report["matching_window_complete"]
     assert not report["prior_context_complete"]
+
+
+@pytest.mark.parametrize("category,response,expected", [
+    ("startup_discovery", "no", "false_startup_discovery"),
+    ("startup_discovery", "not_sure", "uncertain_startup_discovery"),
+    ("startup_discovery", "yes", None),
+    ("suspected_transition", "yes", "confirmed_suspected_transition"),
+    ("suspected_transition", "no", "dismissed_suspected_transition"),
+    ("suspected_transition", "not_sure", "uncertain_transition"),
+])
+def test_confirmation_categories_produce_distinct_reports(tmp_path, category, response, expected):
+    diagnostics = DetectionDiagnostics(tmp_path)
+    accept(diagnostics, "enabled", 0)
+    accept(diagnostics, "confirmation", 200, detected_at=200, response=response, category=category)
+    diagnostics._flush(320)
+    saved = reports(diagnostics)
+    assert len(saved) == int(expected is not None)
+    if expected:
+        assert saved[0]["reason"] == expected
+
+
+@pytest.mark.parametrize("blocked,category,expected", [
+    (True, "new_call", "suppression_blocked_start"),
+    (True, "startup_discovery", "suppression_blocked_start"),
+    (False, "startup_discovery", "startup_rediscovery"),
+])
+def test_manual_marker_does_not_match_a_blocked_or_startup_detection(tmp_path, blocked, category, expected):
+    diagnostics = DetectionDiagnostics(tmp_path)
+    accept(diagnostics, "enabled", 0)
+    accept(diagnostics, "detected_start", 100, detected_at=100, blocked=blocked, category=category)
+    accept(diagnostics, "manual_marker", 110, occurred_at=100, event="start")
+    diagnostics._flush(320)
+    report, = reports(diagnostics)
+    assert report["reason"] == expected
+    assert report["nearby_detections"][0]["blocked"] == blocked
+
+
+def test_manual_start_report_identifies_suppression_and_missing_departure_rule(tmp_path):
+    diagnostics = DetectionDiagnostics(tmp_path)
+    accept(diagnostics, "enabled", 0)
+    accept(diagnostics, "poll", 100, evidence=[dict(platform="webex", active=True,
+           decision_rule="audio_plus_window")], suppressed={"webex": None})
+    accept(diagnostics, "poll", 102, evidence=[dict(platform="webex", active=False,
+           decision_rule="webex_departure_input_retained")], departed={"webex": 0})
+    accept(diagnostics, "manual_marker", 103, occurred_at=100, event="start")
+    diagnostics._flush(320)
+    report, = reports(diagnostics)
+    assert report["reason"] == "suppression_blocked_start"
+    assert "webex:recording_declined" in report["blocking_rules"]
+    assert "webex:webex_departure_input_retained" in report["blocking_rules"]
+    assert "awaiting_two_positive_return_polls" in report["blocking_rules"]
+
+
+def test_suspected_transition_does_not_rearm_detection_or_create_report_without_answer(tmp_path):
+    diagnostics = DetectionDiagnostics(tmp_path)
+    diagnostics.detected("webex")
+    diagnostics.prompts.get_nowait()
+    diagnostics.suspected("webex", blocked=True, rule="output_interruption_title_and_ports_changed")
+    event = diagnostics.prompts.get_nowait()
+    assert event["category"] == "suspected_transition"
+    assert event["blocked"]
+    diagnostics.answer(event, None)
+    while not diagnostics._records.empty():
+        diagnostics._accept(diagnostics._records.get_nowait())
+    diagnostics._flush(time.time(), closing=True)
+    assert reports(diagnostics) == []
+    diagnostics.detected("webex")
+    assert diagnostics.prompts.empty()

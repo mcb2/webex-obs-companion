@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -7,11 +8,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, TypeVar
 
 import psutil
 
 from .core_audio_monitor import AudioActivity, CoreAudioProcessMonitor
+from .durable_state import write_json
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -76,6 +79,9 @@ class CallEvidence:
     reason: str = ""
     # All three sensors successfully observed absence, not just lost corroboration.
     fully_idle: bool = False
+    # Webex can retain microphone input after leaving a call.
+    webex_departure: bool = False
+    decision_rule: str = "unspecified"
 
 
 # Backward-compatible constants used by older integrations and diagnostics.
@@ -118,6 +124,48 @@ class ProcessMonitor:
         self.on_idle = None
         self.on_poll = None
         self.diagnostics = None
+        self._suppression_path: Path | None = None
+        self._startup_platforms = {p.key for p in SUPPORTED_PLATFORMS}
+        self._media_signatures: dict[str, tuple] = {}
+        self._webex_observation = None
+        self._webex_baseline = None
+        self._webex_suspect = None
+
+    def restore_prompt_suppression(self, path: Path) -> None:
+        """Call after acquiring application ownership, before the first poll.
+
+        Persist only platform flags. Changes while the companion was offline
+        cannot safely establish a new call, so declines remain until observed end.
+        """
+        self._suppression_path = path
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Cannot restore recording declines; check detection-state.json access/content.") from exc
+        platforms = data.get("suppressed") if isinstance(data, dict) else None
+        allowed = {p.key for p in SUPPORTED_PLATFORMS} | {""}
+        if (not isinstance(data, dict) or data.get("version") != 1 or
+                not isinstance(platforms, list) or
+                any(not isinstance(key, str) or key not in allowed for key in platforms)):
+            raise RuntimeError("Invalid detection-state.json; review saved recording declines before resetting it.")
+        self._suppressed_platforms = {key: None for key in platforms}
+
+    def _persist_prompt_suppression(self) -> None:
+        if self._suppression_path is not None:
+            try:
+                write_json(self._suppression_path, dict(version=1, suppressed=sorted(self._suppressed_platforms)))
+            except OSError as exc:
+                raise RuntimeError("Cannot save recording declines; check detection-state.json access and free space.") from exc
+
+    def _announce_detection(self, key: str, *, restart: bool = False) -> None:
+        category = "startup_discovery" if key in self._startup_platforms and not restart else "new_call"
+        blocked = key in self._suppressed_platforms or "" in self._suppressed_platforms
+        if self.diagnostics:
+            self.diagnostics.detected(key, restart=restart, category=category,
+                                      blocked=blocked, blocking_rule="recording_declined" if blocked else None)
+        self._startup_platforms.discard(key)
 
     @property
     def current_platform_name(self) -> str | None:
@@ -157,6 +205,8 @@ class ProcessMonitor:
     ) -> list[tuple[str, int, bool]]:
         """Return supported UDP media sockets owned by one meeting platform."""
         streams = []
+        signature = []
+        self._media_signatures[platform.key] = ()
         failed = False
         for proc in self._matching_processes(platform):
             try:
@@ -173,6 +223,9 @@ class ProcessMonitor:
                         udp_connections.append(dict(local_port=local_port, remote_port=remote_port))
                     if not platform.uses_udp_port(remote_port):
                         continue
+                    local = getattr(connection, "laddr", None)
+                    local_port = getattr(local, "port", 0) if local else 0
+                    signature.append((proc.info.get("pid", 0), local_port, remote_port))
                     is_media_process = any(
                         target in pname or target in pexe
                         for target in platform.media_process_names
@@ -185,6 +238,7 @@ class ProcessMonitor:
                 failed = True
         if failed and not streams:
             raise OSError("Platform socket inspection unavailable")
+        self._media_signatures[platform.key] = tuple(sorted(signature))
         return streams
 
     def _audio_activity(self, platform: CallPlatform) -> AudioActivity:
@@ -332,6 +386,7 @@ class ProcessMonitor:
         self._suppression_inactive_since = None
         self._suppressed_platforms[self._suppressed_platform_key or ""] = None
         self._departed_platforms.pop(self._suppressed_platform_key or "", None)
+        self._persist_prompt_suppression()
 
     def _clear_prompt_suppression(self) -> None:
         self._suppressed_call_title = None
@@ -340,9 +395,13 @@ class ProcessMonitor:
         self._suppression_inactive_since = None
         self._suppressed_platforms.clear()
         self._departed_platforms.clear()
+        self._persist_prompt_suppression()
 
     def _rearm_prompt(self, key: str) -> None:
+        existed = key in self._suppressed_platforms
         self._suppressed_platforms.pop(key, None)
+        if existed:
+            self._persist_prompt_suppression()
         if self.diagnostics:
             self.diagnostics.ended(key)
         if key == (self._suppressed_platform_key or ""):
@@ -411,13 +470,26 @@ class ProcessMonitor:
             self.on_possible_evidence()
         if streams and audio and audio.input_pids and self.on_strong_evidence and not self.is_in_meeting:
             self.on_strong_evidence()
+        if (platform is TEAMS and platform is not self.bound_platform and
+                platform.key not in self._suppressed_platforms and
+                audio and audio.available and not audio.active and not audio.failed_pids and
+                streams_ok and not streams):
+            if self.diagnostics:
+                self.diagnostics.record("probe_skipped", platform=platform.key, sensor="window",
+                                        rule="confirmed_idle_audio_no_media")
+            return CallEvidence(False, decision_rule="idle_audio_window_probe_unnecessary")
         window, window_ok = self._read_sensor(
             platform, "window", lambda: self._active_call_window_for_platform(platform)
         )
+        if platform is WEBEX:
+            self._webex_observation = dict(audio=audio, window=window,
+                                           valid=bool(audio and audio.available and not audio.failed_pids
+                                                      and streams_ok and window_ok),
+                                           signature=self._media_signatures.get(platform.key, ()))
         if window and self.on_possible_evidence:
             self.on_possible_evidence()
         if platform is WEBEX and self._looks_like_attachment_window(window):
-            return CallEvidence(False)
+            return CallEvidence(False, decision_rule="attachment_preview")
 
         # All clients support audio + window independently of transport.
         # Known UDP can replace the window, except for Webex output-only calls
@@ -434,18 +506,23 @@ class ProcessMonitor:
                     reason += " with known UDP media"
                 if window:
                     reason += f" and call window '{window}'"
-                return CallEvidence(True, window, reason)
+                return CallEvidence(True, window, reason, decision_rule=(
+                    "audio_plus_window" if window else "audio_plus_known_udp"
+                ))
             if not audio.active and not audio.failed_pids:
                 return CallEvidence(False, fully_idle=(
                     window_ok and not window and streams_ok and not streams
-                ))
+                ), decision_rule="audio_idle")
             if not window_ok or (not streams_ok and (
                 audio.input_pids or audio.failed_pids or not platform.require_window_for_output
             )):
-                return CallEvidence(None)
+                return CallEvidence(None, decision_rule="sensor_read_failed")
             if audio.failed_pids and (window or streams):
-                return CallEvidence(None)
-            return CallEvidence(False)
+                return CallEvidence(None, decision_rule="audio_read_incomplete")
+            departure = bool(platform is WEBEX and not audio.output_pids and not audio.failed_pids
+                             and window_ok and not window and streams_ok and not streams)
+            return CallEvidence(False, webex_departure=departure,
+                                decision_rule="webex_departure_input_retained" if departure else "missing_corroboration")
 
         if audio and not audio.available:
             # Unsupported API is a deliberate compatibility mode. Runtime
@@ -455,16 +532,16 @@ class ProcessMonitor:
                 return CallEvidence(True, window, (
                     f"{platform.display_name} call window '{window}' plus "
                     f"process '{process}' using UDP port {port}"
-                ))
+                ), decision_rule="window_plus_udp_fallback")
             if (window_ok and not window) or (streams_ok and not streams):
-                return CallEvidence(False)
-            return CallEvidence(None)
+                return CallEvidence(False, decision_rule="missing_corroboration")
+            return CallEvidence(None, decision_rule="sensor_read_failed")
 
         # Enumeration/audio failures cannot establish inactivity unless all
         # possible corroboration was successfully read and is absent.
         if window_ok and not window and streams_ok and not streams:
-            return CallEvidence(False)
-        return CallEvidence(None)
+            return CallEvidence(False, decision_rule="missing_corroboration")
+        return CallEvidence(None, decision_rule="sensor_read_failed")
 
     def bind_current_platform(self) -> None:
         """Pin automatic capture and title enrichment until verified completion."""
@@ -484,8 +561,8 @@ class ProcessMonitor:
         """Recognize a quick return only after a complete, successful idle read.
 
         Keep the end grace for missing evidence. A fully observed departure
-        followed by two positive polls instead establishes a new call, even
-        with the same title. Unknown reads invalidate this shorter path.
+        (Webex may retain input alone), followed by two positive polls,
+        establishes a new call even with the same title. Unknown reads invalidate this shorter path.
         """
         self._restarted_platforms.clear()
         observed = {platform.key for platform, _ in evidence}
@@ -497,7 +574,7 @@ class ProcessMonitor:
             tracked = platform is self.bound_platform or key in self._suppressed_platforms
             if not tracked:
                 self._departed_platforms.pop(key, None)
-            elif row.active is False and row.fully_idle:
+            elif row.active is False and (row.fully_idle or (platform is WEBEX and row.webex_departure)):
                 self._departed_platforms[key] = 0
             elif row.active is True and key in self._departed_platforms:
                 self._departed_platforms[key] += 1
@@ -505,21 +582,60 @@ class ProcessMonitor:
                     del self._departed_platforms[key]
                     self._restarted_platforms.add(key)
                     self._rearm_prompt(key)
-                    if self.diagnostics:
-                        self.diagnostics.detected(key, restart=True)
-                    logger.info("New %s call confirmed after a fully idle gap.", platform.display_name)
+                    self._announce_detection(key, restart=True)
+                    logger.info("New %s call confirmed after an observed departure.", platform.display_name)
             else:
                 self._departed_platforms.pop(key, None)
+
+    def _track_webex_suspicions(self, row: CallEvidence) -> None:
+        """A weaker media change only requests diagnostic confirmation, never a split."""
+        if self.diagnostics is None:
+            return
+        observed = self._webex_observation
+        if (row.active is not True or not observed or not observed["valid"] or
+                WEBEX.key in self._restarted_platforms):
+            self._webex_baseline = self._webex_suspect = None
+            return
+        audio = observed["audio"]
+        title, signature = observed["window"], observed["signature"]
+        now = time.monotonic()
+        if not audio.output_pids:
+            if self._webex_suspect:
+                self._webex_suspect[2] = 0
+            if (audio.input_pids and self._webex_baseline and self._webex_suspect is None and
+                    now - self._webex_baseline[2] <= 30):
+                self._webex_suspect = [self._webex_baseline, now, 0]
+            return
+        candidate = self._webex_suspect
+        if candidate:
+            baseline, began, count = candidate
+            if (now - began <= 30 and title and baseline[0] and title != baseline[0] and
+                    signature and baseline[1] and signature != baseline[1]):
+                candidate[2] = count + 1
+                if candidate[2] < 2:
+                    return
+                if self.diagnostics:
+                    blocked = "webex" in self._suppressed_platforms or "" in self._suppressed_platforms
+                    self.diagnostics.suspected("webex", blocked=blocked,
+                                               rule="output_interruption_title_and_ports_changed")
+            self._webex_suspect = None
+        self._webex_baseline = (title, signature, now)
 
     def is_call_active(self) -> bool | None:
         """Return active, inactive, or unknown for the bound call (or candidates)."""
         platforms = (self.bound_platform,) if self.bound_platform else SUPPORTED_PLATFORMS
         evidence = [(platform, self._call_evidence(platform)) for platform in platforms]
         self._track_platform_transitions(evidence)
+        for platform, row in evidence:
+            if row.active is False:
+                self._startup_platforms.discard(platform.key)
+            if platform is WEBEX:
+                self._track_webex_suspicions(row)
         if self.diagnostics:
             self.diagnostics.record(
                 "poll", bound=self.bound_platform.key if self.bound_platform else None,
-                evidence=[dict(platform=p.key, active=r.active, fully_idle=r.fully_idle)
+                evidence=[dict(platform=p.key, active=r.active, fully_idle=r.fully_idle,
+                               webex_departure=r.webex_departure, decision_rule=r.decision_rule)
                           for p, r in evidence],
                 grace_started=self._inactive_since, grace_seconds=self.call_end_grace_seconds,
                 start_count=self._active_poll_count, departed=dict(self._departed_platforms),
@@ -656,8 +772,7 @@ class ProcessMonitor:
                 self._active_poll_count += 1
                 if self._active_poll_count >= 2:
                     self.is_in_meeting = True
-                    if self.diagnostics:
-                        self.diagnostics.detected(key or "unknown")
+                    self._announce_detection(key or "unknown")
                     self._active_poll_count = 0
                     self._idle_poll_count = 0
                     self._inactive_since = None

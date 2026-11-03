@@ -391,14 +391,20 @@ def test_menu_action_captures_session_generation_before_background_dispatch():
     assert thread.call_args.kwargs["args"] == ("delete_after_transcription", 7)
 
 
+@pytest.mark.parametrize("category,wording", [
+    ("new_call", "Did a new webex call start"),
+    ("startup_discovery", "Was a webex call already in progress"),
+    ("suspected_transition", "Did a different webex call start"),
+])
 @pytest.mark.parametrize("response", ["yes", "no", "not_sure", None, "late"])
-def test_nonmodal_diagnostic_response_and_timeout(response):
+def test_nonmodal_diagnostic_response_and_timeout(response, category, wording):
     import queue
 
     daemon = Mock()
     daemon._shutdown_event = threading.Event()
     daemon.diagnostics.prompts = queue.Queue()
-    event = {"platform": "webex", "event_id": "synthetic", "detected_at": 100}
+    event = {"platform": "webex", "event_id": "synthetic", "detected_at": 100,
+             "category": category, "blocked": True}
     daemon.diagnostics.prompts.put(event)
     ui = MacOSUI(daemon)
     ui.target = Mock()
@@ -412,6 +418,9 @@ def test_nonmodal_diagnostic_response_and_timeout(response):
     with patch("webex_obs.macos_ui.AppKit", appkit), \
          patch("webex_obs.macos_ui.time.monotonic", return_value=100) as clock:
         ui._tick_diagnostics()
+        detail = appkit.NSTextField.labelWithString_.call_args.args[0]
+        assert wording in detail
+        assert "Recording remains declined" in detail
         assert len(ui._diagnostic_windows) == 1
         assert ui._diagnostic_windows[0][1] == 130
         callbacks = list(ui._diagnostic_actions.values())
