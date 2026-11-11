@@ -131,6 +131,9 @@ Webex output-only requires a non-attachment window. An unsupported Core Audio
 API uses window plus known UDP; a failed supported read never enables fallback.
 Sensor results distinguish active, inactive, and unknown. Unknown polls break
 start confirmation and reset the continuous-inactivity end grace timer.
+Webex window selection skips attachment previews when a qualifying window is
+available. A preview-only observation with retained or unreadable media is
+unknown: it cannot start capture, end a session, or rearm a decline.
 Automatic start requires two positive polls for the same platform. The daemon
 binds the detector before automatic capture and releases it only after verified
 completion (or a start failure with no unresolved capture). Bound polling and

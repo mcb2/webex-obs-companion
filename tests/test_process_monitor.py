@@ -64,7 +64,7 @@ class ProcessMonitorTests(unittest.TestCase):
              patch.object(monitor, "_active_call_window_name", side_effect=window), \
              patch.object(monitor, "_active_window_name", return_value=None):
             # Warming OBS must not bypass the existing attachment rejection.
-            self.assertFalse(monitor.is_call_active())
+            self.assertIsNone(monitor.is_call_active())
         self.assertEqual(events, ["prepare", "window"])
 
     def test_idle_hook_is_not_called_for_unconfirmed_positive_evidence(self):
@@ -140,7 +140,7 @@ class ProcessMonitorTests(unittest.TestCase):
             "_active_call_window_name",
             return_value="quarterly-results.pdf",
         ):
-            self.assertFalse(monitor.is_webex_running())
+            self.assertIsNone(monitor.is_webex_running())
 
     def test_webex_listen_only_call_is_detected(self):
         audio = _AudioMonitor(AudioActivity(available=True, output_pids=(123,)))
@@ -175,6 +175,33 @@ class ProcessMonitorTests(unittest.TestCase):
         with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
              patch("webex_obs.process_monitor.subprocess.run", return_value=result):
             self.assertEqual(monitor._active_call_window_name(), "Weekly Sync")
+
+    def test_webex_preview_does_not_hide_meeting_or_rearm_decline(self):
+        audio = _AudioMonitor(AudioActivity(available=True, input_pids=(123,), output_pids=(123,)))
+        monitor = ProcessMonitor(audio_monitor=audio, call_end_grace_seconds=15)
+        monitor.current_platform = WEBEX
+        monitor.suppress_current_call_prompt("Synthetic meeting")
+        monitor.bind_current_platform()
+        result = types.SimpleNamespace(returncode=0, stdout="preview.pdf\nSynthetic meeting\n", stderr="")
+        with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[_Process("Webex", 5004)]), \
+             patch("webex_obs.process_monitor.subprocess.run", return_value=result), \
+             patch("webex_obs.process_monitor.time.monotonic", return_value=100) as clock:
+            self.assertTrue(monitor.is_call_active())
+            self.assertEqual(monitor.get_active_call_title(), "Synthetic meeting")
+            result.stdout = "preview.pdf\n"
+            self.assertIsNone(monitor.get_active_call_title())
+            self.assertFalse(monitor.has_call_ended())
+            clock.return_value = 116
+            self.assertFalse(monitor.has_call_ended())
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+            result.stdout = "Synthetic meeting\n"
+            self.assertFalse(monitor.has_call_ended())
+            self.assertTrue(monitor.should_suppress_automatic_prompt())
+
+    def test_webex_preview_with_no_audio_or_media_allows_confirmed_inactivity(self):
+        monitor = ProcessMonitor(audio_monitor=_AudioMonitor(AudioActivity(available=True)))
+        with patch.object(monitor, "_active_call_window_name", return_value="preview.pdf"):
+            self.assertFalse(monitor.is_call_active())
 
     def test_call_start_requires_two_consecutive_checks(self):
         monitor = ProcessMonitor(poll_interval=0)

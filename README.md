@@ -39,6 +39,11 @@ inactive Core Audio read. Failed sensor reads are unknown, rather than idle;
 cannot start recording or count toward the end grace period. Persistent sensor
 failure can keep a recording active until you stop it manually.
 
+Webex attachment previews do not hide a qualifying meeting window from detection.
+If only previews are visible and Webex still has audio or known media sockets,
+the app cannot confirm the call ended. It keeps any existing recording or decline
+in effect while it waits for clearer evidence.
+
 Automatic start requires two consecutive positive polls for the same platform.
 The recording and title enrichment stay bound to that platform until recording
 has verifiably stopped; an overlapping call cannot extend or relabel the session.

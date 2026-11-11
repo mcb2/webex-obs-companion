@@ -258,12 +258,13 @@ class ProcessMonitor:
         return process_name.replace("\\", "\\\\").replace('"', '\\"')
 
     def _active_window_name(self, platform: CallPlatform) -> str | None:
-        """Return a non-idle window title exposed by the platform on macOS."""
+        """Prefer a non-idle call candidate; keep a preview only as a fallback."""
         # Only successful enumeration can establish absence. A failed read
         # must propagate as unknown, including during an active recording.
         if not self._matching_processes(platform):
             return None
         failures = []
+        preview_title = None
         for process_name in platform.apple_process_names:
             escaped_name = self._apple_script_process_name(process_name)
             apple_script = f"""
@@ -304,6 +305,9 @@ class ProcessMonitor:
                         window_name
                         and window_name.casefold() not in platform.non_call_window_names
                     ):
+                        if platform is WEBEX and self._looks_like_attachment_window(window_name):
+                            preview_title = preview_title or window_name
+                            continue
                         return window_name
             except subprocess.TimeoutExpired:
                 failures.append(f"{process_name}: osascript timed out after 2 seconds")
@@ -311,7 +315,9 @@ class ProcessMonitor:
                 failures.append(f"{process_name}: osascript failed ({type(exc).__name__})")
         if failures:
             raise OSError("Platform window inspection unavailable: " + "; ".join(failures))
-        return None
+        # A preview-only result is different from seeing no window: retained
+        # media may still belong to a call obscured by the preview.
+        return preview_title
 
     @staticmethod
     def _looks_like_attachment_window(window_name: str | None) -> bool:
@@ -369,7 +375,7 @@ class ProcessMonitor:
             title, _ = self._read_sensor(
                 platform, "window", lambda: self._active_call_window_for_platform(platform)
             )
-            if title:
+            if title and not (platform is WEBEX and self._looks_like_attachment_window(title)):
                 self.current_platform = platform
                 self.current_call_title = title
                 return title
@@ -489,6 +495,8 @@ class ProcessMonitor:
         if window and self.on_possible_evidence:
             self.on_possible_evidence()
         if platform is WEBEX and self._looks_like_attachment_window(window):
+            if streams or not streams_ok or audio is None or audio.active or audio.failed_pids:
+                return CallEvidence(None, decision_rule="attachment_preview_media_unresolved")
             return CallEvidence(False, decision_rule="attachment_preview")
 
         # All clients support audio + window independently of transport.
