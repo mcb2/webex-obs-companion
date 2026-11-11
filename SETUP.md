@@ -432,6 +432,10 @@ Use synthetic test calls and the normal consent process.
 
 Use synthetic calls and obtain recording consent as usual.
 
+- Open and close a synthetic attachment preview during a Webex test call, and
+  repeat after declining recording. Verify a visible meeting window remains
+  eligible and a preview alone does not stop capture or rearm the decline while
+  media remains active. Then leave the call and verify normal inactivity rearming.
 - Decline a Webex recording, finish any active recording, and restart the
   companion. Confirm the decline remains in effect and startup diagnostics ask
   about an ongoing call rather than a new call. Manual Start remains available.
