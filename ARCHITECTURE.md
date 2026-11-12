@@ -113,8 +113,9 @@ verification precedes job persistence, and unresolved stops/media stay protected
 Cleanup stops job admission and waits at most two seconds for processing, then
 stops hotkeys and disconnects the backend. The main/AppKit supervisor enforces a
 ten-second cleanup deadline without issuing competing backend operations. AppKit
-keeps pumping/cancels UI requests during shutdown, exits its run loop, and returns
-failure as a nonzero process exit. Menu Quit unloads launchd only after cleanup
+keeps pumping/cancels UI requests during shutdown and posts an event so the
+shutdown timer can finish exiting the run loop without user input. Failure
+returns a nonzero process exit. Menu Quit unloads launchd only after cleanup
 or timeout, with launchctl calls separately bounded. A lifecycle heartbeat with
 PID, state, and expiration distinguishes a responding app from a loaded job.
 The ownership lock lasts until process exit because a processing thread may
@@ -131,6 +132,8 @@ Webex output-only requires a non-attachment window. An unsupported Core Audio
 API uses window plus known UDP; a failed supported read never enables fallback.
 Sensor results distinguish active, inactive, and unknown. Unknown polls break
 start confirmation and reset the continuous-inactivity end grace timer.
+macOS process enumeration permission failures reported as a psutil
+`SystemError` are treated as unavailable sensor readings.
 Webex window selection skips attachment previews when a qualifying window is
 available. A preview-only observation with retained or unreadable media is
 unknown: it cannot start capture, end a session, or rearm a decline.

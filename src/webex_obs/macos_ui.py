@@ -275,7 +275,13 @@ class MacOSUI:
                 threading.Thread(target=self._unload_service, name="service-unload", daemon=True).start()
             if not self._unload_done.is_set():
                 return
-        AppKit.NSApp.stop_(None)
+        # A timer callback needs to post an event for AppKit to finish stopping.
+        app = AppKit.NSApp
+        wake_event = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            AppKit.NSEventTypeApplicationDefined, (0, 0), 0, 0, 0, None, 0, 0, 0,
+        )
+        app.stop_(None)
+        app.postEvent_atStart_(wake_event, True)
 
     def _unload_service(self):
         try:

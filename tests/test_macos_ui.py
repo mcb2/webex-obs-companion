@@ -165,10 +165,17 @@ def test_quit_waits_for_lifecycle_before_unloading_service():
         ui._tick_shutdown()
         unload.assert_not_called()
         appkit.NSApp.stop_.assert_not_called()
+        appkit.NSApp.postEvent_atStart_.assert_not_called()
         ui.daemon._stopped_event.set()
         ui._tick_shutdown()
         unload.assert_called_once()
-        appkit.NSApp.stop_.assert_called_once_with(None)
+        event_factory = appkit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_
+        event_factory.assert_called_once_with(
+            appkit.NSEventTypeApplicationDefined, (0, 0), 0, 0, 0, None, 0, 0, 0,
+        )
+        appkit.NSApp.assert_has_calls([
+            call.stop_(None), call.postEvent_atStart_(event_factory.return_value, True),
+        ])
 
 
 def test_shutdown_deadline_exits_with_visible_capture_warning():

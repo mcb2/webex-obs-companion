@@ -706,6 +706,32 @@ def test_failed_process_enumeration_does_not_establish_window_absence():
     assert row["window_available"] is False
 
 
+def test_macos_procargs_permission_failure_keeps_call_state_unknown():
+    monitor = ProcessMonitor()
+    monitor.current_platform = WEBEX
+    monitor.bind_current_platform()
+    monitor.suppress_current_call_prompt()
+
+    def denied(_attrs):
+        raise SystemError("proc_cmdline returned a result with an exception set") from PermissionError(
+            13, "force permission denied (originated from sysctl(KERN_PROCARGS2) -> errno 0)"
+        )
+
+    with patch("webex_obs.process_monitor.psutil.process_iter", side_effect=denied), \
+         patch("webex_obs.process_monitor.subprocess.run") as windows:
+        assert monitor.is_call_active() is None
+        assert not monitor.has_call_ended()
+        assert monitor.should_suppress_automatic_prompt()
+    windows.assert_not_called()
+
+
+def test_unrelated_process_enumeration_system_error_propagates():
+    monitor = ProcessMonitor()
+    with patch("webex_obs.process_monitor.psutil.process_iter", side_effect=SystemError("unexpected")):
+        with pytest.raises(SystemError, match="unexpected"):
+            monitor.is_call_active()
+
+
 @pytest.mark.parametrize("failure, expected", [
     ("timeout", "timed out after 2 seconds"),
     ("exit", "osascript exited 1 (AppleScript error -1743)"),
