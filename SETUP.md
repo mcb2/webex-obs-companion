@@ -197,6 +197,10 @@ check the service log, folder permissions, and WebSocket 5.3+ support. Existing
 files are not moved. LaunchAgent
 stdout/stderr log paths are fixed by the installed service definition.
 
+An exclamation point in the menu-bar icon indicates an application failure.
+Check the service log for the cause. If the service shuts down after a failure,
+the LaunchAgent can relaunch it automatically.
+
 Recording actions now live directly in the status menu. Only actions available
 in the current state appear. Video source
 selection still opens a separate picker, and **Stop & Discard…** opens a separate

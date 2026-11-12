@@ -198,6 +198,12 @@ class ProcessMonitor:
                     processes.append(proc)
         except (psutil.Error, OSError) as exc:
             raise OSError("Process enumeration unavailable") from exc
+        except SystemError as exc:
+            # Older psutil can surface a macOS process-argument permission
+            # failure as a SystemError from its C extension (psutil #2854).
+            if isinstance(exc.__cause__, PermissionError) and "KERN_PROCARGS2" in str(exc.__cause__):
+                raise OSError("Process enumeration unavailable: macOS denied access to process arguments") from exc
+            raise
         return processes
 
     def _active_media_streams(
