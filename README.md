@@ -10,6 +10,7 @@ Automated background meeting recorder, Apple Silicon MLX Whisper transcriber, ne
 - **OBS Studio Automation & Audio Refresh**: Automatically starts/stops OBS recordings via WebSocket v5. Before each recording start, attempts Restart Capture on all macOS Audio Capture sources, including renamed sources. OBS disables this button for healthy capture; failures are logged and recording continues. OBS stays open between calls by default. Guarded idle restarts refresh long-running OBS instances; optional exit after recording is also available.
 - **Automatic Recording Recovery**: Verifies OBS recording state throughout a call and starts a new segment when capture is confirmed stopped; ambiguous active outputs require manual resolution.
 - **Local Apple Silicon Hardware Transcription**: Fast, private speech-to-text powered by `mlx-whisper` (`whisper-large-v3-turbo`).
+- **Transcription banners** show the recording filename when transcription starts and ends. Turn them off under **Settings → Transcription → Show transcription banners**.
 - **Neural & Acoustic Speaker Diarization**: Assigns anonymous speaker labels to speech turns. Neural diarization falls back to a rough two-group acoustic classification when unavailable; labels do not identify participant names.
 - **Direct 1:1 Webex Bot Delivery**: Optionally delivers completed transcripts to your personal 1:1 Webex chat or a configured space via a Webex Bot token.
 - **macOS LaunchAgent Daemon**: Runs silently in the background (`RunAtLoad` / `KeepAlive`) with auto-recovery.

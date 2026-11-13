@@ -499,6 +499,7 @@ def test_completed_recording_is_queued_before_lifecycle_rearms():
 
 def test_post_processing_job_uses_snapshotted_workers_and_settings():
     daemon = _daemon()
+    daemon.config = Config(_env_file=None)
     daemon.ui = Mock()
     daemon.deliver_transcript = Mock(return_value=True)
     transcriber = Mock()
@@ -619,6 +620,7 @@ def test_failed_processing_never_becomes_retention_eligible_even_after_other_job
     from webex_obs.cleaner import MediaCleaner
 
     daemon = _daemon()
+    daemon.config = Config(_env_file=None)
     daemon.ui = Mock()
     daemon.deliver_transcript = Mock(return_value=True)
     failed_media = tmp_path / "failed.mkv"

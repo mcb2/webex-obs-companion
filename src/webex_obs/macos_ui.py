@@ -655,6 +655,7 @@ class MacOSUI:
                 ("Whisper model", "whisper_model", "text"),
                 ("Enable diarization", "enable_diarization", "bool"),
                 ("Hugging Face token", "hf_token", "secret"),
+                ("Show transcription banners", "transcription_notifications", "bool"),
             ]),
             ("Files and detection", [
                 ("Recordings folder", "recordings_dir", "text"),

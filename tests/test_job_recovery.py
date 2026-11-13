@@ -2,7 +2,7 @@ import stat
 import threading
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -53,6 +53,8 @@ def test_restart_recovers_safe_work_without_duplicate_delivery(context, state):
     app._process_post_processing_job(recovered[0])
     assert store.read(job.job_id)["state"] == "complete"
     assert app.deliver_transcript.call_count == (state != "delivered")
+    if state in {"ready", "delivered"}:
+        app.ui.show_notification.assert_not_called()
     assert transcript.exists()
     assert store.recover(config) == []
 
@@ -65,6 +67,40 @@ def test_restart_holds_uncertain_and_failed_jobs_for_review(context, state):
     assert store.read(job.job_id)["state"] == ("uncertain" if state == "delivering" else state)
     assert Path(job.media_files[0]).exists()
     app.deliver_transcript.assert_not_called()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_transcription_banners_name_the_recording_and_precede_delivery(context, enabled):
+    app, store, job, config = context
+    app.config = config.model_copy(update={"transcription_notifications": enabled})
+    timeline = Mock()
+    timeline.attach_mock(app.ui.show_notification, "banner")
+    timeline.attach_mock(app.deliver_transcript, "deliver")
+    transcript = Path(store.read(job.job_id)["transcript"])
+    name = Path(job.media_files[0]).name
+
+    def transcribe(*args, **kwargs):
+        assert timeline.mock_calls == ([call.banner("Transcription started", name)] if enabled else [])
+        transcript.parent.mkdir()
+        transcript.write_text("Synthetic complete transcript")
+        return transcript
+
+    job = replace(job, transcriber=Mock(transcribe_files=transcribe))
+    app._process_post_processing_job(job)
+
+    banners = [call.banner("Transcription started", name), call.banner("Transcription finished", name)]
+    assert timeline.mock_calls == (banners if enabled else []) + [
+        call.deliver(transcript, job.meeting_title, delivery_enabled=True, webex=job.webex),
+    ]
+    assert store.read(job.job_id)["state"] == "complete"
+
+
+def test_unavailable_transcription_banners_do_not_interrupt_processing(context):
+    app, store, job, _ = context
+    app.ui.show_notification.side_effect = OSError("synthetic notification error")
+    app._process_post_processing_job(job)
+    assert store.read(job.job_id)["state"] == "complete"
+    app.deliver_transcript.assert_called_once()
 
 
 @pytest.mark.parametrize("change", [{"webex_delivery_enabled": False}, {"webex_recipient_email": "changed@example.com"}])
@@ -211,6 +247,10 @@ def test_partial_transcription_checkpoint_blocks_delivery_and_retention(context,
     record = store.read(job.job_id)
     assert record["state"] == "failed"
     assert Path(record["transcript"]).read_text().startswith("# PARTIAL TRANSCRIPT — INCOMPLETE")
+    assert app.ui.show_notification.call_args_list == [
+        call("Transcription started", "synthetic.mkv (2 parts)"),
+        call("Transcription incomplete", "synthetic.mkv (2 parts)"),
+    ]
     assert all(Path(f).exists() for f in job.media_files)
     app.deliver_transcript.assert_not_called()
     eligible.assert_not_called()
