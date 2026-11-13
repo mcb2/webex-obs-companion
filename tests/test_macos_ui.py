@@ -387,6 +387,18 @@ def test_retention_setup_note_is_present_in_gui(settings_ui):
     ]
 
 
+def test_transcription_banners_can_be_disabled_in_settings(settings_ui):
+    ui, _ = settings_ui
+    ui.show_settings()
+    field, kind = ui._settings_inputs["transcription_notifications"]
+    assert kind == "bool"
+    assert field.state()
+    field.setState_(False)
+    with patch.object(ui, "_save_settings_async") as save:
+        ui.save_settings()
+    save.assert_called_once_with({"transcription_notifications": False})
+
+
 def test_menu_action_captures_session_generation_before_background_dispatch():
     ui = menu_ui(True)
     target = _MenuTarget.alloc().init()

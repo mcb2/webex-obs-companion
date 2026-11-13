@@ -298,6 +298,13 @@ suffixes; the original title is retained inside the transcript.
 
 Speaker labels are anonymous. If neural diarization cannot load or run, the app
 uses a rough two-group acoustic fallback; it does not identify participant names.
+
+**Settings → Transcription → Show transcription banners** is on by default.
+The banners show the recording filename and, for recordings with multiple
+segments, the number of parts. The final banner reports whether transcription
+finished successfully. You can turn the banners off in Settings or set
+`TRANSCRIPTION_NOTIFICATIONS=false` in the dotenv configuration.
+
 Completed sessions are transcribed and delivered by a background queue so call
 monitoring can continue while processing the previous meeting.
 

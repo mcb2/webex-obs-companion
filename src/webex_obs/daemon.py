@@ -331,15 +331,19 @@ class WebexOBSDaemon:
             )
         return bool(sent)
 
+    def _show_transcription_banner(self, title: str, recording_name: str) -> None:
+        if not self.config.transcription_notifications:
+            return
+        try:
+            self.ui.show_notification(title, recording_name)
+        except OSError:
+            logger.warning("Could not display transcription banner.")
+
     def _process_post_processing_job(self, job: PostProcessingJob) -> None:
         """Transcribe, deliver, and clean up one finalized meeting."""
         files = list(job.media_files)
         MediaCleaner.protect_recordings(files)
         identities = MediaCleaner.recording_identities(files)
-        self.ui.show_notification(
-            "Webex OBS Companion",
-            f"Transcribing and diarizing {job.meeting_title}...",
-        )
         record = job.journal.read(job.job_id) if job.journal else None
         if record and record["state"] not in {"queued", "ready", "delivered"}:
             return
@@ -360,9 +364,18 @@ class WebexOBSDaemon:
                 return
         else:
             options = {"output_path": Path(record["transcript"])} if record else {}
-            transcript_file = job.transcriber.transcribe_files(
-                files, meeting_title=job.meeting_title, output_stem=job.output_stem, **options,
-            )
+            recording_name = Path(files[0]).name if files else job.output_stem
+            if len(files) > 1:
+                recording_name += f" ({len(files)} parts)"
+            self._show_transcription_banner("Transcription started", recording_name)
+            transcript_file = None
+            try:
+                transcript_file = job.transcriber.transcribe_files(
+                    files, meeting_title=job.meeting_title, output_stem=job.output_stem, **options,
+                )
+            finally:
+                title = "Transcription finished" if transcript_file else "Transcription incomplete"
+                self._show_transcription_banner(title, recording_name)
         if not transcript_file:
             if job.journal:
                 job.journal.update(job.job_id, state="failed")
@@ -500,7 +513,7 @@ class WebexOBSDaemon:
             "Manual Stop & Transcribe requested via hotkey (%s).",
             display_hotkey(self.config.hotkey_stop_transcribe),
         )
-        self.ui.show_notification("Webex OBS Companion", "Stopping recording and initiating MLX transcription...")
+        self.ui.show_notification("Webex OBS Companion", "Stopping recording...")
 
     def _handle_audio_start_request(self):
         self._request_manual_start("audio")

@@ -9,6 +9,16 @@ from webex_obs.config import Config
 from webex_obs.settings_store import save_settings
 
 
+def test_transcription_banners_setting_round_trips(tmp_path):
+    path = tmp_path / ".env"
+    current = Config(_env_file=path)
+    assert current.transcription_notifications is True
+    for enabled in (False, True):
+        current = save_settings({"transcription_notifications": enabled}, path, current=current)
+        assert current.transcription_notifications is enabled
+        assert Config(_env_file=path).transcription_notifications is enabled
+
+
 @pytest.mark.parametrize("mode", [None, 0o666, 0o755, 0o400])
 def test_credentials_are_private_after_creation_or_replacement(tmp_path, monkeypatch, mode):
     path = tmp_path / ".env"

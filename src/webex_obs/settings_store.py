@@ -30,6 +30,7 @@ EDITABLE = {
     "retention_days": "RETENTION_DAYS",
     "call_end_grace_seconds": "CALL_END_GRACE_SECONDS",
     "enable_diarization": "ENABLE_DIARIZATION",
+    "transcription_notifications": "TRANSCRIPTION_NOTIFICATIONS",
     "whisper_model": "WHISPER_MODEL",
     "hf_token": "HF_TOKEN",
     "poll_interval": "POLL_INTERVAL",

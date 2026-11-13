@@ -128,6 +128,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ENABLE_DIARIZATION", "enable_diarization"),
         description="Enable neural speaker diarization (identifying speaker turns)"
     )
+    transcription_notifications: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("TRANSCRIPTION_NOTIFICATIONS", "transcription_notifications"),
+        description="Show banners when transcription starts and finishes"
+    )
     hf_token: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "hf_token", "HUGGING_FACE_HUB_TOKEN", "hugging_face_hub_token"),
