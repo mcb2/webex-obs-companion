@@ -7,6 +7,7 @@ import tempfile
 import warnings
 from getpass import GetPassWarning
 from pathlib import Path
+from typing import Annotated
 import requests
 import typer
 from rich.console import Console
@@ -51,9 +52,15 @@ try:
 except Exception:
     pass
 
-app = typer.Typer(help="Webex OBS Companion CLI management")
+app = typer.Typer(
+    help="Webex OBS Companion CLI management",
+    epilog="Troubleshooting: use start --detection-diagnostics to enable call detection dialogs. "
+    "Use COMMAND --help for command options.",
+    rich_markup_mode=None,
+)
 console = Console()
 
+DETECTION_DIAGNOSTICS_HELP = "Show call detection dialogs and log detection evidence."
 PLIST_NAME = "com.cisco.webex-obs.plist"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / PLIST_NAME
@@ -441,7 +448,7 @@ def diagnose_calls():
 @app.command()
 def run(
     detection_diagnostics: bool = typer.Option(
-        False, "--detection-diagnostics", help="Log call evidence and enable diagnostic confirmation/markers."
+        False, "--detection-diagnostics", help=DETECTION_DIAGNOSTICS_HELP
     ),
 ):
     """Run the companion daemon in the foreground (interactive / debug mode)."""
@@ -451,7 +458,11 @@ def run(
 
 
 @app.command()
-def install_service(detection_diagnostics: bool = False):
+def install_service(
+    detection_diagnostics: Annotated[
+        bool, typer.Option(help=DETECTION_DIAGNOSTICS_HELP, show_default=False)
+    ] = False,
+):
     """Install and load the background daemon as a macOS LaunchAgent."""
     _check_ffmpeg()
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -495,7 +506,11 @@ def install_service(detection_diagnostics: bool = False):
 
 
 @app.command()
-def start(detection_diagnostics: bool = False):
+def start(
+    detection_diagnostics: Annotated[
+        bool, typer.Option(help=DETECTION_DIAGNOSTICS_HELP, show_default=False)
+    ] = False,
+):
     """Start the background LaunchAgent service."""
     if not PLIST_PATH.exists():
         console.print("[yellow]Service not installed yet. Running install-service first...[/yellow]")
