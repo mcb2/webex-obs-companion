@@ -56,11 +56,14 @@ app = typer.Typer(
     help="Webex OBS Companion CLI management",
     epilog="Troubleshooting: use start --detection-diagnostics to enable call detection dialogs. "
     "Use COMMAND --help for command options.",
-    rich_markup_mode=None,
 )
 console = Console()
 
 DETECTION_DIAGNOSTICS_HELP = "Show call detection dialogs and log detection evidence."
+SERVICE_DIAGNOSTICS_EPILOG = (
+    "Use --detection-diagnostics to enable troubleshooting. "
+    "Use --no-detection-diagnostics to explicitly disable it (the default)."
+)
 PLIST_NAME = "com.cisco.webex-obs.plist"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / PLIST_NAME
@@ -457,7 +460,7 @@ def run(
     daemon_main(detection_diagnostics=detection_diagnostics)
 
 
-@app.command()
+@app.command(epilog=SERVICE_DIAGNOSTICS_EPILOG)
 def install_service(
     detection_diagnostics: Annotated[
         bool, typer.Option(help=DETECTION_DIAGNOSTICS_HELP, show_default=False)
@@ -505,7 +508,7 @@ def install_service(
         console.print(f"[bold red]Failed to load LaunchAgent:[/bold red] {res.stderr}")
 
 
-@app.command()
+@app.command(epilog=SERVICE_DIAGNOSTICS_EPILOG)
 def start(
     detection_diagnostics: Annotated[
         bool, typer.Option(help=DETECTION_DIAGNOSTICS_HELP, show_default=False)

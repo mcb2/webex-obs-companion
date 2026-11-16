@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from rich.console import Console
+from typer import rich_utils
 from typer.testing import CliRunner
 from getpass import GetPassWarning
 
@@ -289,16 +290,18 @@ def test_setup_does_not_overwrite_invalid_existing_configuration(tmp_path, monke
         "test-webex", "list-rooms", "setup", "diagnose-calls", "stop", "status", "logs",
     )),
 ])
-def test_help_lists_supported_switches_in_full(command, options):
+@pytest.mark.parametrize("width", [60, 80])
+def test_help_lists_supported_switches_in_full(command, options, width, monkeypatch):
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", width)
     args = [command, "--help"] if command else ["--help"]
-    result = CliRunner().invoke(cli.app, args, terminal_width=80)
+    result = CliRunner().invoke(cli.app, args)
     assert result.exit_code == 0, result.output
-    option_lines = [line for line in result.output.splitlines() if line.startswith("  -")]
-    option_labels = [re.split(r" {2,}", line.strip(), maxsplit=1)[0] for line in option_lines]
-    switches = {switch for label in option_labels for switch in re.findall(r"-{1,2}[\w-]+", label)}
-    assert switches == options | {"--help"}
+    assert "╭─ Options " in result.output
+    switches = set(re.findall(r"(?<!\S)-{1,2}[\w-]+(?=\s|,)", result.output))
     if command is None:
         assert "start --detection-diagnostics" in result.output
+        switches.remove("--detection-diagnostics")
+    assert switches == options | {"--help"}
 
 
 @pytest.mark.parametrize(("flags", "enabled"), [
