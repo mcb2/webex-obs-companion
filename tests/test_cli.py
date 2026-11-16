@@ -1,5 +1,6 @@
 import io
 import plistlib
+import re
 import stat
 import tomllib
 import warnings
@@ -8,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from rich.console import Console
+from typer.testing import CliRunner
 from getpass import GetPassWarning
 
 from webex_obs import __version__, cli
@@ -277,15 +279,44 @@ def test_setup_does_not_overwrite_invalid_existing_configuration(tmp_path, monke
     assert "synthetic secret" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_start_explicitly_sets_diagnostic_mode_without_changing_other_service_fields(tmp_path, monkeypatch, enabled):
+@pytest.mark.parametrize(("command", "options"), [
+    (None, {"--install-completion", "--show-completion"}),
+    ("start", {"--detection-diagnostics", "--no-detection-diagnostics"}),
+    ("install-service", {"--detection-diagnostics", "--no-detection-diagnostics"}),
+    ("run", {"--detection-diagnostics"}),
+    ("prefetch-model", {"--model-name", "--token", "-t"}),
+    *((command, set()) for command in (
+        "test-webex", "list-rooms", "setup", "diagnose-calls", "stop", "status", "logs",
+    )),
+])
+def test_help_lists_supported_switches_in_full(command, options):
+    args = [command, "--help"] if command else ["--help"]
+    result = CliRunner().invoke(cli.app, args, terminal_width=80)
+    assert result.exit_code == 0, result.output
+    option_lines = [line for line in result.output.splitlines() if line.startswith("  -")]
+    option_labels = [re.split(r" {2,}", line.strip(), maxsplit=1)[0] for line in option_lines]
+    switches = {switch for label in option_labels for switch in re.findall(r"-{1,2}[\w-]+", label)}
+    assert switches == options | {"--help"}
+    if command is None:
+        assert "start --detection-diagnostics" in result.output
+
+
+@pytest.mark.parametrize(("flags", "enabled"), [
+    (["--detection-diagnostics"], True),
+    (["--no-detection-diagnostics"], False),
+    ([], False),
+])
+def test_start_explicitly_sets_diagnostic_mode_without_changing_other_service_fields(
+    tmp_path, monkeypatch, flags, enabled,
+):
     path = tmp_path / "agent.plist"
     arguments = ["python", "-u", "-m", "webex_obs.daemon", "--detection-diagnostics"]
     original = {"ProgramArguments": arguments, "KeepAlive": True, "WorkingDirectory": "/synthetic"}
     path.write_bytes(plistlib.dumps(original))
     monkeypatch.setattr(cli, "PLIST_PATH", path)
     monkeypatch.setattr(cli.subprocess, "run", Mock(return_value=Mock(returncode=0)))
-    cli.start(detection_diagnostics=enabled)
+    result = CliRunner().invoke(cli.app, ["start", *flags])
+    assert result.exit_code == 0, result.output
     updated = plistlib.loads(path.read_bytes())
     assert updated["ProgramArguments"].count("--detection-diagnostics") == int(enabled)
     assert updated["KeepAlive"] is True
@@ -293,7 +324,6 @@ def test_start_explicitly_sets_diagnostic_mode_without_changing_other_service_fi
 
 
 def test_foreground_cli_forwards_diagnostic_switch(monkeypatch, speech_modules):
-    from typer.testing import CliRunner
     import webex_obs.daemon as module
 
     main = Mock()
