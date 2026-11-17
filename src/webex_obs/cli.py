@@ -54,12 +54,12 @@ except Exception:
 
 app = typer.Typer(
     help="Webex OBS Companion CLI management",
-    epilog="Troubleshooting: use start --detection-diagnostics to enable call detection dialogs. "
+    epilog="Troubleshooting: use start --detection-diagnostics to enable call detection reporting. "
     "Use COMMAND --help for command options.",
 )
 console = Console()
 
-DETECTION_DIAGNOSTICS_HELP = "Show call detection dialogs and log detection evidence."
+DETECTION_DIAGNOSTICS_HELP = "Enable false-positive reporting and log call detection evidence."
 SERVICE_DIAGNOSTICS_EPILOG = (
     "Use --detection-diagnostics to enable troubleshooting. "
     "Use --no-detection-diagnostics to explicitly disable it (the default)."

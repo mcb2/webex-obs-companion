@@ -45,13 +45,16 @@ def manual_consent_dialog(meeting_title: str) -> ControlDialog:
     )
 
 
-def startup_dialog(meeting_title: str) -> ControlDialog:
+def startup_dialog(meeting_title: str, *, detection_diagnostics: bool = False) -> ControlDialog:
+    choices = (("Keep Audio", "keep_audio"),
+               ("Switch to Video", "switch_video"),
+               ("Cancel & Discard", "cancel"))
+    if detection_diagnostics:
+        choices += (("False positive", "false_positive"),)
     return ControlDialog(
         "Recording started",
         f"Meeting: {meeting_title}\n\nRecording consent\n{CONSENT_NOTICE}\n\n"
         "Audio continues automatically after 15 seconds.",
-        (("Keep Audio", "keep_audio"),
-         ("Switch to Video", "switch_video"),
-         ("Cancel & Discard", "cancel")),
+        choices,
         default_choice="keep_audio",
     )

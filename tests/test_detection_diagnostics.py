@@ -29,16 +29,19 @@ def test_missed_response_is_not_an_answer_and_redetection_is_deduplicated(tmp_pa
     diagnostics = DetectionDiagnostics(tmp_path)
     diagnostics.record = Mock()
     diagnostics.detected("webex")
-    event = diagnostics.prompts.get_nowait()
+    event = diagnostics.current_detection("webex")
     diagnostics.detected("webex")
+    assert diagnostics.current_detection("webex") == event
     assert diagnostics.prompts.empty()
     diagnostics.answer(event, None)
     assert diagnostics.record.call_count == 1
     diagnostics.answer(event, "not_sure")
     assert diagnostics.record.call_args.kwargs["response"] == "not_sure"
     diagnostics.ended("webex")
+    assert diagnostics.current_detection("webex") is None
     diagnostics.detected("webex")
-    assert not diagnostics.prompts.empty()
+    assert diagnostics.current_detection("webex")["event_id"] != event["event_id"]
+    assert diagnostics.prompts.empty()
 
 
 def test_private_reports_sanitize_values_and_no_continuous_log_is_written(tmp_path):
@@ -49,7 +52,7 @@ def test_private_reports_sanitize_values_and_no_continuous_log_is_written(tmp_pa
     diagnostics.sensor("webex", "sockets", [("Synthetic private process", 5004, True)], True, 0.1)
     diagnostics.sensor("webex", "window", None, False, 2.0)
     diagnostics.detected("webex")
-    diagnostics.answer(diagnostics.prompts.get_nowait(), "no")
+    diagnostics.answer(diagnostics.current_detection("webex"), "no")
     diagnostics.close()
     files = list(diagnostics.path.glob("*.json"))
     assert len(files) == 1
@@ -237,7 +240,6 @@ def test_manual_start_report_identifies_suppression_and_missing_departure_rule(t
 def test_suspected_transition_does_not_rearm_detection_or_create_report_without_answer(tmp_path):
     diagnostics = DetectionDiagnostics(tmp_path)
     diagnostics.detected("webex")
-    diagnostics.prompts.get_nowait()
     diagnostics.suspected("webex", blocked=True, rule="output_interruption_title_and_ports_changed")
     event = diagnostics.prompts.get_nowait()
     assert event["category"] == "suspected_transition"

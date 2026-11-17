@@ -435,13 +435,7 @@ class MacOSUI:
         except queue.Empty:
             return
         detected = datetime.fromtimestamp(event["detected_at"]).strftime("%H:%M:%S")
-        category = event.get("category", "new_call")
-        if category == "startup_discovery":
-            question = f"Call activity found at startup. Was a {event['platform']} call already in progress at {detected}?"
-        elif category == "suspected_transition":
-            question = f"Possible call change around {detected}. Did a different {event['platform']} call start?"
-        else:
-            question = f"Did a new {event['platform']} call start around {detected}?"
+        question = f"Possible call change around {detected}. Did a different {event['platform']} call start?"
         if event.get("blocked"):
             question += " Recording remains declined."
         window = self._diagnostic_window(
@@ -501,7 +495,9 @@ class MacOSUI:
         window.makeKeyAndOrderFront_(None)
 
     def show_startup_prompt(self, meeting_title="Webex Session"):
-        spec = startup_dialog(meeting_title)
+        spec = startup_dialog(
+            meeting_title, detection_diagnostics=self.daemon.diagnostics is not None
+        )
         return self._on_main(lambda: self._control_window(spec, timeout=15))
 
     def show_manual_consent_prompt(self, meeting_title="Webex Session"):
@@ -594,8 +590,8 @@ class MacOSUI:
         detail.cell().setWraps_(True)
         detail.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         content.addSubview_(detail)
+        top_count = 3 if two_rows else 0
         for index, (label, choice) in enumerate(spec.choices):
-            top_count = len(spec.choices) - 3 if two_rows else 0
             column = index if index < top_count else index - top_count
             y = 71 if index < top_count else 27
             button = AppKit.NSButton.alloc().initWithFrame_(

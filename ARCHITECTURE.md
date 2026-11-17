@@ -174,20 +174,22 @@ an input-only output interruption and two returning output-positive polls within
 30 seconds. Both title and known local media endpoint signatures must change.
 Unknown reads reset the candidate. A suspicion never alters lifecycle state or
 suppression. Startup discovery, confirmed transitions, and suspicions have
-distinct diagnostic categories and UI wording; reports identify blocked starts
+distinct diagnostic categories. Reports identify blocked starts
 and detector decision rules.
 
-Opt-in `--detection-diagnostics` observes existing sensor results without changing
-classification or recording state. `DetectionDiagnostics` queues sanitized JSONL
-records to a bounded background worker with a 65-minute, 16 MiB serialized
-evidence buffer. Only No/Not sure answers or unmatched start/end markers create
-private, atomic report JSON files. Manual markers wait for a +/-60-second
+Opt-in `--detection-diagnostics` observes existing sensor results.
+`DetectionDiagnostics` queues sanitized records to a bounded background worker
+with a 65-minute, 16 MiB serialized evidence buffer. The automatic recording
+dialog adds **False positive**, which records a No answer for the bound
+detection and uses the existing verified stop-and-discard path. False-positive
+annotations, suspected-transition answers, and unmatched start/end markers
+create private, atomic report JSON files. Manual markers wait for a +/-60-second
 matching window; missing markers carry no meaning. Reports include compressed
 +/-2-minute event context and coverage flags, updating until following context
 completes. Unresolved markers at shutdown are labeled unverified. Detector
 start/end hooks deduplicate repeated suppressed candidates and identify quick-gap
-restarts. AppKit drains a separate prompt queue into nonmodal panels, after any
-recording-control modal; each automatic panel expires after 30 seconds without
+restarts. AppKit drains suspected transitions into nonmodal panels after any
+recording-control modal. Each suspected-transition panel expires after 30 seconds without
 an inferred answer. Start/end menu markers accept a local event time within one
 hour or Just now, independently of detector state. Panels use the upper-right
 usable screen area rather than the centered recording dialog location. Late

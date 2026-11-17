@@ -108,14 +108,14 @@ For a foreground session, stop the background service first with
 `uv run --locked --no-sync webex-obs stop`, then use
 `uv run --locked --no-sync webex-obs run --detection-diagnostics`.
 
-Diagnostic mode adds a nonmodal **Yes / No / Not sure** confirmation for each
-new detector call, including quick-gap transitions and calls suppressed after a
-decline. Initial call activity found at startup is explicitly labeled as startup
-discovery and asks whether a call was already in progress. Suspected transitions
-ask whether a different call started. The dialog also says when recording is
-still declined. It closes after 30 seconds onscreen. Timeout or closing the window
-records no confirmation response; evidence buffering continues. Existing
-recording/consent prompts take priority. Responses only annotate logs.
+Diagnostic mode adds **False positive** to the **Recording started** dialog for
+automatic recordings. Click it to report the detection, stop and discard the
+recording, and suppress further automatic prompts for that call. Startup
+discoveries and quick-gap restarts are tracked in the diagnostic evidence.
+
+When the detector only suspects a call change, a separate nonmodal
+**Yes / No / Not sure** prompt lets you annotate the suspicion. It closes after
+30 seconds onscreen. Recording and consent prompts take priority.
 
 The status menu adds **Diagnostic: New call started…** and
 **Diagnostic: Call ended…**, available while idle or recording. Choose **Just
@@ -125,16 +125,14 @@ adds nothing. Markers can be missed: their absence never means a call did or did
 not start/end. Markers do not split recordings or change detection.
 
 Diagnostics keep a rolling 65-minute history in memory, capped at 16 MiB of
-serialized evidence. They no longer write a continuous diagnostic log. **Yes**
-to a normal/startup prompt, timeouts, and matching manual markers generate no
-report; absent manual markers never imply a disagreement. Suspected-transition
-responses are retained separately to evaluate the weaker heuristic.
+serialized evidence. Timeouts and matching manual markers generate no report.
+Suspected-transition responses are retained to evaluate the weaker heuristic.
 
 Special reports appear in `LOG_DIR/detection-reports/` (default
 `~/Library/Logs/WebexOBS/detection-reports/`) when:
 
-- You answer **No**: a suspected false start, separately labeled for startup discovery.
-- You answer **Not sure**: an uncertain case, not a confirmed error.
+- You select **False positive** in the recording dialog. Reports label false
+  startup discoveries separately.
 - You answer a suspected-transition prompt: Yes confirms the suspected change,
   No rejects the heuristic, and Not sure retains an uncertain case. Timeout saves nothing.
 - A manual start/end has no corresponding detector event within **60 seconds**

@@ -50,7 +50,7 @@ class DetectionDiagnostics:
         self._records = queue.Queue(maxsize=4096)
         self._stop = threading.Event()
         self._worker = None
-        self._announced = set()
+        self._detected_events: dict[str, dict] = {}
         self._overflow_warned = False
         # Only the worker accesses history, pending markers, and open reports.
         self._history = deque()
@@ -194,7 +194,7 @@ class DetectionDiagnostics:
         rows = [row for row, _ in self._history
                 if when - self.CONTEXT_SECONDS <= row["observed_at"] <= when + self.CONTEXT_SECONDS]
         descriptions = {
-            "false_start": "User answered No to an automatically detected call start.",
+            "false_start": "User marked an automatically detected call start as a false positive.",
             "uncertain_start": "User answered Not sure; this is not a confirmed detector error.",
             "missed_start": "User reported a call start with no detected start within 60 seconds.",
             "missed_end": "User reported a call end with no detected end within 60 seconds.",
@@ -270,16 +270,18 @@ class DetectionDiagnostics:
 
     def detected(self, platform: str, *, restart: bool = False, category: str = "new_call",
                  blocked: bool = False, blocking_rule: str | None = None) -> None:
-        # Declining recording causes repeated candidate confirmation. Ask once per
-        # detector call, rearmed only by a verified end or the quick-gap shortcut.
-        if platform in self._announced and not restart:
+        # Keep one event per detector call, including across repeated polls
+        # after a decline. A verified end or quick restart rearms detection.
+        if platform in self._detected_events and not restart:
             return
-        self._announced.add(platform)
         event = dict(event_id=uuid.uuid4().hex, platform=platform,
                      detected_at=time.time(), restart=restart, category=category,
                      blocked=blocked, blocking_rule=blocking_rule)
         self.record("detected_start", **event)
-        self.prompts.put(event)
+        self._detected_events[platform] = event
+
+    def current_detection(self, platform: str) -> dict | None:
+        return self._detected_events.get(platform)
 
     def suspected(self, platform: str, *, blocked: bool, rule: str) -> None:
         event = dict(event_id=uuid.uuid4().hex, platform=platform, detected_at=time.time(),
@@ -288,7 +290,7 @@ class DetectionDiagnostics:
         self.prompts.put(event)
 
     def ended(self, platform: str) -> None:
-        self._announced.discard(platform)
+        self._detected_events.pop(platform, None)
         self.record("detected_end", platform=platform)
 
     def answer(self, event: dict, response: str | None) -> None:
