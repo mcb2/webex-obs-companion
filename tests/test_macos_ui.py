@@ -410,20 +410,15 @@ def test_menu_action_captures_session_generation_before_background_dispatch():
     assert thread.call_args.kwargs["args"] == ("delete_after_transcription", 7)
 
 
-@pytest.mark.parametrize("category,wording", [
-    ("new_call", "Did a new webex call start"),
-    ("startup_discovery", "Was a webex call already in progress"),
-    ("suspected_transition", "Did a different webex call start"),
-])
 @pytest.mark.parametrize("response", ["yes", "no", "not_sure", None, "late"])
-def test_nonmodal_diagnostic_response_and_timeout(response, category, wording):
+def test_nonmodal_suspected_transition_response_and_timeout(response):
     import queue
 
     daemon = Mock()
     daemon._shutdown_event = threading.Event()
     daemon.diagnostics.prompts = queue.Queue()
     event = {"platform": "webex", "event_id": "synthetic", "detected_at": 100,
-             "category": category, "blocked": True}
+             "category": "suspected_transition", "blocked": True}
     daemon.diagnostics.prompts.put(event)
     ui = MacOSUI(daemon)
     ui.target = Mock()
@@ -438,7 +433,7 @@ def test_nonmodal_diagnostic_response_and_timeout(response, category, wording):
          patch("webex_obs.macos_ui.time.monotonic", return_value=100) as clock:
         ui._tick_diagnostics()
         detail = appkit.NSTextField.labelWithString_.call_args.args[0]
-        assert wording in detail
+        assert "Did a different webex call start" in detail
         assert "Recording remains declined" in detail
         assert len(ui._diagnostic_windows) == 1
         assert ui._diagnostic_windows[0][1] == 130
@@ -492,7 +487,9 @@ def test_diagnostic_prompt_waits_for_consent_and_closes_on_shutdown():
     daemon = Mock()
     daemon._shutdown_event = threading.Event()
     daemon.diagnostics.prompts = queue.Queue()
-    daemon.diagnostics.prompts.put({"platform": "webex", "detected_at": 100})
+    daemon.diagnostics.prompts.put(
+        {"platform": "webex", "detected_at": 100, "category": "suspected_transition"}
+    )
     ui = MacOSUI(daemon)
     ui._control_modal_active = True
     with patch("webex_obs.macos_ui.AppKit", Mock()):

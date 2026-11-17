@@ -31,3 +31,10 @@ def test_startup_prompt_keeps_consent_and_audio_timeout_choice():
     assert "Architecture Review" in dialog.detail
     assert "Obtain permission from all participants" in dialog.detail
     assert "15 seconds" in dialog.detail
+
+
+def test_diagnostic_startup_prompt_adds_false_positive_choice():
+    standard = startup_dialog("Synthetic meeting")
+    diagnostic = startup_dialog("Synthetic meeting", detection_diagnostics=True)
+    assert diagnostic.choices == standard.choices + (("False positive", "false_positive"),)
+    assert diagnostic.default_choice == standard.default_choice == "keep_audio"

@@ -316,6 +316,55 @@ def test_automatic_platform_binding_lasts_until_verified_stop(daemon, verified):
     assert monitor.bound_platform is (None if verified else ZOOM)
 
 
+@pytest.mark.parametrize("verified", [True, False])
+@pytest.mark.parametrize("choice", ["false_positive", "cancel"])
+def test_diagnostic_startup_discard(daemon, tmp_path, verified, choice):
+    from webex_obs.detection_diagnostics import DetectionDiagnostics
+    from webex_obs.process_monitor import WEBEX
+
+    diagnostics = daemon.diagnostics = DetectionDiagnostics(daemon.config.log_dir)
+    daemon.monitor.bound_platform = WEBEX
+    daemon.monitor.should_suppress_automatic_prompt.return_value = False
+    daemon.monitor.get_active_call_title.return_value = "Synthetic meeting"
+    daemon.monitor.wait_for_state_change.return_value = True
+    diagnostics.detected("webex", category="startup_discovery")
+    detection = diagnostics.current_detection("webex")
+    media = [tmp_path / "first.mkv", tmp_path / "second.mkv"]
+    for segment in media:
+        segment.touch()
+
+    def start(**kwargs):
+        daemon.recorder.is_recording = True
+        return True
+
+    def stop():
+        assert all(segment.exists() for segment in media)
+        daemon.recorder.is_recording = not verified
+        return media
+
+    daemon.recorder.start_recording.side_effect = start
+    daemon.recorder.stop_recording.side_effect = stop
+    daemon.recorder.stop_verified = verified
+    daemon.ui.show_startup_prompt.return_value = choice
+    daemon.ui.show_notification.side_effect = lambda *_: daemon.request_shutdown()
+    daemon.start()
+
+    daemon.ui.show_startup_prompt.assert_called_once()
+    daemon.monitor.suppress_current_call_prompt.assert_called_once()
+    daemon.recorder.stop_recording.assert_called_once()
+    assert all(segment.exists() == (not verified) for segment in media)
+    assert diagnostics.prompts.empty()
+    files = list(diagnostics.path.glob("*.json"))
+    if choice == "false_positive":
+        report_file, = files
+        report = json.loads(report_file.read_text())
+        assert report["reason"] == "false_startup_discovery"
+        assert report["annotation"]["event_id"] == detection["event_id"]
+        assert report["annotation"]["response"] == "no"
+    else:
+        assert files == []
+
+
 @pytest.mark.parametrize("cancel_first", [True, False])
 def test_quick_webex_transition_starts_new_recording_after_verified_stop(daemon, monkeypatch, cancel_first):
     from webex_obs.process_monitor import CallEvidence, ProcessMonitor, WEBEX

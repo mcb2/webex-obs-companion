@@ -416,10 +416,11 @@ Finish any active recording before relaunching with
 `uv run --locked --no-sync webex-obs start --detection-diagnostics`.
 Use synthetic test calls and the normal consent process.
 
-- Verify the diagnostic confirmation has Yes / No / Not sure; let one expire
-  after 30 seconds and close another. Neither should create a special report.
-  Confirm detection/recording continues while the diagnostic window is open and
-  normal consent and stop controls still work.
+- Verify an automatic recording shows **False positive** alongside the standard
+  recording choices in a single dialog. Select it and verify OBS stops, the
+  segments are discarded, and a false-start report appears. On another test
+  call, let the dialog time out and verify audio continues. Confirm manual
+  recording still shows its normal consent notice.
 - Mark starts and ends from the status menu while idle and recording. Test Just
   now, a time 45 minutes ago, invalid input, and a time older than 60 minutes.
   Invalid input should keep the dialog open. Cancel should add no annotation.
@@ -427,14 +428,16 @@ Use synthetic test calls and the normal consent process.
   recording prompts. Check placement with multiple displays and a small screen.
 - Leave a marker unreported, then mark a later event. No missing event should be
   inferred. Confirm marker event times differ from submission times for late entries.
-  Matching markers and Yes answers should create no reports. Unmatched markers
-  allow up to 60 seconds for detection, then save a dated report. No answers save
-  suspected false starts; Not sure saves uncertain cases.
+  Matching markers should create no reports. Unmatched markers allow up to
+  60 seconds for detection, then save a dated report.
 - Leave and immediately join another Webex test call, including one with the
-  same title. Correlate manual markers with the report sensor context, automatic
-  detection IDs, and confirmations. Recording boundaries remain controlled by
-  the existing detector, never by diagnostic answers.
-- Relaunch without the switch; confirm diagnostic menu items and popups disappear.
+  same title. Correlate manual markers with the report sensor context and
+  automatic detection IDs.
+- If a suspected call-change panel appears, verify **Yes / No / Not sure**
+  annotates the suspicion while recording continues. Letting the panel expire
+  after 30 seconds or closing it should generate no report.
+- Relaunch without the switch and confirm **False positive** and the diagnostic
+  menu items are absent.
   Reports remain local under LOG_DIR/detection-reports. Verify no new continuous
   detection-diagnostics.jsonl is written; older files are left untouched. See README
   for the matching tolerance, context window, buffer limits, and partial coverage.

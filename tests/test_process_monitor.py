@@ -925,12 +925,13 @@ def test_diagnostics_observes_existing_probes_without_changing_detection():
          patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic meeting") as window:
         assert monitor.wait_for_state_change()
         assert audio.call_count == sockets.call_count == window.call_count == 6
-    event = monitor.diagnostics.prompts.get_nowait()
+    event = monitor.diagnostics.current_detection("webex")
     assert event["platform"] == "webex"
+    assert monitor.diagnostics.prompts.empty()
     assert monitor.is_in_meeting
 
 
-def test_diagnostics_quick_restart_only_prompts_once_before_next_session():
+def test_diagnostics_quick_restart_keeps_new_event_for_next_session():
     from unittest.mock import Mock
     from webex_obs.detection_diagnostics import DetectionDiagnostics
     from webex_obs.process_monitor import CallEvidence
@@ -941,16 +942,18 @@ def test_diagnostics_quick_restart_only_prompts_once_before_next_session():
     monitor.diagnostics = DetectionDiagnostics(Path("/unused"))
     monitor.diagnostics.record = Mock()
     monitor.diagnostics.detected("webex")
-    monitor.diagnostics.prompts.get_nowait()
+    original = monitor.diagnostics.current_detection("webex")
     with patch.object(monitor, "_call_evidence", side_effect=[
         CallEvidence(False, fully_idle=True), CallEvidence(True), CallEvidence(True),
     ]):
         assert not monitor.has_call_ended()
         assert not monitor.has_call_ended()
         assert monitor.has_call_ended()
-    event = monitor.diagnostics.prompts.get_nowait()
+    event = monitor.diagnostics.current_detection("webex")
     assert event["restart"] is True
+    assert event["event_id"] != original["event_id"]
     monitor.diagnostics.detected("webex")
+    assert monitor.diagnostics.current_detection("webex") == event
     assert monitor.diagnostics.prompts.empty()
 
 

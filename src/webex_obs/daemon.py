@@ -689,6 +689,7 @@ class WebexOBSDaemon:
         MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
         self.lifecycle_state = "running"
         self._pulse()
+        diagnostics = getattr(self, "diagnostics", None)
 
         try:
             while not self._shutdown_event.is_set():
@@ -721,8 +722,14 @@ class WebexOBSDaemon:
                     self._discard_requested = False
                     self._delete_after_transcription = False
                     self._manual_stop_event.clear()
+                    detection = None
                     if not manual:
                         self.monitor.bind_current_platform()
+                        if diagnostics is not None:
+                            platform = self.monitor.bound_platform
+                            detection = diagnostics.current_detection(
+                                platform.key if platform else "unknown"
+                            )
                     self._window_session_generation += 1
                     self._active_session = self._new_recording_session()
                     if manual:
@@ -788,7 +795,10 @@ class WebexOBSDaemon:
                     )
                 if self._shutdown_event.is_set():
                     break
-                if choice == "cancel" and not manual:
+                false_positive = choice == "false_positive" and diagnostics is not None
+                if not manual and (choice == "cancel" or false_positive):
+                    if false_positive and detection is not None:
+                        diagnostics.answer(detection, "no")
                     logger.info(
                         "User cancelled recording. Discarding and suppressing further automatic prompts for this call..."
                     )
