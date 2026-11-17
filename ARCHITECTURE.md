@@ -125,10 +125,11 @@ active OBS segment ledger; finalized checkpointed jobs alone resume automaticall
 ## Detection, maintenance, and post-processing
 
 `ProcessMonitor` combines native Webex/Zoom/Teams window evidence with
-per-process Core Audio input/output state and known UDP media sockets. All
-platforms accept audio plus a qualifying window independently of transport.
+per-process Core Audio input/output state and known UDP media sockets.
 Known UDP can replace the window for input streams and Zoom/Teams output;
-Webex output-only requires a non-attachment window. An unsupported Core Audio
+Webex output plus a non-attachment window can confirm a start without known
+UDP. Input plus a generic Webex window is inconclusive for a start and cannot
+confirm a new call after a gap, but remains positive for an already bound call. An unsupported Core Audio
 API uses window plus known UDP; a failed supported read never enables fallback.
 Sensor results distinguish active, inactive, and unknown. Unknown polls break
 start confirmation and reset the continuous-inactivity end grace timer.

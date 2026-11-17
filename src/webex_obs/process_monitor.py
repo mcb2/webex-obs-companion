@@ -73,7 +73,7 @@ SUPPORTED_PLATFORMS = (WEBEX, ZOOM, TEAMS)
 
 @dataclass(frozen=True)
 class CallEvidence:
-    # None means a required sensor failed, rather than confirmed inactivity.
+    # None means inconclusive evidence, rather than confirmed inactivity.
     active: bool | None
     title: str | None = None
     reason: str = ""
@@ -82,6 +82,7 @@ class CallEvidence:
     # Webex can retain microphone input after leaving a call.
     webex_departure: bool = False
     decision_rule: str = "unspecified"
+    can_confirm_start: bool = True
 
 
 # Backward-compatible constants used by older integrations and diagnostics.
@@ -505,7 +506,17 @@ class ProcessMonitor:
                 return CallEvidence(None, decision_rule="attachment_preview_media_unresolved")
             return CallEvidence(False, decision_rule="attachment_preview")
 
-        # All clients support audio + window independently of transport.
+        # Webex chat can open input without joining a call. A generic window
+        # and input alone can sustain a bound call, but cannot confirm a start.
+        if (platform is WEBEX and window and audio and audio.available
+                and audio.input_pids and not audio.output_pids and not streams):
+            return CallEvidence(
+                True if self.bound_platform is WEBEX else None,
+                window, decision_rule="webex_input_only_window_unconfirmed",
+                can_confirm_start=False,
+            )
+
+        # Audio + window can corroborate a call independently of transport.
         # Known UDP can replace the window, except for Webex output-only calls
         # (attachment helpers can own both output audio and UDP sockets).
         if audio and audio.available:
@@ -590,7 +601,7 @@ class ProcessMonitor:
                 self._departed_platforms.pop(key, None)
             elif row.active is False and (row.fully_idle or (platform is WEBEX and row.webex_departure)):
                 self._departed_platforms[key] = 0
-            elif row.active is True and key in self._departed_platforms:
+            elif row.active is True and row.can_confirm_start and key in self._departed_platforms:
                 self._departed_platforms[key] += 1
                 if self._departed_platforms[key] >= 2:
                     del self._departed_platforms[key]
