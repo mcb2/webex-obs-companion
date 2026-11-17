@@ -436,7 +436,7 @@ def test_inaccessible_process_does_not_hide_a_detectable_call():
 @pytest.mark.parametrize("platform,name", [(WEBEX, "Webex"), (ZOOM, "zoom.us"), (TEAMS, "MSTeams")])
 @pytest.mark.parametrize("transport,port", [(socket.SOCK_STREAM, 443), (socket.SOCK_DGRAM, 55000)])
 @pytest.mark.parametrize("direction", ["input", "output"])
-def test_audio_and_window_detect_all_platforms_without_known_udp(platform, name, transport, port, direction):
+def test_audio_and_window_start_rules_without_known_udp(platform, name, transport, port, direction):
     # Input state means an open stream, including a muted microphone; no sound
     # level or microphone permission is required for the output-only case.
     activity = AudioActivity(available=True, **{f"{direction}_pids": (123,)})
@@ -447,9 +447,11 @@ def test_audio_and_window_detect_all_platforms_without_known_udp(platform, name,
     with patch.object(proc, "net_connections", return_value=[connection]), \
          patch("webex_obs.process_monitor.psutil.process_iter", return_value=[proc]), \
          patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic call" if p is platform else None):
-        assert monitor.is_call_active() is True
-        assert monitor.current_platform is platform
-        assert monitor.current_call_title == "Synthetic call"
+        expected = None if platform is WEBEX and direction == "input" else True
+        assert monitor.is_call_active() is expected
+        if expected:
+            assert monitor.current_platform is platform
+            assert monitor.current_call_title == "Synthetic call"
         assert not monitor._active_media_streams(platform)
 
 
@@ -565,7 +567,7 @@ def test_bound_call_ends_while_another_platform_remains_active_without_relabelin
 
     def audio(platform):
         active = platform is other or (platform is origin and not ended)
-        return AudioActivity(available=True, input_pids=(123,) if active else ())
+        return AudioActivity(available=True, output_pids=(123,) if active else ())
 
     def window(platform):
         if platform is origin:
@@ -797,7 +799,7 @@ def test_quick_next_call_rearms_canceled_recording(platform, same_title):
 
     monitor.on_poll = poll
     with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(
-        available=True, input_pids=(123,) if p is platform and state == "active" else ()
+        available=True, output_pids=(123,) if p is platform and state == "active" else ()
     )), patch.object(monitor, "_active_media_streams", return_value=[]), \
          patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p:
                       next_title if p is platform and state == "active" else None), \
@@ -822,7 +824,7 @@ def test_quick_next_call_ends_bound_session_before_grace(platform):
          patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window, \
          patch("webex_obs.process_monitor.time.monotonic", return_value=100):
         assert not monitor.has_call_ended()
-        audio.activity = AudioActivity(available=True, input_pids=(123,))
+        audio.activity = AudioActivity(available=True, output_pids=(123,))
         window.return_value = "Synthetic call"
         assert not monitor.has_call_ended()
         assert monitor.has_call_ended()
@@ -920,7 +922,7 @@ def test_diagnostics_observes_existing_probes_without_changing_detection():
     monitor = ProcessMonitor(poll_interval=0)
     monitor.diagnostics = DetectionDiagnostics(Path("/unused"))
     monitor.diagnostics.record = Mock()
-    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))) as audio, \
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, output_pids=(123,))) as audio, \
          patch.object(monitor, "_active_media_streams", return_value=[]) as sockets, \
          patch.object(monitor, "_active_call_window_for_platform", return_value="Synthetic meeting") as window:
         assert monitor.wait_for_state_change()
@@ -986,7 +988,7 @@ def test_webex_input_only_departure_confirms_next_call_after_two_polls(bound, su
         monitor.bind_current_platform()
     if suppressed:
         monitor.suppress_current_call_prompt("Synthetic old")
-    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))), \
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))) as audio, \
          patch.object(monitor, "_active_media_streams", return_value=[]), \
          patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window:
         row = monitor._call_evidence(WEBEX)
@@ -994,6 +996,7 @@ def test_webex_input_only_departure_confirms_next_call_after_two_polls(bound, su
         assert monitor.is_call_active() is False
         assert monitor._departed_platforms == {"webex": 0}
         window.return_value = "Synthetic next"
+        audio.return_value = AudioActivity(available=True, input_pids=(123,), output_pids=(123,))
         assert monitor.is_call_active() is True
         assert "webex" not in monitor._restarted_platforms
         assert monitor.is_call_active() is True
@@ -1045,7 +1048,7 @@ def test_recording_decline_survives_restart_and_only_observed_departure_clears_i
     restored.restore_prompt_suppression(path)
     restored.current_platform = WEBEX
     assert restored.should_suppress_automatic_prompt()
-    with patch.object(restored, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, input_pids=(123,) if p is WEBEX else ())), \
+    with patch.object(restored, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, input_pids=(123,) if p is WEBEX else ())) as audio, \
          patch.object(restored, "_active_media_streams", return_value=[]), \
          patch.object(restored, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic other title" if p is WEBEX else None) as window:
         for _ in range(3):
@@ -1053,6 +1056,7 @@ def test_recording_decline_survives_restart_and_only_observed_departure_clears_i
         assert restored.should_suppress_automatic_prompt()
         window.side_effect = lambda p: None
         restored.is_call_active()
+        audio.side_effect = lambda p: AudioActivity(available=True, output_pids=(123,) if p is WEBEX else ())
         window.side_effect = lambda p: "Synthetic next" if p is WEBEX else None
         restored.is_call_active()
         restored.is_call_active()
@@ -1129,7 +1133,7 @@ def test_startup_discovery_is_classified_and_keeps_decline(tmp_path):
     monitor = ProcessMonitor(poll_interval=0)
     monitor.restore_prompt_suppression(path)
     monitor.diagnostics = Mock()
-    with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, input_pids=(1,) if p is WEBEX else ())), \
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(available=True, output_pids=(1,) if p is WEBEX else ())), \
          patch.object(monitor, "_active_media_streams", return_value=[]), \
          patch.object(monitor, "_active_call_window_for_platform", side_effect=lambda p: "Synthetic" if p is WEBEX else None):
         assert monitor.wait_for_state_change()
@@ -1137,3 +1141,50 @@ def test_startup_discovery_is_classified_and_keeps_decline(tmp_path):
         "webex", restart=False, category="startup_discovery", blocked=True, blocking_rule="recording_declined",
     )
     assert monitor.should_suppress_automatic_prompt()
+
+
+def test_webex_chat_input_does_not_count_toward_start_without_udp():
+    monitor = ProcessMonitor(poll_interval=0)
+    # A persistent chat window with input only matches the reported false starts.
+    # A real call over an unrecognized transport can then supply Webex output.
+    samples = iter([False, False, False, True, True])
+    observed_counts = []
+    output = False
+
+    def on_poll():
+        nonlocal output
+        observed_counts.append(monitor._active_poll_count)
+        output = next(samples)
+
+    monitor.on_poll = on_poll
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p: AudioActivity(
+        available=True,
+        input_pids=(123,) if p is WEBEX else (),
+        output_pids=(123,) if p is WEBEX and output else (),
+    )), patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform",
+                      side_effect=lambda p: "Synthetic window" if p is WEBEX else None):
+        assert monitor.wait_for_state_change()
+    assert observed_counts == [0, 0, 0, 0, 1]
+    assert monitor.current_platform is WEBEX
+
+
+def test_webex_chat_input_after_gap_does_not_split_recording_or_clear_decline():
+    monitor = ProcessMonitor(call_end_grace_seconds=15)
+    monitor.current_platform = WEBEX
+    monitor.suppress_current_call_prompt("Synthetic call")
+    monitor.bind_current_platform()
+    with patch.object(monitor, "_audio_activity", return_value=AudioActivity(available=True, input_pids=(123,))), \
+         patch.object(monitor, "_active_media_streams", return_value=[]), \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window, \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100) as clock:
+        assert not monitor.has_call_ended()
+        window.side_effect = lambda p: "Synthetic chat" if p is WEBEX else None
+        assert not monitor.has_call_ended()
+        clock.return_value = 120
+        assert not monitor.has_call_ended()
+        assert monitor.should_suppress_automatic_prompt()
+        monitor.release_platform()
+        assert monitor.is_call_active() is None
+        monitor._track_prompt_suppression(None)
+        assert monitor.should_suppress_automatic_prompt()

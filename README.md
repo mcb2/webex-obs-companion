@@ -28,11 +28,14 @@ output; they do not depend on microphone sound levels.
 
 | Platform | Core Audio supported | Core Audio API unsupported |
 | --- | --- | --- |
-| Webex | Input or output plus a non-idle, non-attachment window, regardless of transport. Input plus known UDP also works without a window. Output-only requires the window. | Non-idle, non-attachment window plus known UDP. |
+| Webex | Output plus a non-idle, non-attachment window, or input plus known UDP (window optional, previews excluded). | Non-idle, non-attachment window plus known UDP. |
 | Zoom | Input or output plus a non-idle window or known UDP. | Non-idle window plus known UDP. |
 | Microsoft Teams | Input or output plus a non-idle window or known UDP. | Non-idle window plus known UDP. |
 
-TCP-only and dynamic-port calls therefore require a window and Core Audio.
+TCP-only and dynamic-port calls require a window and Core Audio; Webex must
+show output to start automatically without known UDP. Microphone input plus a
+generic Webex window can keep an existing recording active, but cannot start or
+split one. Use manual Start if a real call stays input-only without known UDP.
 Known UDP ports are Webex 5004/9000/33434, Zoom 3478/3479/8801–8810, and
 Teams 3478–3481. Socket or window evidence alone does not override a successful,
 inactive Core Audio read. Failed sensor reads are unknown, rather than idle;

@@ -110,7 +110,7 @@ unknown even when repeated warnings are suppressed.
 - **Recovery**: During recording, the companion checks capture status and can start a new segment from a confirmed stopped output. After connection loss, an active output cannot safely be identified as its own: stop OBS directly, then retry the pending Stop action in the companion. Unobserved segment paths and the in-memory active-session ledger require manual recovery after a companion restart.
 - **After Updating**: Pulling new source code does not reload an already-running LaunchAgent. Finish any active recording before running `uv run --locked --no-sync webex-obs start` from the repository to reload the service.
 - **Supported meeting apps**: Automatic call start/stop detection supports the macOS desktop apps for Webex, Zoom, and Microsoft Teams. Browser-based meetings are not detected automatically.
-- **Transport-independent detection**: Webex, Zoom, and Teams can use a non-idle call window plus per-process Core Audio input/output even with TCP-only or dynamic-port media. Unsupported Core Audio requires known UDP plus a window. Webex output-only also requires a non-attachment window. See the [per-platform requirements](README.md). `uv run --locked --no-sync webex-obs diagnose-calls` shows process, window, audio, and UDP evidence; failed reads display “Read failed (unknown).”
+- **Transport-independent detection**: With TCP-only or dynamic-port media and no known UDP, Webex automatic starts require Webex audio output and a qualifying window. Zoom and Teams accept input or output with a qualifying window. Unsupported Core Audio requires known UDP plus a window. See the [per-platform requirements](README.md). `uv run --locked --no-sync webex-obs diagnose-calls` shows process, window, audio, and UDP evidence; failed reads display “Read failed (unknown).”
 - **Call-end grace period**: A transient loss of meeting window or media-socket evidence does not immediately stop a recording. `CALL_END_GRACE_SECONDS` defaults to 15 seconds of confirmed continuous inactivity on the originating platform. Unknown sensor reads reset this timer and retain the recording; persistent failures require manual Stop. Overlapping platforms cannot extend or rename the recording. Prompt declines remain suppressed per platform through title changes and sensor failures.
 
 ---
@@ -368,7 +368,10 @@ that only writes synthetic test files. Keep AppKit on the main thread.
    then muted input and output-only states. Confirm capture begins only after
    two positive polls for that platform and the automatic consent prompt keeps
    its existing timeout/default/cancel behavior. Confirm the manual-start consent
-   reminder still appears immediately after the fake backend starts.
+   reminder still appears immediately after the fake backend starts. On macOS,
+   play video in Firefox and foreground Webex chat; input alone should not
+   prompt. In a consented test call without recognized UDP, verify Webex output
+   and a qualifying window trigger a prompt after two positive polls.
 3. **Overlap and suppression:** start a synthetic Zoom session, activate synthetic
    Webex/Teams evidence, then end Zoom. Confirm the title stays Zoom and Stop
    occurs after Zoom's grace period. Decline both synthetic Webex and Zoom calls;
