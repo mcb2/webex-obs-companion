@@ -157,6 +157,9 @@ For Webex, input alone may remain open at departure; the window, output audio,
 and known media sockets must all be successfully absent, with no failed audio
 PIDs. The shortcut requires supported Core Audio and an observed gap; transitions
 entirely between polls cannot be distinguished from a continuous call.
+Webex retains the gap for 30 seconds from the last departure observation.
+A successful input-only window check preserves the gap and resets the returning
+poll count. Both confirming polls must arrive before the deadline.
 
 Platform suppression flags persist atomically in detection-state.json (0600),
 without titles or credentials. The lifecycle worker restores them only after

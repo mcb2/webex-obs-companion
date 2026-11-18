@@ -70,6 +70,9 @@ window, and known media sockets is sufficient. Failed/incomplete sensor reads,
 remaining output activity, a retained window or media connection, and unsupported
 Core Audio do not enable this shortcut. An active recording is stopped and
 verified before the next call starts its own recording and consent prompt.
+After the last observed Webex departure, there are 30 seconds to confirm the
+return. Microphone input plus a window can keep the departure pending, but
+resets the count of consecutive positive checks and does not extend the deadline.
 
 Idle, untracked Teams with successfully inactive audio and no known media
 connections skips window inspection, avoiding unrelated slow System Events

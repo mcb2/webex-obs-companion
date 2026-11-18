@@ -1188,3 +1188,43 @@ def test_webex_chat_input_after_gap_does_not_split_recording_or_clear_decline():
         assert monitor.is_call_active() is None
         monitor._track_prompt_suppression(None)
         assert monitor.should_suppress_automatic_prompt()
+
+
+@pytest.mark.parametrize("bound", [True, False])
+@pytest.mark.parametrize("outcome", ["confirmed", "expired", "weak_only", "failed_read"])
+def test_webex_departure_survives_brief_input_only_window(bound, outcome):
+    monitor = ProcessMonitor()
+    monitor.current_platform = WEBEX
+    monitor.suppress_current_call_prompt("Synthetic first call")
+    if bound:
+        monitor.bind_current_platform()
+    activity = AudioActivity(available=True)
+    with patch.object(monitor, "_audio_activity", side_effect=lambda p:
+                      activity if p is WEBEX else AudioActivity(available=True)), \
+         patch.object(monitor, "_active_media_streams", return_value=[]) as sockets, \
+         patch.object(monitor, "_active_call_window_for_platform", return_value=None) as window, \
+         patch("webex_obs.process_monitor.time.monotonic", return_value=100) as clock:
+        assert monitor.is_call_active() is False
+        activity = AudioActivity(available=True, input_pids=(123,))
+        window.side_effect = lambda p: "Synthetic window" if p is WEBEX else None
+        for elapsed in (3, 10, 20):
+            clock.return_value = 100 + elapsed
+            monitor.is_call_active()
+            assert monitor._departed_platforms == {"webex": 0}
+            assert monitor.should_suppress_automatic_prompt()
+
+        clock.return_value = 123
+        if outcome == "failed_read":
+            sockets.side_effect = OSError("synthetic socket read failure")
+            monitor.is_call_active()
+            sockets.side_effect = None
+        if outcome != "weak_only":
+            activity = AudioActivity(available=True, input_pids=(123,), output_pids=(123,))
+        monitor.is_call_active()
+        assert monitor.should_suppress_automatic_prompt()
+        # Even one strong poll inside the window is insufficient if the
+        # second arrives after expiry.
+        clock.return_value = 131 if outcome in {"expired", "weak_only"} else 126
+        monitor.is_call_active()
+        assert ("webex" in monitor._restarted_platforms) is (outcome == "confirmed")
+        assert monitor.should_suppress_automatic_prompt() is (outcome != "confirmed")

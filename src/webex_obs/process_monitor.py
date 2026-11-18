@@ -83,12 +83,14 @@ class CallEvidence:
     webex_departure: bool = False
     decision_rule: str = "unspecified"
     can_confirm_start: bool = True
+    can_bridge_departure: bool = False
 
 
 # Backward-compatible constants used by older integrations and diagnostics.
 WEBEX_RTP_PORTS = set(WEBEX.udp_ports)
 WEBEX_CORE_PROCESSES = list(WEBEX.process_names)
 WEBEX_MEDIA_PROCESSES = list(WEBEX.media_process_names)
+WEBEX_RETURN_WINDOW_SECONDS = 30.0
 NON_CALL_WINDOW_NAMES = set(WEBEX.non_call_window_names)
 
 
@@ -111,6 +113,7 @@ class ProcessMonitor:
         self.bound_platform: CallPlatform | None = None
         self._platform_activity: dict[str, bool | None] = {}
         self._departed_platforms: dict[str, int] = {}
+        self._webex_departure_at = 0.0
         self._restarted_platforms: set[str] = set()
         self._candidate_platform_key: str | None = None
         self._suppressed_platforms: dict[str, float | None] = {}
@@ -514,6 +517,7 @@ class ProcessMonitor:
                 True if self.bound_platform is WEBEX else None,
                 window, decision_rule="webex_input_only_window_unconfirmed",
                 can_confirm_start=False,
+                can_bridge_departure=window_ok and streams_ok and not audio.failed_pids,
             )
 
         # Audio + window can corroborate a call independently of transport.
@@ -587,7 +591,9 @@ class ProcessMonitor:
 
         Keep the end grace for missing evidence. A fully observed departure
         (Webex may retain input alone), followed by two positive polls,
-        establishes a new call even with the same title. Unknown reads invalidate this shorter path.
+        establishes a new call even with the same title. A successful Webex
+        input-only window read can bridge the gap, but cannot count as a return.
+        Failed reads invalidate this shorter path.
         """
         self._restarted_platforms.clear()
         observed = {platform.key for platform, _ in evidence}
@@ -600,6 +606,14 @@ class ProcessMonitor:
             if not tracked:
                 self._departed_platforms.pop(key, None)
             elif row.active is False and (row.fully_idle or (platform is WEBEX and row.webex_departure)):
+                self._departed_platforms[key] = 0
+                if platform is WEBEX:
+                    self._webex_departure_at = time.monotonic()
+            elif (platform is WEBEX and key in self._departed_platforms
+                  and time.monotonic() - self._webex_departure_at >= WEBEX_RETURN_WINDOW_SECONDS):
+                del self._departed_platforms[key]
+            elif platform is WEBEX and row.can_bridge_departure and key in self._departed_platforms:
+                # Keep the original deadline and require consecutive strong polls.
                 self._departed_platforms[key] = 0
             elif row.active is True and row.can_confirm_start and key in self._departed_platforms:
                 self._departed_platforms[key] += 1
