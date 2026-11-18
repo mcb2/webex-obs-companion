@@ -383,7 +383,11 @@ that only writes synthetic test files. Keep AppKit on the main thread.
    new recording and consent prompt, including when it has the same title.
    Repeat without cancellation and confirm the original recording stops with
    verification before the next starts. Partial evidence loss or failed reads
-   must not trigger this shortcut. In an authorized test call on macOS, repeat
+   must not trigger this shortcut. After the departure, insert input-only Webex
+   polls with a visible window for about 23 seconds. Verify that only two
+   consecutive stronger polls within 30 seconds of the departure confirm a new
+   call. Repeat with the second stronger poll after expiry; it must not split
+   the recording. In an authorized test call on macOS, repeat
    the cancel/leave/rejoin sequence with Webex and verify actual detection and
    separate recording files; a gap entirely between polls may be missed.
 4. **Failure and stop safety:** inject socket denial, AppleScript timeout, and
