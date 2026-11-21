@@ -5,7 +5,8 @@ env/
 venv/
 .uv/
 .env
-.env.local
+.env.*
+!.env.example
 *.key
 *.token
 recordings/
