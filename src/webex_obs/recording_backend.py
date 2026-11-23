@@ -32,6 +32,10 @@ class RecordingBackend(Protocol):
     def recording_status(self) -> bool | None: ...
     @property
     def stop_verified(self) -> bool: ...
+    @property
+    def segments_verified(self) -> bool:
+        """Whether the returned segment paths still refer to the finalized session files."""
+        ...
 
     def connect(self) -> bool: ...
     def initialize(self) -> bool: ...
@@ -112,6 +116,10 @@ class OBSRecordingBackend:
     @property
     def stop_verified(self) -> bool:
         return self.controller.stop_verified
+
+    @property
+    def segments_verified(self) -> bool:
+        return self.controller.segments_verified
 
     @property
     def is_video_recording(self) -> bool:

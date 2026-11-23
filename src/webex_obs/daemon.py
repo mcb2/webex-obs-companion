@@ -170,7 +170,6 @@ class WebexOBSDaemon:
                         if self._stop_pending:
                             self.failure = "Capture stop unresolved; check OBS. Media retained."
                         else:
-                            self._discard_requested = False
                             if not self._finish_recording():
                                 self.failure = "Capture stop unresolved; check OBS. Media retained."
                 except BaseException:
@@ -383,7 +382,8 @@ class WebexOBSDaemon:
             return
         if record and record["state"] == "queued":
             job.journal.update(job.job_id, state="ready")
-        if job.retention_days == 0:
+        retention_safe = job.journal is None or job.journal.retention_safe
+        if retention_safe and job.retention_days == 0:
             # The ready checkpoint must precede deletion so restart can deliver
             # the saved transcript without requiring the intentionally removed media.
             MediaCleaner.mark_processed(files, job.recordings_dir,
@@ -393,9 +393,19 @@ class WebexOBSDaemon:
             return
         if not record or record["state"] != "delivered":
             if job.journal:
-                # Write before the request. A crash after acceptance but before the
-                # next checkpoint must never cause an automatic duplicate send.
+                # A crash after acceptance must never cause an automatic duplicate send.
                 job.journal.update(job.job_id, state="delivering" if job.delivery_enabled else "ready")
+            current = self.config
+            if job.delivery_enabled and (
+                bool(record and record.get("delivery_held")) or not current.webex_delivery_enabled or
+                (job.webex.room_id or job.webex.recipient_email) !=
+                (current.room_id or current.webex_recipient_email) or
+                bool(job.webex.room_id) != bool(current.room_id)
+            ):
+                if job.journal:
+                    job.journal.update(job.job_id, state="blocked", delivery_held=True)
+                logger.warning("Webex delivery disabled or destination changed. Transcript held locally.")
+                return
             if not self.deliver_transcript(
                 transcript_file, job.meeting_title,
                 delivery_enabled=job.delivery_enabled, webex=job.webex,
@@ -407,12 +417,12 @@ class WebexOBSDaemon:
                 return
             if job.journal:
                 job.journal.update(job.job_id, state="delivered")
-        if job.retention_days != 0:
+        if retention_safe and job.retention_days != 0:
             MediaCleaner.mark_processed(files, job.recordings_dir,
                                        identities=record["identities"] if record else identities)
-        if job.journal:
+        if job.journal and retention_safe:
             job.journal.update(job.job_id, state="complete")
-        if job.retention_days != 0:
+        if retention_safe and job.retention_days != 0:
             MediaCleaner.prune_old_recordings(job.recordings_dir, job.retention_days)
 
     def _finish_recording(self) -> bool:
@@ -430,9 +440,15 @@ class WebexOBSDaemon:
                 "Could not verify recording stopped. Files kept. Check OBS, then retry Stop from the menu.",
             )
             return False
-        if self._shutdown_event.is_set():
-            self._discard_requested = False
-        if self._discard_requested:
+        if recorded_files and self.recorder.segments_verified is not True:
+            logger.error("Recording paths could not be verified. Media left for manual recovery.")
+            if not self._shutdown_event.is_set():
+                self.ui.show_notification(
+                    "Webex OBS Companion", "Recording stopped. File ownership could not be verified. Check OBS files."
+                )
+        elif self._discard_requested and self._shutdown_event.is_set():
+            logger.info("Discard requested during shutdown. Media held locally for manual recovery.")
+        elif self._discard_requested:
             failed = []
             for filename in recorded_files:
                 try:
@@ -575,9 +591,13 @@ class WebexOBSDaemon:
                 if not self.recorder.is_recording:
                     return
                 logger.info("User confirmed Stop & Discard via recording controls.")
-                self._discard_requested = True
-                self._manual_stop_event.set()
-                self._video_switch_generation = None
+                self._request_discard()
+
+    def _request_discard(self) -> None:
+        with self._recording_request_lock:
+            self._discard_requested = True
+            self._manual_stop_event.set()
+            self._video_switch_generation = None
 
     def _request_manual_start(self, mode: str) -> None:
         with self._recording_request_lock:
@@ -686,7 +706,8 @@ class WebexOBSDaemon:
         if self._job_store is not None:
             for job in self._job_store.recover(self.config):
                 self._post_processing_worker.submit(job)
-        MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
+        if self.config.retention_days > 0 and (self._job_store is None or self._job_store.retention_safe):
+            MediaCleaner.prune_old_recordings(self.config.recordings_dir, self.config.retention_days)
         self.lifecycle_state = "running"
         self._pulse()
         diagnostics = getattr(self, "diagnostics", None)
@@ -744,7 +765,7 @@ class WebexOBSDaemon:
                         if self.recorder.is_recording or self._shutdown_event.is_set():
                             break
                         self._shutdown_event.wait(1.0)
-                        if self._shutdown_event.is_set():
+                        if self._shutdown_event.is_set() or (not manual and self.monitor.is_call_active() is not True):
                             break
                         started = self.recorder.retry_start_recording(mode=mode)
                         if started:
@@ -752,7 +773,7 @@ class WebexOBSDaemon:
                     while (not self._shutdown_event.is_set() and not manual and not self.recorder.is_recording
                            and self.monitor.is_call_active() and not started):
                         self._shutdown_event.wait(5)
-                        if self._shutdown_event.is_set():
+                        if self._shutdown_event.is_set() or self.monitor.is_call_active() is not True:
                             break
                         started = self.recorder.start_recording(mode=mode)
                     if not started:
@@ -782,10 +803,7 @@ class WebexOBSDaemon:
                     choice = self.ui.show_manual_consent_prompt(
                         meeting_title=session.display_title if session else self.monitor.default_call_title
                     )
-                    if choice == "cancel":
-                        self._discard_requested = True
-                        self._manual_stop_event.set()
-                    elif not self._manual_stop_event.is_set() and session:
+                    if choice != "cancel" and not self._manual_stop_event.is_set() and session:
                         session.use_title_if_missing(self.monitor.get_active_call_title())
                 else:
                     if session:
@@ -793,9 +811,11 @@ class WebexOBSDaemon:
                     choice = self.ui.show_startup_prompt(
                         meeting_title=session.display_title if session else self.monitor.default_call_title
                     )
+                false_positive = choice == "false_positive" and diagnostics is not None
+                if choice == "cancel" or false_positive:
+                    self._request_discard()
                 if self._shutdown_event.is_set():
                     break
-                false_positive = choice == "false_positive" and diagnostics is not None
                 if not manual and (choice == "cancel" or false_positive):
                     if false_positive and detection is not None:
                         diagnostics.answer(detection, "no")
@@ -807,7 +827,6 @@ class WebexOBSDaemon:
                         if session and session.display_title != self.monitor.default_call_title
                         else None
                     )
-                    self._discard_requested = True
                     self.monitor.is_in_meeting = False
                     self._finish_recording()
                     continue

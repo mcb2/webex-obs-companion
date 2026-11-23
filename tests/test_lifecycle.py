@@ -18,7 +18,7 @@ def daemon(tmp_path, speech_modules, monkeypatch):
     config = Config(_env_file=None, log_dir=tmp_path / "state", recordings_dir=tmp_path / "media",
                     transcripts_dir=tmp_path / "text", enable_diarization=False,
                     webex_delivery_enabled=False, poll_interval=0.01)
-    backend = Mock(is_recording=False, stop_verified=True)
+    backend = Mock(is_recording=False, stop_verified=True, segments_verified=True)
     backend.initialize.return_value = True
     backend.stop_recording.return_value = []
     app = module.WebexOBSDaemon(config, backend=backend, ui=Mock())
@@ -69,7 +69,8 @@ def test_shutdown_wakes_idle_monitor_without_starting_capture(daemon):
 
 
 @pytest.mark.parametrize("verified", [True, False])
-def test_shutdown_active_capture_finalizes_only_after_verified_stop(daemon, verified):
+@pytest.mark.parametrize("discard", [True, False])
+def test_shutdown_active_capture_finalizes_only_after_verified_stop(daemon, verified, discard):
     from webex_obs.session import RecordingSession
 
     daemon.config.recordings_dir.mkdir()
@@ -77,7 +78,7 @@ def test_shutdown_active_capture_finalizes_only_after_verified_stop(daemon, veri
     media.write_bytes(b"synthetic media")
     daemon._active_session = RecordingSession.create("Synthetic meeting")
     daemon.recorder.is_recording = True
-    daemon._discard_requested = True  # Exit must retain media even during pending discard.
+    daemon._discard_requested = discard
 
     def stop():
         daemon.recorder.stop_verified = verified
@@ -90,9 +91,10 @@ def test_shutdown_active_capture_finalizes_only_after_verified_stop(daemon, veri
     daemon.recorder.stop_recording.assert_called_once()
     assert list(daemon.config.recordings_dir.glob("*.mkv"))
     records = list((daemon.config.log_dir / "jobs").glob("*.json"))
-    assert len(records) == int(verified)
+    assert len(records) == int(verified and not discard)
     if verified:
-        assert json.loads(records[0].read_text())["state"] == "queued"
+        if not discard:
+            assert json.loads(records[0].read_text())["state"] == "queued"
         assert daemon._active_session is None
         assert not daemon.failure
     else:
@@ -238,7 +240,7 @@ def test_shutdown_during_consent_dialog_preserves_recording_even_if_cancel_retur
     daemon.start()
     daemon.recorder.stop_recording.assert_called_once()
     assert len(list(daemon.config.recordings_dir.glob("*.mkv"))) == 1
-    assert len(list((daemon.config.log_dir / "jobs").glob("*.json"))) == 1
+    assert list((daemon.config.log_dir / "jobs").glob("*.json")) == []
     assert not daemon.failure
 
 
@@ -566,3 +568,60 @@ def test_retained_input_transition_stops_and_preserves_old_session_before_next_s
     assert len(saved) == 2
     assert all(path.read_bytes() == b"synthetic test media" for path in saved)
     daemon._post_processing_worker.submit.assert_called_once()
+
+
+def test_decline_storage_failure_keeps_cancelled_media_out_of_queue(daemon, tmp_path):
+    media = tmp_path / "cancelled.mkv"
+    media.touch()
+    daemon.monitor.wait_for_state_change.return_value = True
+    daemon.monitor.should_suppress_automatic_prompt.return_value = False
+    daemon.monitor.suppress_current_call_prompt.side_effect = RuntimeError("synthetic write failure")
+    daemon.recorder.start_recording.return_value = True
+    daemon.recorder.stop_recording.return_value = [str(media)]
+    daemon.ui.show_startup_prompt.return_value = "cancel"
+
+    daemon.start()
+
+    daemon.recorder.stop_recording.assert_called_once()
+    assert media.exists()
+    assert daemon._job_store.recover(daemon.config) == []
+
+
+def test_zero_retention_skips_directory_wide_startup_prune(daemon):
+    from webex_obs.cleaner import MediaCleaner
+
+    daemon.config = daemon.config.model_copy(update={"retention_days": 0})
+    daemon.monitor.wait_for_state_change.side_effect = lambda _: daemon.request_shutdown()
+    daemon.start()
+    MediaCleaner.prune_old_recordings.assert_not_called()
+
+
+def test_auto_retry_rechecks_call_after_backoff(daemon, monkeypatch):
+    call_active = True
+
+    def wait(seconds):
+        nonlocal call_active
+        if seconds == 5:
+            call_active = False
+        return False
+
+    monkeypatch.setattr(daemon._shutdown_event, "wait", wait)
+    daemon.monitor.wait_for_state_change.side_effect = [True, KeyboardInterrupt]
+    daemon.monitor.should_suppress_automatic_prompt.return_value = False
+    daemon.monitor.is_call_active.side_effect = lambda: call_active
+    daemon.recorder.start_recording.return_value = False
+    daemon.recorder.retry_start_recording.return_value = False
+    daemon.start()
+    daemon.recorder.start_recording.assert_called_once()
+    daemon.ui.show_startup_prompt.assert_not_called()
+
+
+def test_unverified_finalized_files_are_neither_deleted_nor_processed(daemon, tmp_path):
+    path = tmp_path / "replacement.mkv"
+    path.touch()
+    daemon.recorder.stop_recording.return_value = [str(path)]
+    daemon.recorder.segments_verified = False
+    daemon._discard_requested = True
+    assert daemon._finish_recording()
+    assert path.exists()
+    assert daemon._job_store.recover(daemon.config) == []

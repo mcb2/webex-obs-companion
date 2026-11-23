@@ -98,9 +98,10 @@ OBS updates without waiting for capture operations.
 
 Window and screen choices apply only to the current session. After OBS confirms
 the recording has stopped, the companion resets a selected full-screen source
-to window capture. If that reset fails, the next video start or audio-to-video
-switch requires an accepted reset or a successful Webex-window binding. Recovery
-segments within an unfinished session retain its source selection.
+to window capture. Starting video or switching from audio requires OBS to accept
+a Webex-window binding before showing the video scene. A recovery segment can
+reuse a display explicitly selected in the current session if OBS still reports
+that display. If video cannot start, open the Webex meeting window or use audio.
 
 ### Call detection diagnostics
 
@@ -247,9 +248,13 @@ directory needs changing. Folder changes during a session wait until the next
 session; recovery segments and retention keep the original folder. A rejected or
 unverified directory blocks recording with an error in the service log. Changes
 made directly in OBS are reconciled at the next start; existing files are not moved.
-Tokens and passwords are masked in Settings.
+Tokens and passwords are masked in Settings. OBS WebSocket hosts must be
+loopback addresses. To reach a remote endpoint, use an authenticated encrypted
+tunnel with a local port and a recording directory shared at the same path.
 Turn off **Deliver transcripts to Webex** to retain transcripts locally without
-sending them to the bot; recording and transcription continue as usual.
+sending them to the bot. The companion checks the current delivery setting and
+destination before sending a queued transcript. Requests already in progress
+can still finish. Recording and local transcription continue.
 **Quit (stop service)** in the menu bar unloads the LaunchAgent so it stays
 closed for the current login session. Start it again with `uv run --locked --no-sync webex-obs start`;
 the installed LaunchAgent also starts at the next login.
@@ -376,7 +381,8 @@ from verified completed app sessions, with successful transcription and any
 enabled Webex delivery, becomes eligible under positive retention values.
 **0 deletes that session's recordings immediately after complete successful
 transcription, before Webex delivery**, even if delivery later fails. Transcripts
-are kept. The recording-menu option applies this zero-day policy only to the
+are kept. Startup skips directory-wide cleanup while the global setting is zero.
+The recording-menu option applies this zero-day policy only to the
 current session without changing Settings or other sessions' retention.
 Active media, failed/partial transcription, unrelated, and legacy media
 without success records is retained. Modified/replaced files and symlinks are
@@ -388,7 +394,9 @@ session order. Successful silent parts are labeled “No speech detected.” If 
 part produces speech, no transcript is published and media stays protected.
 Restore missing inputs or resolve the local inference failure before manually
 retrying; failed checkpoints do not retry automatically. Recordings
-written outside the configured folder are never enrolled in its cleanup.
+with paths outside the configured folder or with missing or changed file
+identities are held for manual recovery. The companion checks these identities
+before discarding, renaming, or queuing a finalized session.
 Failed sessions require manual recovery. Interrupted safe work resumes from durable
 checkpoints as described below.
 
@@ -397,7 +405,8 @@ checkpoints as described below.
 Quit, SIGINT, SIGTERM, and application termination request the same shutdown.
 New starts stop being accepted. The lifecycle worker attempts one verified stop
 of an active owned recording and saves a processing job; an already unresolved
-stop is left for explicit resolution in OBS. Shutdown does not discard media.
+stop is left for explicit resolution in OBS. Shutdown keeps media from an already
+declined session available for manual recovery and leaves it out of the processing queue.
 The app waits up to **10 seconds** for lifecycle cleanup, including up to **2
 seconds** for current processing. Queued work is deferred to restart. A stuck
 backend is never stopped concurrently; timeout exits with an error and leaves
@@ -425,8 +434,10 @@ On restart, `queued` and interrupted `transcribing` jobs resume local processing
 `ready` jobs reuse their complete transcript. `delivered` jobs only finalize
 retention and never send again. `complete` checkpoints remain as completion
 records. Recovery uses the saved model/destination and current credentials.
-Disabled delivery or a changed destination holds pending outbound work as
-`blocked`; it does not silently send or declare that work complete.
+Disabled delivery or a changed destination holds the completed local transcript
+as `blocked` for review. A malformed job checkpoint stays on disk for inspection.
+Other jobs and call detection continue. Automatic media retention pauses until
+the damaged checkpoint is resolved and the companion is restarted.
 
 The `delivering` checkpoint is saved **before** making a network request. If
 termination interrupts that request, or Webex returns a network/server error,

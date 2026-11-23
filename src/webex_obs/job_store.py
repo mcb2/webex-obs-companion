@@ -20,6 +20,7 @@ class JobStore:
     def __init__(self, directory: Path):
         self.directory = directory
         self._lock = threading.RLock()
+        self.retention_safe = True
 
     def _path(self, job_id: str) -> Path:
         # IDs come from UUIDs or validated checkpoint filenames.
@@ -61,32 +62,45 @@ class JobStore:
 
     def recover(self, config: Config) -> list[PostProcessingJob]:
         jobs = []
-        records = [(path, self.read(path.stem)) for path in self.directory.glob("*.json")]
-        for path, record in sorted(records, key=lambda item: item[1]["created_ns"]):
-            if record["version"] != 1 or record["job_id"] != path.stem:
-                raise ValueError("Unsupported processing checkpoint; inspect local jobs directory")
-            state = record["state"]
-            if state != "complete":
+        records = []
+        try:
+            paths = [path for path in self.directory.iterdir() if path.suffix == ".json"]
+        except FileNotFoundError:
+            return jobs
+        except OSError:
+            self.retention_safe = False
+            logger.error("Could not inspect the jobs directory. Retention paused; check directory access.")
+            return jobs
+        for path in paths:
+            try:
+                record = self.read(path.stem)
+                self._validate_record(record, path.stem)
+            except (OSError, ValueError, TypeError, KeyError):
+                self.retention_safe = False
+                logger.error("Unreadable or invalid processing checkpoint %s. Retention paused; inspect jobs directory.",
+                             path.name)
+                continue
+            records.append((path, record))
+            if record["state"] != "complete":
                 MediaCleaner.protect_recordings(record["media_files"])
+
+        for path, record in sorted(records, key=lambda item: item[1]["created_ns"]):
+            state = record["state"]
             if state == "delivering":
                 self.update(path.stem, state="uncertain")
                 state = "uncertain"
+            if (state == "blocked" and not record.get("delivery_held")
+                    and not Path(record["transcript"]).exists()):
+                # Older versions held entire jobs before local transcription.
+                self.update(path.stem, state="queued", delivery_held=True)
+                state = "queued"
             if state in {"uncertain", "failed", "blocked"}:
                 logger.error("Processing job %s requires review (%s); retained locally.", path.stem, state)
                 continue
             if state == "complete":
                 continue
-            if state not in {"queued", "transcribing", "ready", "delivered"}:
-                raise ValueError("Unknown processing checkpoint state")
             if state == "transcribing":
                 self.update(path.stem, state="queued")
-            if (record["delivery_enabled"] and state != "delivered"
-                    and (not config.webex_delivery_enabled
-                         or (record["room_id"], record["recipient_email"])
-                         != (config.room_id, config.webex_recipient_email))):
-                self.update(path.stem, state="blocked")
-                logger.error("Recovered job %s has disabled/changed delivery settings; review required.", path.stem)
-                continue
             jobs.append(PostProcessingJob(
                 media_files=tuple(record["media_files"]), meeting_title=record["meeting_title"],
                 output_stem=record["output_stem"],
@@ -99,3 +113,26 @@ class JobStore:
                 job_id=path.stem, journal=self,
             ))
         return jobs
+
+    @staticmethod
+    def _validate_record(record: dict, job_id: str) -> None:
+        if (not isinstance(record, dict) or record.get("version") != 1 or record.get("job_id") != job_id
+                or record.get("state") not in (
+                    "queued", "transcribing", "ready", "delivering",
+                    "delivered", "complete", "uncertain", "failed", "blocked",
+                )):
+            raise ValueError("Invalid processing checkpoint")
+        for key in ("meeting_title", "output_stem", "transcript", "model_name",
+                    "recipient_email", "room_id", "my_agent_email", "recordings_dir"):
+            if not isinstance(record[key], str) or "\0" in record[key]:
+                raise ValueError("Invalid processing checkpoint text")
+        for key in ("enable_diarization", "delivery_enabled"):
+            if type(record[key]) is not bool:
+                raise ValueError("Invalid processing checkpoint flag")
+        for key in ("created_ns", "retention_days"):
+            if type(record[key]) is not int or record[key] < 0:
+                raise ValueError("Invalid processing checkpoint number")
+        if (not isinstance(record["media_files"], list)
+                or not all(isinstance(path, str) and path for path in record["media_files"])
+                or not isinstance(record["identities"], dict)):
+            raise ValueError("Invalid processing checkpoint media")

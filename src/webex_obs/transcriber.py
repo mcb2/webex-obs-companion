@@ -121,7 +121,7 @@ class Transcriber:
                 result = mlx_whisper.transcribe(
                     fpath,
                     path_or_hf_repo=self.model_target,
-                    word_timestamps=True,
+                    word_timestamps=self.enable_diarization,
                     verbose=False,
                 )
 

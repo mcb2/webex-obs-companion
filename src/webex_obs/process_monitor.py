@@ -104,7 +104,6 @@ class ProcessMonitor:
         self.poll_interval = poll_interval
         self.call_end_grace_seconds = call_end_grace_seconds
         self.is_in_meeting = False
-        self._idle_poll_count = 0
         self._active_poll_count = 0
         self._inactive_since: float | None = None
         self._last_detection_reason = ""
@@ -119,8 +118,9 @@ class ProcessMonitor:
         self._suppressed_platforms: dict[str, float | None] = {}
         self._suppressed_call_title: str | None = None
         self._suppressed_platform_key: str | None = None
-        self._suppress_untitled_call = False
         self._suppression_inactive_since: float | None = None
+        self._process_snapshot: list | OSError | None = None
+        self._sampling_processes = False
         self._sensor_warning_times: dict[tuple[str, str], float] = {}
         self.audio_monitor = audio_monitor or CoreAudioProcessMonitor()
         self.on_strong_evidence = None
@@ -190,10 +190,26 @@ class ProcessMonitor:
             return int(port)
         return int(raddr[1]) if len(raddr) > 1 else 0
 
+    def _platform_processes(self) -> list:
+        if isinstance(self._process_snapshot, OSError):
+            raise self._process_snapshot
+        if self._process_snapshot is not None:
+            return self._process_snapshot
+        try:
+            processes = list(psutil.process_iter(["pid", "name", "exe"]))
+        except (psutil.Error, OSError) as exc:
+            error = OSError("Process enumeration unavailable")
+            if self._sampling_processes:
+                self._process_snapshot = error
+            raise error from exc
+        if self._sampling_processes:
+            self._process_snapshot = processes
+        return processes
+
     def _matching_processes(self, platform: CallPlatform) -> list:
         processes = []
         try:
-            for proc in psutil.process_iter(["pid", "name", "exe"]):
+            for proc in self._platform_processes():
                 pname = (proc.info.get("name") or "").lower()
                 pexe = (proc.info.get("exe") or "").lower()
                 if not pname and not pexe:
@@ -398,19 +414,9 @@ class ProcessMonitor:
         self._suppressed_platform_key = (
             self.current_platform.key if self.current_platform else None
         )
-        self._suppress_untitled_call = call_title is None
         self._suppression_inactive_since = None
         self._suppressed_platforms[self._suppressed_platform_key or ""] = None
         self._departed_platforms.pop(self._suppressed_platform_key or "", None)
-        self._persist_prompt_suppression()
-
-    def _clear_prompt_suppression(self) -> None:
-        self._suppressed_call_title = None
-        self._suppressed_platform_key = None
-        self._suppress_untitled_call = False
-        self._suppression_inactive_since = None
-        self._suppressed_platforms.clear()
-        self._departed_platforms.clear()
         self._persist_prompt_suppression()
 
     def _rearm_prompt(self, key: str) -> None:
@@ -423,7 +429,6 @@ class ProcessMonitor:
         if key == (self._suppressed_platform_key or ""):
             self._suppressed_call_title = None
             self._suppressed_platform_key = None
-            self._suppress_untitled_call = False
             self._suppression_inactive_since = None
 
     def _track_prompt_suppression(self, call_active: bool | None) -> None:
@@ -663,7 +668,12 @@ class ProcessMonitor:
     def is_call_active(self) -> bool | None:
         """Return active, inactive, or unknown for the bound call (or candidates)."""
         platforms = (self.bound_platform,) if self.bound_platform else SUPPORTED_PLATFORMS
-        evidence = [(platform, self._call_evidence(platform)) for platform in platforms]
+        self._sampling_processes = True
+        try:
+            evidence = [(platform, self._call_evidence(platform)) for platform in platforms]
+        finally:
+            self._sampling_processes = False
+            self._process_snapshot = None
         self._track_platform_transitions(evidence)
         for platform, row in evidence:
             if row.active is False:
@@ -813,7 +823,6 @@ class ProcessMonitor:
                     self.is_in_meeting = True
                     self._announce_detection(key or "unknown")
                     self._active_poll_count = 0
-                    self._idle_poll_count = 0
                     self._inactive_since = None
                     logger.info(
                         "Detected active %s call / meeting session: %s.",
@@ -827,7 +836,6 @@ class ProcessMonitor:
                     self.is_in_meeting = False
                     return False
             else:
-                self._idle_poll_count = 0
                 self._active_poll_count = 0
                 self._candidate_platform_key = None
                 if running is None:

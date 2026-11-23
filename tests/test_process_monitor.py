@@ -1228,3 +1228,11 @@ def test_webex_departure_survives_brief_input_only_window(bound, outcome):
         monitor.is_call_active()
         assert ("webex" in monitor._restarted_platforms) is (outcome == "confirmed")
         assert monitor.should_suppress_automatic_prompt() is (outcome != "confirmed")
+
+
+def test_detection_uses_one_process_enumeration_per_poll():
+    monitor = ProcessMonitor(audio_monitor=_AudioMonitor(AudioActivity(available=True)))
+    with patch("webex_obs.process_monitor.psutil.process_iter", return_value=[]) as processes:
+        assert monitor.is_call_active() is False
+        assert monitor.is_call_active() is False
+    assert processes.call_count == 2

@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     obs_ws_host: str = Field(
         default="localhost",
         validation_alias=AliasChoices("OBS_WS_HOST", "obs_ws_host", "OBS_WS_ADDRESS", "obs_ws_address", "OBS_HOST", "obs_host"),
-        description="OBS WebSocket host"
+        description="OBS WebSocket loopback host"
     )
     obs_ws_port: int = Field(
         default=4455,

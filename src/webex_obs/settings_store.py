@@ -11,6 +11,7 @@ from dotenv.parser import parse_stream
 
 from .config import Config, DEFAULT_ENV_FILE
 from .hotkey_listener import validate_hotkeys
+from .obs_socket import loopback_address
 
 
 EDITABLE = {
@@ -57,7 +58,14 @@ def _update_dotenv(text: str, values: dict) -> str:
     for binding in parse_stream(io.StringIO(text)):
         raw = binding.original.string
         if binding.key in edits and not binding.error:
-            prefix = re.match(r"\s*(?:export\s+)?[^\s=]+\s*=[ \t]*", raw).end()
+            assignment = re.match(r"\s*(?:export\s+)?[^\s=]+[ \t]*=[ \t]*", raw)
+            if assignment is None:
+                key_only = re.match(r"\s*(?:export\s+)?(?:'[^']+'|[^\s=#]+)", raw)
+                prefix = key_only.end()
+                output.append(raw[:prefix] + "=" + edits[binding.key] + raw[prefix:])
+                replaced.add(binding.key)
+                continue
+            prefix = assignment.end()
             remainder = raw[prefix:]
             if remainder.startswith(("'", '"')):
                 quoted = re.match(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", remainder, re.DOTALL)
@@ -86,6 +94,8 @@ def validate_settings(values: dict[str, str | bool | int | float | Path | None],
     proposed = current.model_dump()
     proposed.update(values)
     validated = Config.model_validate(proposed)
+    if "obs_ws_host" in values:
+        loopback_address(validated.obs_ws_host)
     validate_hotkeys(
         validated.hotkey_audio, validated.hotkey_video, validated.hotkey_video_source, validated.hotkey_stop_transcribe
     )

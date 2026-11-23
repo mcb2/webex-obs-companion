@@ -335,3 +335,20 @@ def test_foreground_cli_forwards_diagnostic_switch(monkeypatch, speech_modules):
     result = CliRunner().invoke(cli.app, ["run", "--detection-diagnostics"])
     assert result.exit_code == 0, result.output
     main.assert_called_once_with(detection_diagnostics=True)
+
+
+def test_failed_launch_agent_start_exits_nonzero(tmp_path, monkeypatch):
+    plist = tmp_path / "service.plist"
+    plist.write_bytes(plistlib.dumps({"ProgramArguments": ["synthetic"]}))
+    monkeypatch.setattr(cli, "PLIST_PATH", plist)
+    monkeypatch.setattr(cli.subprocess, "run", Mock(return_value=Mock(returncode=1, stderr="synthetic failure")))
+    result = CliRunner().invoke(cli.app, ["start"])
+    assert "Failed to start service" in result.stdout
+    assert result.exit_code == 1
+
+
+def test_test_webex_missing_token_exits_nonzero(monkeypatch):
+    monkeypatch.setattr("webex_obs.config.settings", Config(_env_file=None, webex_access_token=""))
+    result = CliRunner().invoke(cli.app, ["test-webex"])
+    assert "not configured" in result.stdout
+    assert result.exit_code == 1

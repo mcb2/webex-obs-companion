@@ -202,3 +202,11 @@ def test_rollback_file_is_private_before_original_credentials_are_written(tmp_pa
         save_settings({"obs_ws_port": "4456"}, path, apply=fail)
     assert writes == [0o600]
     assert Config(_env_file=path).obs_ws_password == "synthetic-retained"
+
+
+def test_edit_valueless_dotenv_entry_preserves_comment(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("export OBS_WS_PORT # optional port\n")
+    save_settings({"obs_ws_port": 4555}, path, current=Config(_env_file=None))
+    assert path.read_text() == "export OBS_WS_PORT='4555' # optional port\n"
+    assert Config(_env_file=path).obs_port == 4555

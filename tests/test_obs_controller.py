@@ -70,7 +70,7 @@ class OBSControllerTests(unittest.TestCase):
                     self.assertTrue(controller.initialize())
                 self.assertEqual(run.call_count, int(not running))
                 if not running:
-                    run.assert_called_once_with(["open", "-g", "-a", "OBS"], check=True)
+                    run.assert_called_once_with(["open", "-g", "-a", "OBS"], check=True, timeout=5)
                 websocket.return_value.connect.assert_called_once()
                 status.assert_not_called()
                 quit_obs.assert_not_called()
@@ -221,8 +221,11 @@ class OBSControllerTests(unittest.TestCase):
         controller = OBSController()
         controller.ws = Mock()
         controller.selected_display_uuid = "display-uuid"
-        controller.ws.call.return_value = _Response()
-        with patch.object(controller, "switch_scene", return_value=True), \
+        controller.ws.call.return_value = _Response(
+            inputKind="screen_capture", inputSettings={"type": 0, "display_uuid": "display-uuid"},
+        )
+        with patch.object(controller, "check_connection", return_value=True), \
+             patch.object(controller, "switch_scene", return_value=True), \
              patch.object(controller, "bind_webex_video_window") as bind_window, \
              patch.object(controller, "_refresh_recording_status", side_effect=[False, True]):
             self.assertTrue(controller.start_recording("Webex-Video"))
@@ -719,9 +722,8 @@ def test_screen_selection_reset_requires_verified_completion_and_accepted_reques
             assert controller._capture_reset_pending is (not reset_accepted)
             # Without a Webex window, a rejected reset cannot reuse the screen.
             with patch.object(controller, "list_webex_windows", return_value=[]):
-                assert controller.start_recording("Webex-Video") is reset_accepted
-            if not reset_accepted:
-                assert not any(name == "StartRecord" for name, _ in calls)
+                assert not controller.start_recording("Webex-Video")
+            assert not any(name == "StartRecord" for name, _ in calls)
 
 
 def test_lost_screen_selection_response_still_requires_reset_on_completion(obs_v5_client):
@@ -820,3 +822,39 @@ def test_no_audio_restart_for_active_or_unknown_recording(active, owned):
          patch.object(controller, "_restart_audio_capture") as restart:
         assert controller.start_recording() is owned
     restart.assert_not_called()
+
+
+def test_fresh_video_controller_cannot_inherit_obs_display_capture(obs_v5_client, monkeypatch):
+    requests_seen = []
+
+    def respond(name, data):
+        requests_seen.append(name)
+        if name == "GetRecordStatus":
+            return True, {"outputActive": False}
+        if name == "GetInputSettings":
+            return True, {
+                "inputKind": "screen_capture",
+                "inputSettings": {"type": 0, "display_uuid": "earlier-session"},
+            }
+        return True, {}
+
+    controller = OBSController()
+    controller.ws = obs_v5_client(respond)
+    controller.is_connected = True
+    monkeypatch.setattr(controller, "list_webex_windows", lambda: [])
+    assert not controller.start_recording("Webex-Video")
+    assert "SetCurrentProgramScene" not in requests_seen
+    assert "StartRecord" not in requests_seen
+
+
+def test_finalized_segment_detects_replacement_even_after_verified_stop(tmp_path):
+    controller = OBSController(recording_directory=tmp_path, exit_on_stop=False)
+    media = tmp_path / "segment.mkv"
+    media.write_bytes(b"original")
+    controller._remember_owned_path(str(media))
+    with patch.object(controller, "_recording_active_status", return_value=False):
+        assert controller.stop_recording() == [str(media)]
+    assert controller.segments_verified
+    media.rename(tmp_path / "original.mkv")
+    media.write_bytes(b"replacement")
+    assert not controller.segments_verified

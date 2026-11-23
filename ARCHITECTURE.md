@@ -93,7 +93,9 @@ session only because macOS window IDs change when Webex recreates windows.
 Verified completion also resets full-display capture in OBS to window capture;
 a failed reset guards the next video start/switch until a reset or window binding
 is accepted. Source caches clear at completion, while this reset guard survives
-until confirmed success. Recovery within an unresolved session retains selection.
+until confirmed success. Each new video start or switch requires an accepted
+Webex-window binding. Recovery may preserve a current-session display only when
+OBS confirms its actual source mode and display UUID, including after reconnect.
 
 Menu and hotkey video switches queue the current session generation for the
 lifecycle worker. Repeated requests coalesce and stop requests cancel queued
@@ -110,6 +112,8 @@ The daemon supervises partial startup, the lifecycle worker, and fatal processin
 worker failures. All termination requests set one shutdown event and wake idle
 detection. Only the lifecycle worker finalizes active capture; positive stop
 verification precedes job persistence, and unresolved stops/media stay protected.
+A discard decision is latched before saving decline state. Shutdown keeps
+declined media out of normal processing even when state persistence fails.
 Cleanup stops job admission and waits at most two seconds for processing, then
 stops hotkeys and disconnects the backend. The main/AppKit supervisor enforces a
 ten-second cleanup deadline without issuing competing backend operations. AppKit
@@ -215,8 +219,11 @@ begins; discard requires a verified recording stop before deleting segments.
 Completed sessions enter `PostProcessingWorker`, a FIFO queue on a separate
 background thread. Before queue admission, a private atomic JSON checkpoint in
 `LOG_DIR/jobs/` saves media identities and nonsecret transcription, destination,
-and retention settings. Each live job retains its clients; restart reconstructs
-clients with current credentials and holds changed/disabled destinations. One
+and retention settings. Live jobs retain their clients and restart reconstructs
+clients with current credentials. Both paths apply the current delivery setting
+and effective destination before outbound admission, after local transcription.
+A malformed checkpoint is preserved and pauses retention while other jobs and
+recording continue. One
 state-directory file lock prevents overlapping consumers. `queued`/interrupted
 `transcribing` jobs resume, `ready` reuses the transcript, and `delivered` only
 finishes retention. A pre-request `delivering` checkpoint recovers as `uncertain`;
@@ -239,6 +246,9 @@ session and, for positive retention values, successful configured delivery
 job's exact media immediately after successful transcription, before delivery
 or the post-transcription shutdown check. Its durable `ready` checkpoint precedes
 deletion; recovery can deliver the saved transcript without the removed media.
+Startup never uses zero days for a directory-wide prune. OBS segment identities
+are recorded as paths become available and checked again at verified completion
+before the daemon can discard, rename, or queue media.
 Delivery failures still retain the transcript and never automatically resend.
 The recording menu can override retention to zero for the active session only;
 the generation-checked toggle resets at completion/new start, survives unresolved

@@ -58,6 +58,11 @@ Follow this guide to configure and run the Webex OBS Companion on macOS.
 8. Configure microphone and meeting/system-audio capture in both scenes, using OBS audio sources appropriate to your macOS version. Verify both sides of a test conversation are audible in an OBS recording; the companion controls recording but does not configure audio routing.
 9. In `Webex-Video`, add a **macOS Screen Capture** source named exactly `Webex-Meeting-Window` and set its method to **Window Capture**. Grant OBS Screen Recording permission in macOS Settings.
 
+Use `localhost` or a numeric loopback address for **OBS host**. For a remote OBS
+server, connect through an authenticated encrypted tunnel bound to a local port.
+The companion also needs local access to the recording directory at the same
+absolute path used by OBS. Connection, handshake, and request waits are bounded.
+
 In the companion's **Settings… ➔ OBS recording**, set **New Webex window (video only)** to
 **Prompt me (recommended)** (the default) or **Always switch**. When a new Webex window
 appears during video recording, the companion offers or switches only when it
@@ -70,7 +75,9 @@ prompts until you select a window again. The screen choices come from macOS and
 require a macOS Screen Capture source; the legacy Window Capture source supports
 window choices only. Window titles and IDs depend on what
 Webex exposes to macOS; content rendered inside the meeting window stays
-part of that window.
+part of that window. Video starts and audio-to-video switches require an accepted
+Webex-window binding. A new companion process cannot reuse a previous display
+selection. Open the meeting window before starting video or use audio.
 
 ### macOS permissions
 
@@ -147,9 +154,10 @@ characters or more are attached as `.txt` files. A successful notification means
 Webex returned HTTP 200/201, not that a person read the message or a summary was
 generated. Network/server errors leave delivery uncertain; check Webex before
 sending manually. Failed, blocked, and uncertain jobs retain media and do not
-retry automatically. Changing delivery settings affects future jobs; already
-queued jobs retain their settings and clients. Restart recovery holds pending
-outbound jobs if delivery was disabled or the saved destination changed.
+retry automatically. Before each outgoing request, the companion checks whether
+delivery is enabled and the effective destination still matches the queued job.
+Pending jobs still produce local transcripts when delivery is blocked. Requests
+already in progress can still finish.
 
 ---
 
@@ -316,7 +324,10 @@ intact, connection changes stay pending, and new app recordings are blocked.
 Check OBS and retry the pending Stop action from the menu. The original discard
 choice is retained. After a lost connection, stop the ambiguous recording in
 OBS first; the app cannot safely identify an active output after reconnecting.
-Independently started OBS recordings are left untouched.
+Independently started OBS recordings are left untouched. If a finalized path
+is missing, replaced, or outside the configured recording directory, the
+companion holds the session for manual recovery before any file operations.
+If shutdown interrupts a discard, the media stays local and out of the queue.
 
 Recovery retains exact paths observed from OBS's built-in recording output
 settings, stop responses, and recording events. A verified stop returns all
@@ -330,7 +341,8 @@ companion itself.
 `RETENTION_DAYS=0` deletes that session's recordings immediately after complete
 successful transcription, before any enabled Webex delivery; delivery failure
 does not preserve these recordings. Transcripts are kept. The setup CLI and
-Settings → Files and detection explain this zero-day behavior.
+Settings → Files and detection explain this zero-day behavior. Startup leaves
+older processed recordings alone while the global setting is zero.
 While recording with nonzero retention, select **Delete Recording After
 Transcription** in the status menu to apply it to the current session only.
 The checked option can be toggled off before stopping; it does not stop capture

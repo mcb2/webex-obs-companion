@@ -62,7 +62,7 @@ def test_restart_recovers_safe_work_without_duplicate_delivery(context, state):
 @pytest.mark.parametrize("state", ["delivering", "uncertain", "failed", "blocked"])
 def test_restart_holds_uncertain_and_failed_jobs_for_review(context, state):
     app, store, job, config = context
-    store.update(job.job_id, state=state)
+    store.update(job.job_id, state=state, delivery_held=state == "blocked")
     assert store.recover(config) == []
     assert store.read(job.job_id)["state"] == ("uncertain" if state == "delivering" else state)
     assert Path(job.media_files[0]).exists()
@@ -105,9 +105,16 @@ def test_unavailable_transcription_banners_do_not_interrupt_processing(context):
 
 @pytest.mark.parametrize("change", [{"webex_delivery_enabled": False}, {"webex_recipient_email": "changed@example.com"}])
 def test_recovery_does_not_send_when_delivery_disabled_or_destination_changed(context, change):
-    _, store, job, config = context
-    assert store.recover(config.model_copy(update=change)) == []
-    assert store.read(job.job_id)["state"] == "blocked"
+    app, store, job, config = context
+    app.config = config.model_copy(update=change)
+    recovered, = store.recover(app.config)
+    app._process_post_processing_job(recovered)
+    app.deliver_transcript.assert_not_called()
+    record = store.read(job.job_id)
+    assert record["state"] == "blocked"
+    assert Path(record["transcript"]).is_file()
+    assert Path(job.media_files[0]).exists()
+    assert store.recover(config) == []
 
 
 def test_checkpoints_are_private_and_do_not_store_credentials(context):
@@ -345,3 +352,35 @@ def test_zero_retention_applies_to_all_segments_with_delivery_disabled(context, 
     app._process_post_processing_job(job)
     assert all(Path(name).exists() is (not complete) for name in job.media_files)
     assert store.read(job.job_id)["state"] == ("complete" if complete else "failed")
+
+
+def test_delivery_disabled_after_live_job_admission(context):
+    app, store, job, config = context
+    app.config = config.model_copy(update={"webex_delivery_enabled": False})
+    app._process_post_processing_job(job)
+    app.deliver_transcript.assert_not_called()
+    assert store.read(job.job_id)["state"] == "blocked"
+
+
+def test_legacy_blocked_job_finishes_locally_without_resending(context):
+    app, store, job, config = context
+    store.update(job.job_id, state="blocked")
+    recovered, = store.recover(config)
+    app._process_post_processing_job(recovered)
+    app.deliver_transcript.assert_not_called()
+    record = store.read(job.job_id)
+    assert record["state"] == "blocked"
+    assert Path(record["transcript"]).exists()
+
+
+def test_malformed_checkpoint_preserves_other_jobs_and_pauses_retention(context):
+    app, store, job, config = context
+    invalid = store.directory / ("b" * 32 + ".json")
+    invalid.write_text("{")
+    recovered, = store.recover(config)
+    assert recovered.job_id == job.job_id
+    assert not store.retention_safe
+    app._process_post_processing_job(recovered)
+    assert store.read(job.job_id)["state"] == "delivered"
+    assert Path(job.media_files[0]).exists()
+    assert invalid.read_text() == "{"

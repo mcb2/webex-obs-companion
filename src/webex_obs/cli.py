@@ -142,7 +142,7 @@ def test_webex():
     console.print("[bold blue]=== Testing Webex Bot Delivery ===[/bold blue]")
     if not settings.webex_token:
         console.print("[bold red]Error:[/bold red] WEBEX_ACCESS_TOKEN is not configured in .env.")
-        return
+        raise typer.Exit(code=1)
 
     client = WebexClient(
         settings.webex_token,
@@ -171,6 +171,7 @@ def test_webex():
             console.print("[bold green]✓ Test message delivered successfully to Webex![/bold green]")
         else:
             console.print("[bold red]✗ Delivery failed.[/bold red] Check error details above.")
+            raise typer.Exit(code=1)
     finally:
         if tf_path.exists():
             tf_path.unlink()
@@ -506,6 +507,7 @@ def install_service(
         console.print(f"Logs: {stdout_log}")
     else:
         console.print(f"[bold red]Failed to load LaunchAgent:[/bold red] {res.stderr}")
+        raise typer.Exit(code=1)
 
 
 @app.command(epilog=SERVICE_DIAGNOSTICS_EPILOG)
@@ -536,6 +538,7 @@ def start(
         console.print("[bold green]Background service started successfully.[/bold green]")
     else:
         console.print(f"[bold red]Failed to start service:[/bold red] {res.stderr}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -550,6 +553,7 @@ def stop():
         console.print("[bold green]Background service stopped successfully.[/bold green]")
     else:
         console.print(f"[bold red]Failed to stop service:[/bold red] {res.stderr}")
+        raise typer.Exit(code=1)
 
 
 @app.command()

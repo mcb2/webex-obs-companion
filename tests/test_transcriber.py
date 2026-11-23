@@ -189,3 +189,13 @@ def test_model_download_panic_preserves_media_and_explains_recovery(tmp_path, sp
     assert "Possible Hugging Face Xet model-download failure" in caplog.text
     assert "prefetch-model synthetic/model" in caplog.text
     assert "restart does not retry failed jobs" in caplog.text
+
+
+@pytest.mark.parametrize("diarize", [False, True])
+def test_whisper_word_alignment_is_only_requested_for_diarization(tmp_path, speech_modules, monkeypatch, diarize):
+    monkeypatch.setattr("webex_obs.transcriber.shutil.which", lambda _: "/usr/bin/ffmpeg")
+    media = tmp_path / "synthetic.mkv"
+    media.touch()
+    transcriber = Transcriber("test-model", tmp_path, enable_diarization=diarize)
+    assert transcriber.transcribe_files([str(media)])
+    assert speech_modules["inference"].call_args.kwargs["word_timestamps"] is diarize

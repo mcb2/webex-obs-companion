@@ -1,16 +1,18 @@
 import logging
 import re
+import stat
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from obswebsocket import events, obsws, requests
+from obswebsocket import events, requests
 from obswebsocket.base_classes import Baserequests
 
 from .macos_displays import active_displays
 from .cleaner import MediaCleaner
+from .obs_socket import OBSWebSocket as obsws, loopback_address
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ class OBSController:
         self._current_output_path: str | None = None
         self._last_output_duration: float | None = None
         self.recorded_files: list[str] = []
+        self._segment_identities: dict[str, tuple[int, int, float]] = {}
+        self._stopped_paths: tuple[str, ...] = ()
         # Callbacks run on obs-websocket-py's receiver. Only the lifecycle
         # worker mutates ownership and paths; callbacks must never make RPCs.
         self._record_events: SimpleQueue[tuple[int, int | None, str, dict]] = SimpleQueue()
@@ -87,7 +91,7 @@ class OBSController:
         return response
 
     def obs_is_running(self) -> bool:
-        return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True).returncode == 0
+        return subprocess.run(["pgrep", "-x", "OBS"], capture_output=True, timeout=2).returncode == 0
 
     def quit_obs(self, idle_guard=None) -> bool:
         """Ask OBS to finish shutting down; never force-kill a recording."""
@@ -148,6 +152,11 @@ class OBSController:
 
     def connect(self) -> bool:
         """Establish connection to OBS WebSocket server."""
+        try:
+            loopback_address(self.address)
+        except ValueError:
+            logger.error("OBS connection blocked. Use a loopback host or a secure tunnel to a local port.")
+            return False
         self._drain_record_events()
         if self.is_recording:
             self._ownership_lost = True
@@ -155,10 +164,10 @@ class OBSController:
             started_here = not self.obs_is_running()
             if started_here:
                 logger.info("OBS Studio is not running. Launching in background...")
-                subprocess.run(["open", "-g", "-a", "OBS"], check=True)
+                subprocess.run(["open", "-g", "-a", "OBS"], check=True, timeout=5)
         except Exception as e:
-            logger.warning("Could not launch OBS Studio: %s", e)
-            return False
+            logger.warning("Could not launch OBS Studio; checking the configured local endpoint: %s", e)
+            started_here = False
         try:
             if self.ws:
                 self._connection_generation += 1
@@ -522,21 +531,18 @@ class OBSController:
             self._owns_recording = False
             self._ownership_lost = False
             try:
-                if (scene_name == "Webex-Video" and self._capture_reset_pending
-                        and not self.is_screen_recording):
-                    if not self._reset_capture_selection() and not self.bind_webex_video_window():
-                        logger.error("Video start blocked: previous screen selection could not be reset.")
-                        return False
+                if scene_name == "Webex-Video" and not self._prepare_video_source():
+                    return False
                 if not self.switch_scene(scene_name):
                     raise RuntimeError("OBS scene is not ready")
-                if scene_name == "Webex-Video" and not self.is_screen_recording:
-                    if not self.bind_webex_video_window():
-                        logger.warning("Video recording started without a bound Webex window.")
                 self._restart_audio_capture()
                 if not self._apply_recording_directory():
                     return False
                 self.stop_verified = False
                 # A lost response is ambiguous, not authorization to adopt OBS.
+                if not self.is_recording:
+                    self._stopped_paths = ()
+                    self._segment_identities.clear()
                 self.is_recording = True
                 self._segment_index = len(self._segment_paths)
                 self._segment_paths.append([])
@@ -573,9 +579,30 @@ class OBSController:
         logger.error("Could not start OBS recording after three attempts.")
         return False
 
+    def _file_identity(self, filename: str) -> tuple[int, int, float] | None:
+        path = Path(filename)
+        try:
+            if (not path.is_absolute() or path != path.resolve()
+                    or (self.recording_directory is not None
+                        and not path.is_relative_to(self.recording_directory.resolve()))):
+                return None
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode):
+                # Size and modification time change while OBS is writing.
+                return info.st_dev, info.st_ino, info.st_birthtime
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return None
+
     def _remember_owned_path(self, output_path: str | None, segment: int | None = None) -> None:
-        if isinstance(output_path, str) and output_path and output_path not in self.recorded_files:
-            MediaCleaner.protect_recordings([output_path])
+        if not isinstance(output_path, str) or not output_path:
+            return
+        if output_path not in self._segment_identities:
+            identity = self._file_identity(output_path)
+            if identity is not None:
+                self._segment_identities[output_path] = identity
+                MediaCleaner.protect_recordings([output_path])
+        if output_path not in self.recorded_files:
             segment = self._segment_index if segment is None else segment
             if segment is None:
                 self.recorded_files.append(output_path)
@@ -763,7 +790,16 @@ class OBSController:
         if self.exit_on_stop and owned_session:
             # Recheck idle outputs immediately before graceful shutdown.
             self.quit_obs(idle_guard=self.outputs_confirmed_idle)
+        self._stopped_paths = tuple(files)
         return files
+
+    @property
+    def segments_verified(self) -> bool:
+        return all(
+            filename in self._segment_identities
+            and self._file_identity(filename) == self._segment_identities[filename]
+            for filename in self._stopped_paths
+        )
 
     def _recording_is_confirmed_stopped(self) -> bool:
         return self._recording_active_status() is False
@@ -801,6 +837,7 @@ class OBSController:
                     if isinstance(duration, (int, float)):
                         self._last_output_duration = duration
                     if self._segment_index is not None:
+                        self._remember_owned_path(self._current_output_path)
                         self._capture_owned_output_path()
             return active
         except Exception as e:
@@ -815,11 +852,25 @@ class OBSController:
             return False
         if (self._recording_active_status() is True and self._owns_recording
                 and not self._ownership_lost):
-            if self._capture_reset_pending and not self.is_screen_recording:
-                if not self._reset_capture_selection() and not self.bind_webex_video_window():
-                    return False
-            if self.switch_scene("Webex-Video"):
-                if not self.is_screen_recording:
-                    self.bind_webex_video_window()
+            return self._prepare_video_source() and self.switch_scene("Webex-Video")
+        return False
+
+    def _prepare_video_source(self) -> bool:
+        """Verify the configured source before it can appear on the program output."""
+        if not self.is_screen_recording:
+            if self.bind_webex_video_window():
                 return True
+            logger.error("Video capture blocked: no Webex window could be bound.")
+            return False
+        if not self.check_connection():
+            return False
+        try:
+            info = self._call(requests.GetInputSettings(inputName="Webex-Meeting-Window")).datain
+            settings = info.get("inputSettings", {})
+            if (info.get("inputKind") == "screen_capture" and settings.get("type") == 0
+                    and settings.get("display_uuid") == self.selected_display_uuid):
+                return True
+        except Exception:
+            logger.warning("Could not verify the selected OBS display.")
+        logger.error("Video capture blocked: OBS is no longer set to this session's selected display.")
         return False
